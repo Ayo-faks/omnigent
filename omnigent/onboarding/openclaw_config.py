@@ -102,6 +102,28 @@ def openclaw_agents_to_acp_entries(
     return entries
 
 
+def resolve_openclaw_acp_agent(
+    identifier: str,
+    *,
+    discovery: OpenClawDiscovery | None = None,
+) -> AcpAgentEntry | None:
+    """Resolve one discovered agent by display name or derived ACP slug.
+
+    Display-name matching is case-insensitive. Slugs remain exact so collision
+    suffixes such as ``agent-2`` select the intended translated entry.
+    """
+    resolved_discovery = discovery or discover_openclaw_agents()
+    entries = openclaw_agents_to_acp_entries(resolved_discovery.agents)
+    wanted = identifier.strip()
+    if not wanted:
+        return None
+    wanted_name = wanted.casefold()
+    for entry in entries:
+        if entry.name.casefold() == wanted_name:
+            return entry
+    return next((entry for entry in entries if entry.slug == wanted), None)
+
+
 def merge_imported_acp_entries(
     imported: tuple[AcpAgentEntry, ...] | list[AcpAgentEntry],
     *,

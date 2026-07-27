@@ -7,6 +7,7 @@ from omnigent.onboarding.openclaw_config import (
     discover_openclaw_agents,
     merge_imported_acp_entries,
     openclaw_agents_to_acp_entries,
+    resolve_openclaw_acp_agent,
 )
 
 
@@ -130,6 +131,24 @@ def test_translator_emits_acp_agents_settings(tmp_path: Path) -> None:
     assert acp_agents_settings(entries) == {
         "acp": {"agents": [{"name": "Gemini CLI", "command": "gemini --experimental-acp"}]}
     }
+
+
+def test_resolves_single_agent_by_name_or_slug(tmp_path: Path) -> None:
+    acpx = tmp_path / "config.json"
+    acpx.write_text(
+        '{"agents": {"Gemini CLI": {"command": "gemini", "args": ["--experimental-acp"]}}}',
+        encoding="utf-8",
+    )
+    discovery = discover_openclaw_agents(acpx_path=acpx, openclaw_path=tmp_path / "missing.json")
+
+    by_name = resolve_openclaw_acp_agent("gemini cli", discovery=discovery)
+    by_slug = resolve_openclaw_acp_agent("gemini-cli", discovery=discovery)
+
+    expected = AcpAgentEntry(
+        slug="gemini-cli", name="Gemini CLI", command="gemini --experimental-acp"
+    )
+    assert by_name == expected
+    assert by_slug == expected
 
 
 def test_import_merge_is_idempotent_by_slug() -> None:

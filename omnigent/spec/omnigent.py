@@ -1741,9 +1741,9 @@ def _translate_executor_from_def(
         "harness": harness,
         "profile": profile,
     }
-    # ``use_responses`` is not a field on the omnigent inner
-    # ExecutorSpec (the loader drops unknown keys), so we read it
-    # from the raw YAML dict and carry it forward explicitly.
+    # ``use_responses`` and ``acp_agent`` are not fields on the omnigent inner
+    # ExecutorSpec (the loader drops unknown keys), so read them from the raw
+    # YAML dict and carry them forward explicitly.
     # The openai-agents harness spawn-env builder reads
     # ``spec.executor.config["use_responses"]`` to set
     # ``HARNESS_OPENAI_AGENTS_USE_RESPONSES``, which controls
@@ -1753,6 +1753,9 @@ def _translate_executor_from_def(
         use_responses_raw = raw_executor.get("use_responses")
         if use_responses_raw is not None:
             config["use_responses"] = bool(use_responses_raw)
+        acp_agent_raw = raw_executor.get("acp_agent")
+        if isinstance(acp_agent_raw, dict):
+            config["acp_agent"] = dict(acp_agent_raw)
     # ``auth`` is now parsed by the loader into OmniExecutorSpec.auth;
     # fall back to raw_executor for the top-level agent path that still
     # goes through _translate_executor_from_def(raw_executor=...).
