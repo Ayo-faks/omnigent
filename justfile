@@ -12,15 +12,67 @@ _check-uv:
     uv run --no-sync ruff --version
     uv run --no-sync pre-commit --version
 
+# Sync from the committed lockfile without rewriting it.
+# `--frozen` installs pinned versions and never updates uv.lock — required
+# because a corporate proxy in ~/.config/uv makes `uv sync --locked` treat
+# public-PyPI registry URLs as stale (and forcing UV_INDEX_URL=pypi.org
+# breaks machines that can only reach the proxy). CI still gates freshness
+# with `uv sync --locked`. `--inexact` keeps optional harness extras
+# (cursor / copilot / antigravity) that `omnigent setup` may have installed;
+# `--extra all` only adds databricks-sdk, not those.
 _ensure-uv:
-    uv sync --extra all --extra dev
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set +e
+    uv sync --frozen --inexact --extra all --extra dev
+    status=$?
+    set -e
+    if [[ "${status}" -eq 0 ]]; then
+        exit 0
+    fi
+    echo "" >&2
+    echo "error: \`uv sync --frozen\` failed (exit ${status})." >&2
+    echo "  Recovery:" >&2
+    echo "    • Lock rewritten by an older \`just ensure\` (proxy URLs)?" >&2
+    echo "        git checkout -- uv.lock && just normalize-locks" >&2
+    echo "    • pyproject.toml changed and the lock needs re-resolving?" >&2
+    echo "        just relock && just normalize-locks" >&2
+    echo "  Then re-run: just ensure" >&2
+    exit "${status}"
+
+# Intentional re-resolve (updates uv.lock). Day-to-day setup uses
+# `_ensure-uv` / `just ensure` with `--frozen` instead.
+[group('setup')]
+relock:
+    uv sync --inexact --extra all --extra dev
+    @echo "uv.lock may point at your local index; run \`just normalize-locks\` before committing."
 
 # --- iOS Ruby dependencies ---
 
 _check-ios:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        echo "Skipping iOS check (not macOS)."
+        exit 0
+    fi
+    if ! command -v bundle >/dev/null 2>&1; then
+        echo "Skipping iOS check (Bundler not found)."
+        exit 0
+    fi
     cd web/ios && bundle check
 
 _ensure-ios:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        echo "Skipping iOS setup (not macOS)."
+        exit 0
+    fi
+    if ! command -v bundle >/dev/null 2>&1; then
+        echo "Skipping iOS setup (Bundler not found)."
+        exit 0
+    fi
     cd web/ios && (bundle check || bundle install)
 
 # --- omnidev Rust dev tool ---
@@ -86,15 +138,30 @@ electron-build: _ensure-web _ensure-electron
 
 [group('lint')]
 lint: _ensure-uv
-    uv run pre-commit run
+    uv run --no-sync pre-commit run
 
 [group('lint')]
 lint-all: _ensure-uv
-    uv run pre-commit run --all-files
+    uv run --no-sync pre-commit run --all-files
 
 # --- Lockfile maintenance ---
 
+# Fixers exit 1 when they rewrite (pre-commit convention). Treat that as
+# success here; real errors use exit code 2+ from the scripts.
+# Always `--no-sync`: a bare `uv run` would re-resolve against the local
+# index and rewrite uv.lock (undoing `--frozen` in `_ensure-uv`).
 [group('lint')]
 normalize-locks: _ensure-uv
-    uv run scripts/normalize_package_lock_registry.py web/package-lock.json web/electron/package-lock.json editors/vscode/package-lock.json || true
-    uv run scripts/normalize_uv_lock_registry.py uv.lock || true
+    #!/usr/bin/env bash
+    set -euo pipefail
+    run_fixer() {
+        local ec=0
+        uv run --no-sync "$@" || ec=$?
+        if [[ "${ec}" -eq 0 || "${ec}" -eq 1 ]]; then
+            return 0
+        fi
+        return "${ec}"
+    }
+    run_fixer scripts/normalize_package_lock_registry.py \
+        web/package-lock.json web/electron/package-lock.json editors/vscode/package-lock.json
+    run_fixer scripts/normalize_uv_lock_registry.py uv.lock
