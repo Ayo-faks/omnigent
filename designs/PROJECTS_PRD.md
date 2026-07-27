@@ -518,12 +518,6 @@ folder), carrying the first-class `id` when one exists.
 - ✅ Tests: `projectsApi` unit tests; reworked hook tests (resolve→file,
   create-on-demand, archive+unfile+delete); sidebar/composer suites updated;
   server union test. Empty folders read "No sessions".
-- ⬜ **Deferred (kept on the name/label path via dual-read):** the Settings
-  archived-only project picker (`fetchAllArchivedProjectNames`) still derives its
-  options from the `omni_project` label; retiring that label read from the UI is
-  gated on the Phase 4 backfill. (The new-session prefill machine no longer reads
-  the label — it was collapsed to config-only in Phase 2, see below.) TS client
-  types are not codegen-regenerated (hand-written `projectsApi`).
 
 ### Done (Benchmark — #3094)
 - ✅ **Latency journeys + corpus seeder.** Added `list_projects` (sidebar project
@@ -601,9 +595,12 @@ worktree stored on the project and seeded into the new-chat composer.
     `projects` rows. Gives a clean single source of truth, but dual-read means it
     is **not mandatory** — only needed if/when we decide to retire the label path.
   - **Retire the label path** — remove the `omni_project` reads/writes and the
-    `?project=<name>` filter. Last step, if ever; do only after the backfill has
-    run and telemetry shows no client still writes labels. Keeping the label path
-    is cheap, so treat retirement as opportunistic cleanup, not a milestone.
+    `?project=<name>` filter. This includes the one UI reader still on the label
+    path: the Settings archived-only project picker
+    (`fetchAllArchivedProjectNames`) derives its options from the `omni_project`
+    label. Last step, if ever; do only after the backfill has run and telemetry
+    shows no client still writes labels. Keeping the label path is cheap, so
+    treat retirement as opportunistic cleanup, not a milestone.
 
 ## 13. Backwards compatibility (mixed server / client versions)
 
