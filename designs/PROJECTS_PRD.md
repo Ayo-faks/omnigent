@@ -583,12 +583,12 @@ worktree stored on the project and seeded into the new-chat composer.
     config prefills nothing project-specific (just the generic defaults).
 
 ### TODO
-**Postponed pending customer evidence.** Phases 1–2 (first-class projects +
-defaults) are shipped. Phases 3 and 4 below are **not scheduled** — we're holding
-them until we have customer signal that the demand is real (project memory/context
-being asked for; enough production label-projects to justify consolidation) rather
-than building ahead of it. Both are additive and independent, so either can start
-whenever the evidence lands.
+**Postponed.** Phases 1–2 (first-class projects + defaults) are shipped. Phases 3
+and 4 below are **not scheduled**, each on a different trigger: Phase 3 waits for
+customer evidence that project memory/context is wanted; Phase 4 waits until
+telemetry shows most clients have migrated to a version that writes `project_id`
+(so retiring the label path is safe). Both are additive and independent, so either
+can start whenever its trigger lands.
 
 - ⏸️ **Phase 3 — memory & context (P4b/P4c)** — new `project_memory` /
   `project_context` tables + agent read/write + injection (§8.2/§8.3). Postponed:
@@ -599,7 +599,9 @@ whenever the evidence lands.
   Because the server dual-reads (a session is "in project X" if it has *either* a
   `project_id` *or* the `omni_project` label — see §13), the first-class feature
   works end-to-end without touching the label path, so this whole phase is
-  deferred and may never be needed. Two steps, both optional:
+  deferred and may never be needed. Postponed until telemetry shows most clients
+  have migrated to a version that writes `project_id` — retiring the label path is
+  only safe once old label-writing clients are gone. Two steps, both optional:
   - **Label → `project_id` backfill** — a **separate one-off command/migration**
     converting existing `omni_project` label-projects (real production data) into
     `projects` rows. Gives a clean single source of truth, but dual-read means it
