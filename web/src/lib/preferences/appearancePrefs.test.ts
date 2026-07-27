@@ -24,9 +24,7 @@ describe("appearance preference registry — load order", () => {
     // have registered every key in EXPECTED_APPEARANCE_STORAGE_KEYS. If a
     // new preference is added with appearance: true but not imported here,
     // this fails — Reset would silently skip it in production.
-    expect(sorted(getAppearanceStorageKeys())).toEqual(
-      sorted(EXPECTED_APPEARANCE_STORAGE_KEYS),
-    );
+    expect(sorted(getAppearanceStorageKeys())).toEqual(sorted(EXPECTED_APPEARANCE_STORAGE_KEYS));
   });
 
   it("does not leave any key in both the registry and the legacy list", () => {

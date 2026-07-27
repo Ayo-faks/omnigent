@@ -97,10 +97,7 @@ import {
   type ThemeMode,
 } from "@/components/theme/themeMode";
 import { usePreference } from "@/hooks/usePreference";
-import {
-  LEGACY_APPEARANCE_STORAGE_KEYS,
-  resetAppearancePreferences,
-} from "@/lib/preferences";
+import { LEGACY_APPEARANCE_STORAGE_KEYS, resetAppearancePreferences } from "@/lib/preferences";
 import {
   applyUiFontFamily,
   clampUiFontSizePx,
