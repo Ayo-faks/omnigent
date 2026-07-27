@@ -75,6 +75,25 @@ def test_harness_bench_smoke_is_non_gate(vr) -> None:
     assert "Coverage report" not in defined
 
 
+def test_npm_test_is_required(vr) -> None:
+    """web-tests.yml's Vitest job must gate merges (ALLOW_SKIP via path filter)."""
+    required, allow_skip = vr.load_required()
+    defined = vr.collect_defined_checks()
+    assert "npm test" in defined
+    assert "npm test" in required
+    assert "npm test" in allow_skip
+
+
+def test_intentional_unscanned_workflows_are_recorded(vr) -> None:
+    """Gaps in the extractor must be explicit decisions, not accidents."""
+    unscanned = vr.INTENTIONAL_UNSCANNED_WORKFLOWS
+    assert "windows.yml" in unscanned
+    assert "benchmark-pr.yml" in unscanned
+    assert "code-coverage.yml" in unscanned
+    assert "web-tests.yml" not in unscanned
+    assert "web-tests.yml" in vr.SCANNED_WORKFLOWS
+
+
 def test_classify_hint_names_both_options(vr, capsys) -> None:
     """Failure output must tell developers: REQUIRED or NON_GATE_JOB_NAMES."""
     required, _ = vr.load_required()

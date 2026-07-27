@@ -6,8 +6,10 @@
 # NOT PR checks, so they are not listed here.
 #
 # Keep in sync with live job names in .github/workflows/{ci,lint,docker-build,
-# e2e,e2e-ui,integration,ui-snapshot}.yml. CI enforces this via
-# validate-required.py (the "Merge-ready required sync" check).
+# e2e,e2e-ui,integration,ui-snapshot,web-tests}.yml. CI enforces this via
+# validate-required.py (the "Merge-ready required sync" check). Workflows
+# intentionally left unscanned are listed in INTENTIONAL_UNSCANNED_WORKFLOWS
+# in that script.
 
 REQUIRED=(
   "DCO"
@@ -16,6 +18,7 @@ REQUIRED=(
   "Merge-ready required sync"
   "Version lockstep check"
   "Docker build"
+  "npm test"
   "Pytest (runtime-harnesses)"
   "Pytest (runtime-policies)"
   "Pytest (runtime-core)"
@@ -48,6 +51,7 @@ REQUIRED=(
 
 ALLOW_SKIP=(
   "Docker build"
+  "npm test"
   "Pytest (runtime-harnesses)"
   "Pytest (runtime-policies)"
   "Pytest (runtime-core)"
@@ -87,6 +91,7 @@ is_allow_skip() { printf '%s\n' "${ALLOW_SKIP[@]}" | grep -qxF "$1"; }
 workflow_for() {
   case "$1" in
     "Docker build")          echo "Docker build" ;;
+    "npm test")              echo "web Tests" ;;
     "Pytest ("*)             echo "CI" ;;
     "E2E Tests (shard "*)    echo "E2E Tests" ;;
     "E2E UI Tests (shard "*) echo "E2E UI Tests" ;;

@@ -43,6 +43,37 @@ NON_GATE_JOB_NAMES = frozenset(
     }
 )
 
+# Workflows this extractor deliberately does NOT scan. Leaving a PR-check
+# workflow off this list *and* out of collect_defined_checks() would recreate
+# the invisible-gap bug. Prefer scanning + REQUIRED/ALLOW_SKIP when the job
+# has a stable check-run name that should block merges.
+INTENTIONAL_UNSCANNED_WORKFLOWS: dict[str, str] = {
+    "windows.yml": (
+        "Explicitly non-blocking while native Windows support stabilizes "
+        "(workflow header); continue-on-error on the broad unit sweep."
+    ),
+    "benchmark-pr.yml": (
+        "Path-filtered same-repo signal; fails its own check on regression "
+        "but is not a Merge Ready required entry (forks/secrets constrained)."
+    ),
+    "code-coverage.yml": (
+        "Posts Coverage / Coverage (ui) commit *statuses*, not check-runs; "
+        "evaluate-checks.sh cannot see them. See COVERAGE_ENFORCE note."
+    ),
+}
+
+# Workflows whose job names feed the merge gate (exact-match vs REQUIRED).
+SCANNED_WORKFLOWS = (
+    "ci.yml",
+    "lint.yml",
+    "docker-build.yml",
+    "e2e.yml",
+    "e2e-ui.yml",
+    "integration.yml",
+    "ui-snapshot.yml",
+    "web-tests.yml",
+)
+
 
 def _parse_bash_string_array(text: str, name: str) -> list[str]:
     """Extract `"..."` entries from a ``NAME=( ... )`` bash array."""
@@ -225,6 +256,12 @@ def collect_defined_checks() -> set[str]:
             for h in harnesses:
                 defined.add(_expand_matrix_name(n, name=h))
         elif n not in NON_GATE_JOB_NAMES and "${{" not in n:
+            defined.add(n)
+
+    # --- web Tests (Vitest); path-filtered to web/** ---
+    web_names, _ = _job_names_and_matrix_groups(WORKFLOWS / "web-tests.yml")
+    for n in web_names:
+        if n not in NON_GATE_JOB_NAMES and "${{" not in n:
             defined.add(n)
 
     return defined
