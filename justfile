@@ -13,16 +13,42 @@ _check-uv:
     uv run --no-sync pre-commit --version
 
 # Sync from the committed lockfile without rewriting it.
-# `--frozen` installs pinned versions and never updates uv.lock — required
-# because a corporate proxy in ~/.config/uv makes `uv sync --locked` treat
-# public-PyPI registry URLs as stale (and forcing UV_INDEX_URL=pypi.org
-# breaks machines that can only reach the proxy). CI still gates freshness
-# with `uv sync --locked`. `--inexact` keeps optional harness extras
-# (cursor / copilot / antigravity) that `omnigent setup` may have installed;
-# `--extra all` only adds databricks-sdk, not those.
+#
+# Root cause (read this before "fixing" the flag back to --locked):
+# Many Databricks developers have
+#   index-url = "https://pypi-proxy.cloud.databricks.com/simple"
+# in ~/.config/uv/uv.toml. Any uv sync/lock that re-resolves then rewrites
+# every registry URL in uv.lock to that proxy. `--locked` / `uv lock --check`
+# then treat a clean pypi.org lock as stale — even when pyproject.toml is
+# unchanged — which is why CI (UV_INDEX_URL=pypi.org, no user config) passes
+# while local `--locked` fails. Forcing UV_INDEX_URL=pypi.org locally fixes
+# the check but breaks machines where pypi.org DNS is unreachable (proxy-only
+# networks still need the proxy for build-system.requires fetches).
+#
+# So we use `--frozen` (install pins, never touch the lock) plus an explicit
+# pyproject.toml-vs-uv.lock mtime staleness gate below. CI remains the
+# `--locked` freshness gate. Pinning `index-url` in the repo's uv.toml would
+# make local and CI agree on resolution, but is deferred: it breaks proxy-only
+# installs until those networks can reach pypi.org or a transparent mirror.
+#
+# `--inexact` keeps optional harness extras (cursor / copilot / antigravity)
+# that `omnigent setup` may have installed; `--extra all` only adds
+# databricks-sdk, not those.
 _ensure-uv:
     #!/usr/bin/env bash
     set -euo pipefail
+    if [[ ! -f uv.lock ]]; then
+        echo "error: uv.lock is missing. Run: just relock && just normalize-locks" >&2
+        exit 1
+    fi
+    # Fail if the manifest is newer than the lock — `--frozen` would otherwise
+    # silently install a stale environment after a pyproject.toml edit.
+    if [[ pyproject.toml -nt uv.lock ]]; then
+        echo "error: pyproject.toml is newer than uv.lock (lock may be stale)." >&2
+        echo "  Re-resolve with:  just relock && just normalize-locks" >&2
+        echo "  Then re-run:      just ensure" >&2
+        exit 1
+    fi
     set +e
     uv sync --frozen --inexact --extra all --extra dev
     status=$?
@@ -46,6 +72,34 @@ _ensure-uv:
 relock:
     uv sync --inexact --extra all --extra dev
     @echo "uv.lock may point at your local index; run \`just normalize-locks\` before committing."
+
+# Run a command via the project venv without re-resolving (which would
+# rewrite uv.lock under a corporate proxy). If the venv is missing or
+# empty, fail with a pointer to ensure instead of a raw spawn /
+# ModuleNotFoundError.
+_uv-run-no-sync +args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -x .venv/bin/python ]]; then
+        echo "error: project .venv is missing or incomplete." >&2
+        echo "  Fix: just ensure   # syncs --extra all --extra dev from uv.lock" >&2
+        exit 1
+    fi
+    set +e
+    uv run --no-sync {{ args }}
+    status=$?
+    set -e
+    if [[ "${status}" -eq 0 ]]; then
+        exit 0
+    fi
+    # Empty venv from `uv run --no-sync` after a deleted .venv: spawn fails.
+    if [[ ! -x .venv/bin/pre-commit ]] && [[ " {{ args }} " == *" pre-commit "* ]]; then
+        echo "" >&2
+        echo "error: pre-commit is not installed in .venv (dev extra missing?)." >&2
+        echo "  Fix: just ensure" >&2
+        exit 1
+    fi
+    exit "${status}"
 
 # --- iOS Ruby dependencies ---
 
@@ -138,11 +192,11 @@ electron-build: _ensure-web _ensure-electron
 
 [group('lint')]
 lint: _ensure-uv
-    uv run --no-sync pre-commit run
+    just _uv-run-no-sync pre-commit run
 
 [group('lint')]
 lint-all: _ensure-uv
-    uv run --no-sync pre-commit run --all-files
+    just _uv-run-no-sync pre-commit run --all-files
 
 # --- Lockfile maintenance ---
 
@@ -156,9 +210,18 @@ normalize-locks: _ensure-uv
     set -euo pipefail
     run_fixer() {
         local ec=0
-        uv run --no-sync "$@" || ec=$?
+        local out
+        out="$(uv run --no-sync "$@" 2>&1)" || ec=$?
+        printf '%s\n' "${out}"
         if [[ "${ec}" -eq 0 || "${ec}" -eq 1 ]]; then
             return 0
+        fi
+        if [[ "${out}" == *"No module named"* ]] \
+            || [[ "${out}" == *"Failed to spawn"* ]] \
+            || [[ "${out}" == *"No such file or directory"* ]]; then
+            echo "error: project .venv is missing tools needed for normalize-locks." >&2
+            echo "  Fix: just ensure" >&2
+            return 1
         fi
         return "${ec}"
     }
