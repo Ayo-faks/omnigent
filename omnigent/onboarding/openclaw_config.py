@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
+import json5
 
 from omnigent.onboarding.acp_auth import AcpAgentEntry, acp_agents, slugify
 
@@ -80,7 +80,7 @@ def discover_openclaw_agents(
         if not path.exists():
             continue
         try:
-            raw = _load_config(path, json5=source == "openclaw")
+            raw = _load_config(path, json5_format=source == "openclaw")
             agents.extend(_extract_agents(raw, source=source, path=path))
         except ValueError as exc:
             errors.append(OpenClawConfigError(path=path, message=str(exc)))
@@ -92,13 +92,19 @@ def openclaw_agents_to_acp_entries(
 ) -> list[AcpAgentEntry]:
     """Translate normalized OpenClaw/acpx agents into ACP config entries."""
     entries: list[AcpAgentEntry] = []
-    seen: dict[str, int] = {}
+    seen_slugs: dict[str, int] = {}
+    seen_agents: set[tuple[str, str]] = set()
     for agent in agents:
+        command = agent.command_line
+        identity = (agent.name.casefold(), command)
+        if identity in seen_agents:
+            continue
+        seen_agents.add(identity)
         base = slugify(agent.name)
-        count = seen.get(base, 0) + 1
-        seen[base] = count
+        count = seen_slugs.get(base, 0) + 1
+        seen_slugs[base] = count
         slug = base if count == 1 else f"{base}-{count}"
-        entries.append(AcpAgentEntry(slug=slug, name=agent.name, command=agent.command_line))
+        entries.append(AcpAgentEntry(slug=slug, name=agent.name, command=command))
     return entries
 
 
@@ -129,34 +135,41 @@ def merge_imported_acp_entries(
     *,
     existing: list[AcpAgentEntry] | None = None,
 ) -> tuple[list[AcpAgentEntry], list[AcpAgentEntry]]:
-    """Append imported ACP entries, skipping slugs that already exist.
+    """Append imported ACP entries, preserving distinct slug collisions.
 
-    Returns ``(merged, added)``. The check is slug-based so rerunning the import
-    is idempotent and preserves any existing user-authored ACP agents.
+    Returns ``(merged, added)``. Exact name/command matches are skipped for
+    idempotency. A different agent whose name maps to an occupied slug receives
+    the next suffix so no user-authored or imported command is lost.
     """
     current = list(acp_agents() if existing is None else existing)
-    seen = {entry.slug for entry in current}
+    seen_slugs = {entry.slug for entry in current}
+    seen_agents = {(entry.name.casefold(), entry.command) for entry in current}
     added: list[AcpAgentEntry] = []
     for entry in imported:
-        if entry.slug in seen:
+        identity = (entry.name.casefold(), entry.command)
+        if identity in seen_agents:
             continue
-        current.append(entry)
-        added.append(entry)
-        seen.add(entry.slug)
+        base = slugify(entry.name)
+        slug = base
+        suffix = 2
+        while slug in seen_slugs:
+            slug = f"{base}-{suffix}"
+            suffix += 1
+        resolved = replace(entry, slug=slug)
+        current.append(resolved)
+        added.append(resolved)
+        seen_agents.add(identity)
+        seen_slugs.add(slug)
     return current, added
 
 
-def _load_config(path: Path, *, json5: bool) -> Any:
+def _load_config(path: Path, *, json5_format: bool) -> Any:
     text = path.read_text(encoding="utf-8")
     try:
-        return json.loads(text)
-    except json.JSONDecodeError as json_exc:
-        if not json5:
-            raise ValueError(f"invalid JSON: {json_exc.msg}") from json_exc
-    try:
-        return yaml.safe_load(_quote_json5_keys(_strip_json5_comments(text)))
-    except yaml.YAMLError as yaml_exc:
-        raise ValueError(f"invalid JSON5: {yaml_exc}") from yaml_exc
+        return json5.loads(text) if json5_format else json.loads(text)
+    except ValueError as exc:
+        kind = "JSON5" if json5_format else "JSON"
+        raise ValueError(f"invalid {kind}: {exc}") from exc
 
 
 def _extract_agents(raw: Any, *, source: SourceKind, path: Path) -> list[OpenClawAgentEntry]:
@@ -184,7 +197,7 @@ def _extract_agents(raw: Any, *, source: SourceKind, path: Path) -> list[OpenCla
         command = config.get("command")
         if not isinstance(command, str) or not command.strip():
             continue
-        args = _normalize_args(config.get("args"))
+        args = _normalize_args(config.get("args"), agent_name=name)
         agents.append(
             OpenClawAgentEntry(
                 name=name.strip(),
@@ -197,103 +210,16 @@ def _extract_agents(raw: Any, *, source: SourceKind, path: Path) -> list[OpenCla
     return agents
 
 
-def _normalize_args(raw: Any) -> tuple[str, ...]:
+def _normalize_args(raw: Any, *, agent_name: str) -> tuple[str, ...]:
     if raw is None:
         return ()
     if isinstance(raw, str):
         return (raw,)
     if isinstance(raw, list):
-        return tuple(str(item) for item in raw if item is not None)
-    return ()
+        if all(isinstance(item, str) for item in raw):
+            return tuple(raw)
+    raise ValueError(f"agent {agent_name!r} args must be a string or list of strings")
 
 
 def _object(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
-
-
-def _strip_json5_comments(text: str) -> str:
-    """Remove ``//`` and ``/* */`` comments while preserving quoted strings."""
-    out: list[str] = []
-    i = 0
-    quote: str | None = None
-    escaped = False
-    while i < len(text):
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-        if quote is not None:
-            out.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in {'"', "'"}:
-            quote = ch
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "/" and nxt == "/":
-            i += 2
-            while i < len(text) and text[i] not in "\r\n":
-                i += 1
-            continue
-        if ch == "/" and nxt == "*":
-            i += 2
-            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
-                i += 1
-            i = min(len(text), i + 2)
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def _quote_json5_keys(text: str) -> str:
-    """Quote simple JSON5 object keys so PyYAML can load OpenClaw configs."""
-    out: list[str] = []
-    i = 0
-    quote: str | None = None
-    escaped = False
-    while i < len(text):
-        ch = text[i]
-        if quote is not None:
-            out.append(ch)
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in {'"', "'"}:
-            quote = ch
-            out.append(ch)
-            i += 1
-            continue
-        if ch in "{,":
-            out.append(ch)
-            i += 1
-            while i < len(text) and text[i].isspace():
-                out.append(text[i])
-                i += 1
-            start = i
-            if i < len(text) and (text[i].isalpha() or text[i] in "_$"):
-                i += 1
-                while i < len(text) and (text[i].isalnum() or text[i] in "_$"):
-                    i += 1
-                end = i
-                j = i
-                while j < len(text) and text[j].isspace():
-                    j += 1
-                if j < len(text) and text[j] == ":":
-                    out.append(f'"{text[start:end]}"')
-                    continue
-            out.append(text[start:i])
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)

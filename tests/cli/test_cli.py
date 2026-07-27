@@ -2994,6 +2994,51 @@ def test_run_from_openclaw_agent_not_found(monkeypatch: pytest.MonkeyPatch) -> N
     run_chat.assert_not_called()
 
 
+def test_run_from_openclaw_forwards_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omnigent.onboarding.openclaw_config import (
+        OpenClawAgentEntry,
+        OpenClawDiscovery,
+    )
+
+    discovery = OpenClawDiscovery(
+        agents=(
+            OpenClawAgentEntry(
+                name="Gemini CLI",
+                command="gemini",
+                args=("--experimental-acp",),
+                source="acpx",
+                path=tmp_path / "config.json",
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "omnigent.onboarding.openclaw_config.discover_openclaw_agents",
+        lambda: discovery,
+    )
+    monkeypatch.setattr("omnigent.cli._load_effective_config", dict)
+    run_chat = Mock()
+    monkeypatch.setattr("omnigent.chat.run_chat", run_chat)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "run",
+            "--from-openclaw",
+            "Gemini CLI",
+            "--server",
+            "https://example.com",
+            "-p",
+            "hello",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert run_chat.call_args.kwargs["server_url"] == "https://example.com"
+
+
 def test_materialize_harness_launcher_file_kimi_gets_os_env() -> None:
     """``run --harness kimi`` bakes a caller-process ``os_env`` so the SDK kimi
     operates in the user's current directory, matching claude-sdk.

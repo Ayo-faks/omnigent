@@ -90,6 +90,76 @@ def test_discovers_both_config_shapes(tmp_path: Path) -> None:
     ]
 
 
+def test_translator_deduplicates_same_agent_across_sources(tmp_path: Path) -> None:
+    acpx = tmp_path / "acpx.json"
+    openclaw = tmp_path / "openclaw.json"
+    acpx.write_text(
+        '{"agents": {"Gemini CLI": {"command": "gemini", "args": ["--experimental-acp"]}}}',
+        encoding="utf-8",
+    )
+    openclaw.write_text(
+        "{plugins: {entries: {acpx: {config: {agents: "
+        '{"Gemini CLI": {command: "gemini", args: ["--experimental-acp"]}}}}}}}',
+        encoding="utf-8",
+    )
+
+    discovery = discover_openclaw_agents(acpx_path=acpx, openclaw_path=openclaw)
+    entries = openclaw_agents_to_acp_entries(discovery.agents)
+
+    assert entries == [
+        AcpAgentEntry(slug="gemini-cli", name="Gemini CLI", command="gemini --experimental-acp")
+    ]
+
+
+def test_openclaw_json5_supports_escaped_apostrophes(tmp_path: Path) -> None:
+    openclaw = tmp_path / "openclaw.json"
+    openclaw.write_text(
+        r"""
+        {plugins: {entries: {acpx: {config: {agents: {
+          Helper: {command: 'helper', args: ['it\'s-valid']},
+        }}}}}}
+        """,
+        encoding="utf-8",
+    )
+
+    discovery = discover_openclaw_agents(
+        acpx_path=tmp_path / "missing.json", openclaw_path=openclaw
+    )
+
+    assert discovery.errors == ()
+    assert discovery.agents[0].args == ("it's-valid",)
+
+
+def test_agent_args_are_shell_quoted(tmp_path: Path) -> None:
+    acpx = tmp_path / "config.json"
+    acpx.write_text(
+        '{"agents": {"Helper": {"command": "helper", "args": ["a b", "--flag=v;rm"]}}}',
+        encoding="utf-8",
+    )
+
+    discovery = discover_openclaw_agents(acpx_path=acpx, openclaw_path=tmp_path / "missing.json")
+
+    assert discovery.errors == ()
+    assert discovery.agents[0].command_line == "helper 'a b' '--flag=v;rm'"
+
+
+def test_non_string_args_are_reported_without_coercion(tmp_path: Path) -> None:
+    openclaw = tmp_path / "openclaw.json"
+    openclaw.write_text(
+        "{plugins: {entries: {acpx: {config: {agents: "
+        '{Helper: {command: "helper", args: [1.20]}}}}}}}',
+        encoding="utf-8",
+    )
+
+    discovery = discover_openclaw_agents(
+        acpx_path=tmp_path / "missing.json", openclaw_path=openclaw
+    )
+
+    assert discovery.agents == ()
+    assert len(discovery.errors) == 1
+    assert "args must be a string or list of strings" in discovery.errors[0].message
+
+
 def test_malformed_config_is_soft_error(tmp_path: Path) -> None:
     acpx = tmp_path / "config.json"
     acpx.write_text('{"agents": ', encoding="utf-8")
@@ -151,7 +221,7 @@ def test_resolves_single_agent_by_name_or_slug(tmp_path: Path) -> None:
     assert by_slug == expected
 
 
-def test_import_merge_is_idempotent_by_slug() -> None:
+def test_import_merge_is_idempotent() -> None:
     imported = [
         AcpAgentEntry(slug="gemini-cli", name="Gemini CLI", command="gemini --experimental-acp")
     ]
@@ -160,5 +230,23 @@ def test_import_merge_is_idempotent_by_slug() -> None:
     rerun_merged, rerun_added = merge_imported_acp_entries(imported, existing=merged)
 
     assert added == imported
+    assert rerun_added == []
+    assert rerun_merged == merged
+
+
+def test_import_merge_suffixes_preexisting_slug_collision() -> None:
+    existing = [AcpAgentEntry(slug="gemini-cli", name="Gemini CLI", command="custom-gemini --acp")]
+    imported = [
+        AcpAgentEntry(slug="gemini-cli", name="Gemini CLI", command="gemini --experimental-acp")
+    ]
+
+    merged, added = merge_imported_acp_entries(imported, existing=existing)
+    rerun_merged, rerun_added = merge_imported_acp_entries(imported, existing=merged)
+
+    expected = AcpAgentEntry(
+        slug="gemini-cli-2", name="Gemini CLI", command="gemini --experimental-acp"
+    )
+    assert added == [expected]
+    assert merged == [*existing, expected]
     assert rerun_added == []
     assert rerun_merged == merged

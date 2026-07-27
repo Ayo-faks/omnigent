@@ -1550,18 +1550,24 @@ def _build_acp_spawn_env(
         resolve_acp_agent,
     )
 
-    embedded = cfg.get("acp_agent") if isinstance(cfg, dict) else None
+    has_embedded = isinstance(cfg, dict) and "acp_agent" in cfg
+    embedded = cfg.get("acp_agent") if has_embedded else None
     agent: AcpAgentEntry | None = None
-    if isinstance(embedded, dict):
+    if has_embedded:
+        if not isinstance(embedded, dict):
+            raise ValueError("executor acp_agent must be a mapping with name and command")
         name = embedded.get("name")
         command = embedded.get("command")
-        if isinstance(name, str) and name.strip() and isinstance(command, str) and command.strip():
-            agent = AcpAgentEntry(
-                slug=slug or "agent",
-                name=name.strip(),
-                command=command.strip(),
-            )
-    elif embedded is None:
+        if not (
+            isinstance(name, str) and name.strip() and isinstance(command, str) and command.strip()
+        ):
+            raise ValueError("executor acp_agent requires non-empty string name and command")
+        agent = AcpAgentEntry(
+            slug=slug or "agent",
+            name=name.strip(),
+            command=command.strip(),
+        )
+    else:
         agent = resolve_acp_agent(slug) if slug else None
         if agent is None:
             agents = acp_agents()
