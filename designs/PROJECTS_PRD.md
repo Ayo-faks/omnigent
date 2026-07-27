@@ -583,9 +583,19 @@ worktree stored on the project and seeded into the new-chat composer.
     config prefills nothing project-specific (just the generic defaults).
 
 ### TODO
-- ⬜ **Phase 3 — memory & context (P4b/P4c)** — new `project_memory` /
-  `project_context` tables + agent read/write + injection (§8.2/§8.3).
-- ⬜ **Phase 4 — label consolidation (deferred; not required for the feature).**
+**Postponed pending customer evidence.** Phases 1–2 (first-class projects +
+defaults) are shipped. Phases 3 and 4 below are **not scheduled** — we're holding
+them until we have customer signal that the demand is real (project memory/context
+being asked for; enough production label-projects to justify consolidation) rather
+than building ahead of it. Both are additive and independent, so either can start
+whenever the evidence lands.
+
+- ⏸️ **Phase 3 — memory & context (P4b/P4c)** — new `project_memory` /
+  `project_context` tables + agent read/write + injection (§8.2/§8.3). Postponed:
+  the largest remaining chunk and the one with open design questions (§14 Q5/Q6);
+  wait for customer evidence that cross-session project memory/context is wanted
+  before committing to a storage + agent-surface design.
+- ⏸️ **Phase 4 — label consolidation (postponed; not required for the feature).**
   Because the server dual-reads (a session is "in project X" if it has *either* a
   `project_id` *or* the `omni_project` label — see §13), the first-class feature
   works end-to-end without touching the label path, so this whole phase is
