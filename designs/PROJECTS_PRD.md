@@ -518,15 +518,16 @@ folder), carrying the first-class `id` when one exists.
 - ✅ Tests: `projectsApi` unit tests; reworked hook tests (resolve→file,
   create-on-demand, archive+unfile+delete); sidebar/composer suites updated;
   server union test. Empty folders read "No sessions".
-- ⬜ **Deferred (kept on the name/label path via dual-read):** the new-session
-  prefill state machine and the Settings archived-only project picker still read
-  the `omni_project` label; retiring label reads from the UI is gated on the
-  Phase 4 backfill. TS client types are not codegen-regenerated (hand-written
-  `projectsApi`).
+- ⬜ **Deferred (kept on the name/label path via dual-read):** the Settings
+  archived-only project picker (`fetchAllArchivedProjectNames`) still derives its
+  options from the `omni_project` label; retiring that label read from the UI is
+  gated on the Phase 4 backfill. (The new-session prefill machine no longer reads
+  the label — it was collapsed to config-only in Phase 2, see below.) TS client
+  types are not codegen-regenerated (hand-written `projectsApi`).
 
-### TODO
-- ✅ **Benchmark (#3094).** Added `list_projects` (sidebar project list,
-  dual-read union) and `list_project_sessions` (`?project=` folder fetch)
+### Done (Benchmark — #3094)
+- ✅ **Latency journeys + corpus seeder.** Added `list_projects` (sidebar project
+  list, dual-read union) and `list_project_sessions` (`?project=` folder fetch)
   latency journeys to `dev/benchmarks/omnigent`, mirroring the `list_sessions`
   hot read path. The corpus seeder now also seeds first-class `projects` rows
   and files a configurable fraction of sessions into them (`--projects`,
@@ -534,7 +535,10 @@ folder), carrying the first-class `id` when one exists.
   empty project set, and the PR benchmark regression check runs on
   `dev/benchmarks/**` changes. CRUD writes remain unbenchmarked (infrequent
   single-row ops).
-- 🚧 **Phase 2 — project defaults (P4a).** In progress, split across PRs:
+
+### Done (Phase 2 — project defaults, P4a)
+Complete, shipped across several PRs: default host/workspace/agent + an opt-in
+worktree stored on the project and seeded into the new-chat composer.
   - ✅ **Backend `config` column.** Added a nullable `config` column to
     `projects` (migration `b3c4d5e6f7a8`, additive with a clean downgrade) and
     plumbed it through the store/entity/API. `config` is an **opaque JSON
@@ -583,6 +587,8 @@ folder), carrying the first-class `id` when one exists.
     `["project-newest-session"]` cache invalidations) is removed. Stored config
     is the single source of truth for a project's defaults; a project with no
     config prefills nothing project-specific (just the generic defaults).
+
+### TODO
 - ⬜ **Phase 3 — memory & context (P4b/P4c)** — new `project_memory` /
   `project_context` tables + agent read/write + injection (§8.2/§8.3).
 - ⬜ **Phase 4 — label consolidation (deferred; not required for the feature).**
