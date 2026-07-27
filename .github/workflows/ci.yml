@@ -420,6 +420,44 @@ jobs:
           path: artifacts/
           retention-days: 14
 
+  # Layer 1 offline harness conformance (docs/harness-bench-design.md): declared
+  # capability matrix only — no network, no credentials, no live probes. Exits
+  # non-zero on DRIFT. Live (--live) stays nightly/on-demand, not a PR gate.
+  harness-bench:
+    name: Harness bench (offline)
+    needs: gate
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: ".python-version"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v3
+        with:
+          enable-cache: true
+
+      - name: Cache virtualenv
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: uv sync --locked --extra all --extra dev
+
+      - name: Run offline harness conformance matrix
+        shell: bash
+        run: |
+          env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u DATABRICKS_TOKEN \
+            uv run python -m tests.harness_bench --no-live --no-color
+
   coverage-report:
     name: Coverage report
     # Combines per-shard coverage into a coverage-summary artifact. Runs in the
