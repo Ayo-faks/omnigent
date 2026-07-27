@@ -7,7 +7,10 @@ mypy with the project config, fingerprints each error (path + code +
 message, line-agnostic), and exits non-zero only when the run produces
 signatures that are not covered by the committed baseline multiset.
 
-Graduate the rest by fixing errors and rewriting the baseline::
+When baseline signatures are no longer produced by the current run
+(errors that were fixed but not pruned), print a warning with a count and
+sample so the debt visibly shrinks instead of quietly re-admitting fixed
+bugs later. Rewriting is intentional::
 
     uv run python scripts/mypy_gate.py --write-baseline
 
@@ -26,11 +29,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPO_ROOT / "mypy-baseline.txt"
 DEFAULT_TARGET = "omnigent"
+# How many resolved (stale baseline) fingerprints to print as a sample.
+_STALE_SAMPLE = 10
 
 # path:line: error: message [code]
 _ERROR_RE = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+): error: (?P<msg>.+?)(?:  \[(?P<code>[^\]]+)\])?$"
 )
+
+# mypy uses 0 = clean, 1 = type errors found. Anything else is an invocation /
+# crash / blocking failure and must never look like a green gate.
+_MYPY_OK_EXIT = frozenset({0, 1})
 
 
 def _fingerprint(path: str, code: str, msg: str) -> str:
@@ -72,18 +81,24 @@ def write_baseline(path: Path, fingerprints: list[str]) -> None:
         "# omitted so edits that only shift lines do not create false 'new'\n"
         "# errors. Maintained by scripts/mypy_gate.py --write-baseline.\n"
         "# Failures: signatures present in a mypy run but not in this multiset.\n"
+        "# Stale entries (in baseline but not in the current run) warn; prune\n"
+        "# them with --write-baseline so fixed debt cannot quietly re-enter.\n"
     )
     body = "\n".join(fingerprints)
     path.write_text(header + body + ("\n" if body else ""), encoding="utf-8")
 
 
 def run_mypy(target: str) -> tuple[int, list[str], str]:
-    proc = subprocess.run(
-        [sys.executable, "-m", "mypy", target],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "mypy", target],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        # Interpreter cannot even spawn mypy — treat as hard failure.
+        return 127, [], f"failed to invoke mypy: {exc}"
     text = proc.stdout + proc.stderr
     return proc.returncode, parse_mypy_output(text), text
 
@@ -97,6 +112,21 @@ def new_errors(current: list[str], baseline: list[str]) -> list[str]:
         if count > 0:
             extras.extend([sig] * count)
     return extras
+
+
+def format_stale_warning(stale: list[str], *, sample: int = _STALE_SAMPLE) -> str:
+    """Human-readable warning for baseline entries the current run no longer emits."""
+    lines = [
+        f"::warning::{len(stale)} baseline fingerprint(s) were not produced by "
+        "this mypy run (fixed since the baseline was written, or otherwise gone). "
+        "Run `uv run python scripts/mypy_gate.py --write-baseline` to prune them "
+        "so those errors cannot silently re-enter later.",
+        f"Stale sample ({min(sample, len(stale))} of {len(stale)}):",
+    ]
+    for sig in stale[:sample]:
+        path, code, msg = sig.split("\t", 2)
+        lines.append(f"  {path}: [{code}] {msg}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,11 +150,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     rc, fingerprints, raw = run_mypy(args.target)
+
+    # Invocation / crash / blocking failure: never green, never rewrite baseline
+    # from a partial/empty run.
+    if rc not in _MYPY_OK_EXIT:
+        print(
+            f"::error::mypy exited {rc} (expected 0=clean or 1=type errors). "
+            "The gate refuses to pass when mypy did not run successfully.",
+            file=sys.stderr,
+        )
+        if raw.strip():
+            print(raw, file=sys.stderr)
+        return rc if rc != 0 else 1
+
     if args.write_baseline:
         write_baseline(args.baseline, fingerprints)
         print(
-            f"Wrote {len(fingerprints)} error fingerprint(s) to {args.baseline} "
-            f"(mypy exit {rc})."
+            f"Wrote {len(fingerprints)} error fingerprint(s) to {args.baseline} (mypy exit {rc})."
         )
         return 0
 
@@ -138,14 +180,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     extras = new_errors(fingerprints, baseline)
-    resolved = new_errors(baseline, fingerprints)
+    stale = new_errors(baseline, fingerprints)
 
     print(
         f"mypy: {len(fingerprints)} error(s); "
         f"baseline: {len(baseline)}; "
         f"new: {len(extras)}; "
-        f"resolved-since-baseline: {len(resolved)}"
+        f"resolved-since-baseline: {len(stale)}"
     )
+    if stale:
+        print(format_stale_warning(stale), file=sys.stderr)
+
     if extras:
         print("::error::New mypy errors not in mypy-baseline.txt:", file=sys.stderr)
         for sig in extras:
@@ -158,11 +203,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-
-    if rc not in (0, 1):
-        # mypy crashed / couldn't run — surface the raw output.
-        print(raw, file=sys.stderr)
-        return rc
 
     print("No new mypy errors vs baseline.")
     return 0

@@ -2,6 +2,8 @@
 # omitted so edits that only shift lines do not create false 'new'
 # errors. Maintained by scripts/mypy_gate.py --write-baseline.
 # Failures: signatures present in a mypy run but not in this multiset.
+# Stale entries (in baseline but not in the current run) warn; prune
+# them with --write-baseline so fixed debt cannot quietly re-enter.
 omnigent/api/routing/v1/routing_pb2.pyi	misc	Class cannot subclass "Message" (has type "Any")
 omnigent/api/routing/v1/routing_pb2.pyi	misc	Class cannot subclass "Message" (has type "Any")
 omnigent/api/routing/v1/routing_pb2.pyi	type-arg	Missing type arguments for generic type "Mapping"
