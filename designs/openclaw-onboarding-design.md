@@ -37,20 +37,39 @@ first step.
 - Any modification to OpenClaw or upstream contribution to acpx.
 - A generic "export format" or `--format=openclaw` flag.
 
-## Prerequisites (blocking unknowns)
+## Prerequisites (format research)
 
-Both options depend on file formats we have **not yet confirmed** — OpenClaw is
-on the managed-device blocklist, so this is web/repo research plus a test
-fixture from a user's machine, not local runtime inspection:
+Both options read OpenClaw's own on-disk files. Public sources (the
+`openclaw/openclaw` and `openclaw/acpx` repos, docs, npm) already answer most of
+the format questions; the one remaining gap needs a real file from a running
+install, which any OSS contributor on an unmanaged machine can capture in one
+command.
 
-| Unblocks | Unknown | Needed for |
-|---|---|---|
-| A | acpx agent-config file: path + schema (where the registered-agent name→command list lives) | Config translator input |
-| B | OpenClaw session store: on-disk path + format (JSONL? SQLite? Node data dir?) + record schema | Transcript reader |
+| Unblocks | Format | Confidence | Source |
+|---|---|---|---|
+| A | **acpx config** `~/.acpx/config.json` (JSON) — `agents` object maps name → `{command, args}`. OpenClaw wraps the same under `plugins.entries.acpx.config.agents` in `~/.openclaw/openclaw.json` (JSON5). | **High** — confirmed by acpx docs + OpenClaw docs | acpx `config init` schema; OpenClaw ACP-agents-setup |
+| B | **Session store** moved to **SQLite**: per-agent DB at `~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`; older installs used legacy `sessions.json` / JSONL. | **Medium** — path/format known; the **table/column schema inside the DB is not** and gates the reader | OpenClaw database-first / sessions docs |
 
-Everything below is contingent on resolving the relevant row. The Omnigent-side
-plumbing is small and well-understood; the format reverse-engineering is the
-real cost.
+Two consequences for the design:
+
+- **A is effectively unblocked** — the translator input shape is known (name →
+  `{command, args}`), so M1 can proceed on public info alone.
+- **B needs one artifact**: a `.schema` dump (or a sample `.sqlite`) from a real
+  OpenClaw install. Note this makes B the **first SQLite-backed importer** — the
+  existing readers (claude/codex/pi/qwen) are all JSONL — so the reader can't
+  just mirror `load_pi_session` line-for-line; it queries a DB instead of
+  parsing a file. See [Reader contract](#reader-contract).
+
+The Omnigent-side plumbing is small and well-understood; confirming B's table
+schema is the only real remaining unknown.
+
+> **Compliance note (not a gate for OSS).** A Databricks managed-device check
+> flags the OpenClaw family as prohibited, but that policy governs
+> Databricks-managed devices — it does **not** apply to OSS Omnigent users
+> running OpenClaw on their own machines, who are the audience for this feature.
+> It has one practical effect only: OpenClaw can't be installed on *this
+> execution/CI environment*, so live fixtures must come from an OSS contributor's
+> unmanaged machine rather than from here.
 
 ## Option A — Config bridge
 
@@ -131,21 +150,33 @@ honest without breaking existing `--harness` usage.
 
 ### Reader contract
 
-Mirror `load_pi_session` (`local.py:839`) as the reference implementation:
+Unlike the existing importers (claude/codex/pi/qwen), OpenClaw stores sessions
+in **SQLite**, not JSONL — so `load_openclaw_session` follows the *structure* of
+`load_pi_session` (`local.py:839`) but **queries a DB instead of parsing a
+file**. The `LocalSessionImport` return contract is identical; only the read
+mechanism differs. Concrete queries depend on M0's schema dump.
 
-- Resolve the store root from an env override (e.g. `OPENCLAW_HOME`) falling
-  back to the default data dir.
-- Locate the transcript for `session_id`; raise `SessionImportNotFoundError`
-  when missing/ambiguous/empty.
-- Parse records; select the active branch if the store is branched.
-- Normalize each record to `NewConversationItem` (`omnigent/entities/
+- Resolve the store root from an env override (propose `OPENCLAW_HOME`) falling
+  back to `~/.openclaw`; locate the per-agent DB
+  `agents/<agentId>/agent/openclaw-agent.sqlite` (and support the global
+  `state/openclaw.sqlite` if sessions live there — M0 confirms which).
+- Open the DB **read-only** (`file:…?mode=ro` URI) via the stdlib `sqlite3`
+  module (no new dependency); query the session's message rows ordered by
+  timestamp/sequence. Raise `SessionImportNotFoundError` when the DB or the
+  `session_id` row is missing, and on empty history.
+- Handle the **legacy `sessions.json` / JSONL** layout as a fallback for older
+  installs (the DB-first migration is recent), or explicitly scope this reader
+  to DB-backed installs and document the cutoff — decide once M0 shows how
+  common the legacy layout is.
+- Normalize each message row to `NewConversationItem` (`omnigent/entities/
   conversation.py:668`) with `MessageData` for messages.
 - Return `LocalSessionImport(source="openclaw", external_session_id=…,
   workspace=…, items=…)`.
 
 `list_recent_local_session_ids("openclaw", limit=…)` returns recent parent
-session ids for the `--last N` batch path, using the same
-`_recent_unique_session_ids` helper.
+session ids for the `--last N` batch path — here a SQL query over the session
+table ordered by recency, rather than the `_recent_unique_session_ids`
+file-mtime helper the JSONL readers use.
 
 ### Provenance & idempotency
 
@@ -168,9 +199,10 @@ existing note.
   `acp_agents_settings` dict; test idempotent re-run. Manual: run `omnigent
   setup`, confirm agents appear in the harness picker as `acp:<slug>` and a
   turn dispatches.
-- **B:** unit-test `load_openclaw_session` against captured transcript fixtures
-  (mirror `tests/**` for pi/qwen import); test not-found/ambiguous/empty raise
-  `SessionImportNotFoundError`; test `list_recent_local_session_ids` ordering.
+- **B:** unit-test `load_openclaw_session` against a committed sample
+  `openclaw-agent.sqlite` fixture (build a tiny one from M0's schema); test
+  not-found/ambiguous/empty raise `SessionImportNotFoundError`; test
+  `list_recent_local_session_ids` ordering.
   Manual: `omnigent import --harness openclaw --session <id>` and verify the
   session renders with provenance labels.
 - No real OpenClaw runtime required (blocklisted) — all tests run off captured
@@ -185,54 +217,57 @@ they exist to expose sequencing and dependencies early, not to be precise.
 
 ### What gates everything (do this before writing code)
 
-Two format unknowns (see Prerequisites) block the readers, and one policy
-question blocks *shipping*. These are cheap to resolve and expensive to
-discover mid-build, so they come first:
+Only one unknown still gates a build: **B's SQLite table schema** (see
+Prerequisites). A's config format is already confirmed from public sources, so
+M1 needs no upfront de-risk. M0 therefore shrinks to a single, B-only artifact:
 
-- **M0 — De-risk (≈2–3 days).** Resolve the acpx config schema (unblocks A) and
-  the OpenClaw session-store format (unblocks B) from a captured fixture on a
-  sanctioned machine; get a yes/no on the compliance question. **Exit criterion:
-  one real acpx config file and one real transcript file checked in as test
-  fixtures, plus a written compliance answer.** If compliance says no, we stop
-  here — that's the point of doing it first.
+- **M0 — Capture B's fixture (≈0.5 day, off critical path for A).** Get a
+  `.schema` dump (or a sample `openclaw-agent.sqlite`) from a real OpenClaw
+  install on an OSS contributor's machine and check it in as a test fixture.
+  **Exit criterion: one real session-DB schema committed.** This blocks M2 only;
+  M1 can start immediately.
 
 ### Milestones and sequencing
 
 ```
-M0 de-risk ──┬──► M1 config bridge (A) ──► M2 chat import (B)
-             │         │                        │
-             └─ compliance ─┘ (both gated on M0's yes/no)
+M1 config bridge (A) ──► M2 chat import (B)
+                              ▲
+M0 capture B fixture ─────────┘  (M0 blocks M2 only; A is already unblocked)
 ```
 
-A and B are independent code paths, but we sequence them A→B deliberately (see
-prioritization). Each milestone is independently shippable and independently
-useful.
+A and B are independent code paths. M1 can start now; M0 (a quick fixture grab)
+runs in parallel and only gates M2. Each milestone is independently shippable
+and independently useful.
 
 | Milestone | Scope | Depends on | Rough ETA |
 |---|---|---|---|
-| **M0 — De-risk** | Confirm both formats; compliance yes/no; check in fixtures | — | 2–3 days |
-| **M1 — Config bridge (Option A)** | Reader + translator to `AcpAgentEntry`; `omnigent setup` step; unit tests off fixtures | M0 (acpx schema + compliance) | 3–4 days |
-| **M2 — Chat import (Option B)** | `"openclaw"` in `ImportSource` + `--harness` `Choice`; `--source` alias (`--harness` deprecated); `load_openclaw_session`; dispatcher branches; unit tests off fixtures | M0 (session format + compliance) | 3–5 days |
+| **M0 — Capture B fixture** | Commit a real `openclaw-agent.sqlite` schema dump | — (needs an OSS contributor's install) | ~0.5 day |
+| **M1 — Config bridge (Option A)** | Reader + translator to `AcpAgentEntry`; `omnigent setup` step; unit tests off fixtures | — (format confirmed) | 3–4 days |
+| **M2 — Chat import (Option B)** | `"openclaw"` in `ImportSource` + `--harness` `Choice`; `--source` alias (`--harness` deprecated); SQLite `load_openclaw_session`; dispatcher branches; unit tests off fixtures | M0 (session-DB schema) | 3–5 days |
 
 ### Prioritization — and *why*
 
-To avoid the P0/P1 ambiguity Cathy flagged, the ordering below is **sequencing
-by value-and-risk, not a statement of importance.** "M1 before M2" means *build
-M1 first*, not *M2 doesn't matter*. Rationale:
+The ordering below is **sequencing by value-and-risk, not a statement of
+importance.** "M1 before M2" means *build M1 first*, not *M2 doesn't matter*.
+Rationale:
 
-1. **M0 first — dependency + kill-switch.** Everything downstream reads file
-   formats we haven't confirmed, and the whole effort is void if compliance says
-   no. Front-loading the cheapest work that can invalidate the project is the
-   highest-leverage sequencing decision here.
-2. **M1 (Option A) before M2 (Option B) — higher customer impact per unit
-   effort, lower risk.** A gets a user's coding agents *working* in Omnigent —
-   the core adoption CUJ ("I can do my work here") — and reuses the existing
-   `acp` harness, so its risk is low and its blast radius is one setup step. B
+1. **M1 (Option A) first — highest customer impact per unit effort, lowest
+   risk, and already unblocked.** A gets a user's coding agents *working* in
+   Omnigent — the core adoption CUJ ("I can do my work here") — reuses the
+   existing `acp` harness, and its input format is already confirmed, so it
+   needs no upfront de-risk. Its blast radius is one setup step. It goes first
+   because it's the most valuable *and* the readiest.
+2. **M0 in parallel — a quick fixture grab that only gates M2.** B's one
+   remaining unknown (the SQLite table schema) is cheap to resolve but needs an
+   artifact from a real install. Kick it off alongside M1 so it's ready by the
+   time M2 starts; it never blocks A.
+3. **M2 (Option B) after — more effort, more fidelity risk, gated on M0.** B
    brings *history*, which improves migration but isn't required to be
-   productive, and carries more fidelity risk (depends on how much OpenClaw's
-   store records). So A is both more impactful and safer → it goes first.
-3. **Within each milestone, "reader before wiring."** The reader (parsing
-   OpenClaw's files) is the only novel, risk-bearing code; the wiring
+   productive. It's also the first **SQLite-backed** importer (all existing
+   readers are JSONL), so it carries more novelty risk and depends on M0's
+   schema. Lower readiness + lower marginal value → it follows A.
+4. **Within each milestone, "reader before wiring."** The reader (A's config
+   parse / B's SQLite query) is the only novel, risk-bearing code; the wiring
    (translator / dispatcher branch / CLI) is precedented and mechanical. Land
    and test the reader against fixtures first so the risky part is proven before
    the plumbing.
@@ -252,18 +287,18 @@ M1 first*, not *M2 doesn't matter*. Rationale:
 - Independent, additive changes — no flag strictly required, but gating the
   M1 setup step behind an existing onboarding flag is fine for a staged rollout.
 - Ship M1, then M2, each behind its own PR so value lands incrementally.
-- **Compliance sign-off from M0 is a hard gate** — neither milestone merges
-  until it's a documented yes.
+- No compliance gate for OSS users (see Prerequisites); M2 merges once M0's
+  schema fixture lands and its tests pass.
 
 ## Open questions
 
-1. acpx agent-config path + schema (blocks A).
-2. OpenClaw session-store path + format + record schema (blocks B).
+1. **B's session-DB table/column schema** — the one build-blocking unknown
+   (M0). Path/format are known (`~/.openclaw/agents/<id>/agent/
+   openclaw-agent.sqlite`); the row shape is not.
+2. How common is the **legacy `sessions.json` / JSONL** layout in the wild —
+   worth a fallback path, or scope the reader to DB-backed installs?
 3. Env-var override name for the OpenClaw data dir (propose `OPENCLAW_HOME`,
    matching the `PI_CODING_AGENT_DIR` / `QWEN_HOME` precedent).
-4. Compliance: OpenClaw is on a Databricks managed-device blocklist. Confirm
-   with the check's owner that reading a user's local OpenClaw data for
-   migration is sanctioned before implementation.
 
 ## Sources
 

@@ -29,8 +29,9 @@ OpenClaw's own files and require **no changes to OpenClaw**:
   into Omnigent's `acp:` config block. Their coding agents work in Omnigent
   day one. Effort: **days**.
   - **Option B — Chat import**: add `"openclaw"` as an import source so users
-  migrate existing conversations. Effort: **days once the on-disk format is
-  known** (that reverse-engineering is the only real unknown).
+  migrate existing conversations. OpenClaw uses a **SQLite** session store
+  (a first for our importers, which are all JSONL). Effort: **days once the
+  DB table schema is grabbed** — the one remaining unknown.
 
 ## Background: what OpenClaw actually is
 
@@ -163,8 +164,10 @@ on.
 
 **Effort: days.**
 
-**Open item:** confirm the acpx agent-config file location/schema (where
-OpenClaw persists the registered-agent list) so the translator can read it.
+**Format: confirmed.** acpx stores agents in `~/.acpx/config.json` as an
+`agents` object mapping name → `{command, args}`; OpenClaw wraps the same shape
+under `plugins.entries.acpx.config.agents` in `~/.openclaw/openclaw.json`. The
+translator input is known — no de-risk needed before building.
 
 ### Option B — Chat import (bring your history)
 
@@ -203,12 +206,16 @@ labels (`models.py`), so a source session is only imported once.
 - ⚠️ Fidelity depends on OpenClaw's format — like Qwen/Kiro/Kimi, may preserve
 visible messages but not native tool activity.
 
-**Effort: days once the format is known.**
+**Effort: days once the table schema is known.**
 
-**Blocker:** OpenClaw's on-disk session store — path + format (JSONL? SQLite?
-Node data dir?) — is **not yet confirmed**. The docs cover ACP setup, not the
-persistence layer. This reverse-engineering is the only real work in B; the
-plumbing is trivial.
+**Format: mostly confirmed, one gap.** OpenClaw moved to **SQLite** — sessions
+live in a per-agent DB at `~/.openclaw/agents/<agentId>/agent/
+openclaw-agent.sqlite` (older installs used legacy `sessions.json`/JSONL). Path
+and format are known; the **table/column schema inside that DB** is not, and it
+gates the reader. That's a one-command `sqlite3 .schema` grab from a real
+install — the only remaining unknown. Note B would be the **first
+SQLite-backed importer** (existing readers are all JSONL), so it queries a DB
+rather than parsing a file.
 
 ## Comparison
 
@@ -219,28 +226,29 @@ plumbing is trivial.
 | New code                | Config translator + setup step | One reader in existing dispatcher | Full native harness      |
 | Touches OpenClaw?       | No (reads its config)          | No (reads its transcripts)        | No (drives its CLI)      |
 | `--format` flag needed? | No                             | No                                | No                       |
-| Effort                  | Days                           | Days (after format known)         | Weeks                    |
+| Effort                  | Days (format confirmed)        | Days (after DB schema grab)       | Weeks                    |
 | Policy control          | Full (Omnigent)                | Full (Omnigent)                   | Split across two engines |
 | Fragility               | Low (stable ACP)               | Low (file read)                   | High (scraping)          |
 
 
 ## Open questions / next steps
 
-1. **acpx config schema (unblocks A):** where does OpenClaw persist its
- registered ACP-agent list, and in what format?
-2. **OpenClaw session store (unblocks B):** on-disk path + format of chat
- history. This is the gating unknown for B.
-3. **Which value first?** A (get agents working) is the higher-leverage,
- lower-risk start; B (bring history) improves migration once A lands.
+1. **B's session-DB table schema (the one gating unknown):** path/format are
+ known (`~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite`); the row shape
+ is not. A `sqlite3 .schema` dump from a real install unblocks B.
+2. **Which value first?** A (get agents working) is the higher-leverage,
+ lower-risk start and its format is already confirmed, so it can begin now; B
+ (bring history) follows once the schema grab lands.
 
-## Compliance caveat
+## Compliance note (not a blocker for OSS)
 
-A Databricks managed-device compliance check currently flags the
-**Clawdbot/Moltbot/OpenClaw** family as **prohibited** (blocks the device from
-authenticating). Before investing in either option, confirm with the owner of
-that check whether OpenClaw *interop* is sanctioned — the onboarding paths here
-read a user's OpenClaw data on *their* machine, but the policy signal is worth
-resolving first.
+A Databricks managed-device compliance check flags the
+**Clawdbot/Moltbot/OpenClaw** family as **prohibited**. That policy governs
+**Databricks-managed devices** — it does **not** apply to OSS Omnigent users
+running OpenClaw on their own machines, who are the audience for this feature.
+Its only practical effect: OpenClaw can't be installed on our own
+execution/CI environment, so live fixtures (e.g. B's `.sqlite` schema) must
+come from an OSS contributor's unmanaged machine.
 
 ## Sources
 
