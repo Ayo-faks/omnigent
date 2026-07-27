@@ -26,10 +26,12 @@ _check-uv:
 # networks still need the proxy for build-system.requires fetches).
 #
 # So we use `--frozen` (install pins, never touch the lock) plus an explicit
-# pyproject.toml-vs-uv.lock mtime staleness gate below. CI remains the
-# `--locked` freshness gate. Pinning `index-url` in the repo's uv.toml would
-# make local and CI agree on resolution, but is deferred: it breaks proxy-only
-# installs until those networks can reach pypi.org or a transparent mirror.
+# pyproject.toml-vs-uv.lock mtime staleness gate below (skip with
+# OMNIGENT_SKIP_LOCK_STALENESS=1 when git left misleading mtimes). CI remains
+# the `--locked` freshness gate. Pinning `index-url` in the repo's uv.toml
+# would make local and CI agree on resolution, but is deferred: it breaks
+# proxy-only installs until those networks can reach pypi.org or a
+# transparent mirror — see the PR for the owner decision.
 #
 # `--inexact` keeps optional harness extras (cursor / copilot / antigravity)
 # that `omnigent setup` may have installed; `--extra all` only adds
@@ -43,10 +45,17 @@ _ensure-uv:
     fi
     # Fail if the manifest is newer than the lock — `--frozen` would otherwise
     # silently install a stale environment after a pyproject.toml edit.
-    if [[ pyproject.toml -nt uv.lock ]]; then
-        echo "error: pyproject.toml is newer than uv.lock (lock may be stale)." >&2
-        echo "  Re-resolve with:  just relock && just normalize-locks" >&2
-        echo "  Then re-run:      just ensure" >&2
+    # Git does not guarantee relative mtimes across checkout/stash/rebase, so
+    # a false positive can block ensure/lint; skip with the env var below.
+    if [[ "${OMNIGENT_SKIP_LOCK_STALENESS:-}" != "1" ]] && [[ pyproject.toml -nt uv.lock ]]; then
+        echo "error: pyproject.toml is newer than uv.lock." >&2
+        echo "  This check asserts the lock is at least as new as the manifest" >&2
+        echo "  so \`uv sync --frozen\` does not silently install a stale env." >&2
+        echo "  Options:" >&2
+        echo "    1. Re-resolve:  just relock && just normalize-locks" >&2
+        echo "    2. Skip gate:   OMNIGENT_SKIP_LOCK_STALENESS=1 just ensure" >&2
+        echo "       (use when git left misleading mtimes but the lock is valid)" >&2
+        echo "    3. Then re-run: just ensure" >&2
         exit 1
     fi
     set +e
