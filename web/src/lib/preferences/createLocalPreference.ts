@@ -7,8 +7,9 @@
  *
  * Migrate remaining `*Preferences.ts` modules by wrapping them with
  * {@link createLocalPreference}, setting `appearance: true` when the setting
- * belongs in Appearance → Reset, then deleting the matching key from the
- * legacy list in `SettingsPage` (`LEGACY_APPEARANCE_STORAGE_KEYS`). Keep the
+ * belongs in Appearance → Reset, then wiring it in `appearancePrefs.ts`
+ * (barrel import + `EXPECTED_APPEARANCE_STORAGE_KEYS`, remove from
+ * `LEGACY_APPEARANCE_STORAGE_KEYS`). Keep the
  * same `key` (or supply an explicit `parse` migration) so persisted values
  * survive the upgrade.
  */

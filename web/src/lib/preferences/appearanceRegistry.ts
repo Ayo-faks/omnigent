@@ -5,12 +5,18 @@
  * Appearance reset dialog resets every registered preference and clears their
  * storage keys — so adding a setting updates reset automatically.
  *
+ * Registration is an import side-effect. App init must import
+ * `./appearancePrefs` (the eager barrel) so every Appearance preference is
+ * registered regardless of which routes have loaded. The anti-rot test in
+ * `appearancePrefs.test.ts` asserts the registered key set.
+ *
  * ## Migrating a remaining preference
  *
  * 1. Replace its read/write helpers with `createLocalPreference({ ..., appearance: true })`.
  * 2. Keep the same `key` and `parse` the existing stored format (or migrate explicitly).
- * 3. Remove that key from `LEGACY_APPEARANCE_STORAGE_KEYS` in `SettingsPage.tsx`.
- * 4. Drop the matching hand-rolled write/apply calls from `resetAppearance`.
+ * 3. Side-effect-import the module from `appearancePrefs.ts` and add its key to
+ *    `EXPECTED_APPEARANCE_STORAGE_KEYS`; remove it from `LEGACY_APPEARANCE_STORAGE_KEYS`.
+ * 4. Drop the matching hand-rolled write/apply calls from `resetAppearance` in Settings.
  * 5. Optionally switch the Settings control to `usePreference(pref)`.
  */
 

@@ -11,3 +11,7 @@ export {
   resetAppearancePreferences,
   type AppearancePreference,
 } from "./appearanceRegistry";
+export {
+  EXPECTED_APPEARANCE_STORAGE_KEYS,
+  LEGACY_APPEARANCE_STORAGE_KEYS,
+} from "./appearancePrefs";

@@ -97,7 +97,10 @@ import {
   type ThemeMode,
 } from "@/components/theme/themeMode";
 import { usePreference } from "@/hooks/usePreference";
-import { resetAppearancePreferences } from "@/lib/preferences";
+import {
+  LEGACY_APPEARANCE_STORAGE_KEYS,
+  resetAppearancePreferences,
+} from "@/lib/preferences";
 import {
   applyUiFontFamily,
   clampUiFontSizePx,
@@ -796,17 +799,9 @@ function HideUnconfiguredHarnessesControl() {
 
 /**
  * Appearance localStorage keys not yet owned by `createLocalPreference(...,
- * { appearance: true })`. Reset clears these explicitly. Remove a key here
- * when its module migrates — the registry then owns reset for that setting.
+ * { appearance: true })` live in {@link LEGACY_APPEARANCE_STORAGE_KEYS}
+ * (`lib/preferences/appearancePrefs.ts`). Reset clears them explicitly.
  */
-const LEGACY_APPEARANCE_STORAGE_KEYS = [
-  "omnigent:ui-font-family",
-  "omnigent:code-font-size",
-  "omnigent:code-font-family",
-  "omnigent:ui-theme-palette",
-  "omnigent:custom-theme",
-  "omnigent:hide-unconfigured-harnesses",
-] as const;
 
 function AppearanceSection() {
   // Embedded: the host owns light/dark, so the Mode and Color theme pickers
@@ -827,9 +822,9 @@ function AppearanceSection() {
     // `appearance: true` picks it up here automatically.
     resetAppearancePreferences();
 
-    // Legacy appearance prefs not yet on the declarative layer. Shrink this
-    // block (and LEGACY_APPEARANCE_STORAGE_KEYS) as each module migrates —
-    // see `web/src/lib/preferences/appearanceRegistry.ts`.
+    // Legacy appearance prefs not yet on the declarative layer. Shrink
+    // LEGACY_APPEARANCE_STORAGE_KEYS (and this block) as each module migrates —
+    // see `web/src/lib/preferences/appearancePrefs.ts`.
     writeThemePalette(DEFAULT_PALETTE);
     applyThemePalette(DEFAULT_PALETTE);
     writeCustomTheme(DEFAULT_CUSTOM_THEME);
