@@ -118,6 +118,24 @@ protocol.
   hint, never a hard gate — the agent owns its own install.
 - No secrets written (the `acp:` block deliberately carries no credential ref).
 
+### Stretch (optional, non-blocking): one-shot `--from-openclaw`
+
+A convenience wrapper that translates a **single** OpenClaw-registered agent on
+the fly and dispatches it **without persisting** — e.g.
+`omni run --from-openclaw <agent> …`. It lets a user try one OpenClaw agent
+without committing to the full `setup` import.
+
+- **Reuses A's core** reader + translator; the only new work is run-path wiring
+  (resolve one agent → ephemeral `AcpAgentEntry` → dispatch), writing nothing to
+  config.
+- **Differs in semantics:** run-time + ephemeral, vs. the core path's
+  config-time + persisted `acp:` block.
+- **Explicitly non-blocking.** This is not part of A's core acceptance criteria;
+  the persisted config bridge must stay independently shippable. Pick it up only
+  after the core lands, or split it into a follow-up if run-path wiring grows.
+
+Tracked as the stretch item on issue #3351.
+
 ## Option B — Chat import
 
 ### Data flow
