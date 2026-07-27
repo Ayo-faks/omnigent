@@ -4888,6 +4888,45 @@ def test_list_conversations_filters_by_project_name_dual_read(
     assert labelled.id not in unfiled_ids
 
 
+def test_list_conversations_project_owner_decouples_namespace(
+    conversation_store: SqlAlchemyConversationStore,
+    db_uri: str,
+) -> None:
+    """``project_owner`` resolves the project name independently of ``owned_by``.
+
+    In local single-user mode the caller has no ACL/row-ownership filters
+    (``accessible_by=None``, ``owned_by=None``) but still needs project-name
+    resolution to work under the local user's namespace. The fallback to
+    ``owned_by`` is preserved for backwards compatibility.
+    """
+    from omnigent.stores.permission_store.sqlalchemy_store import (
+        SqlAlchemyPermissionStore,
+    )
+    from omnigent.stores.project_store.sqlalchemy_store import SqlAlchemyProjectStore
+
+    project_store = SqlAlchemyProjectStore(db_uri)
+    SqlAlchemyPermissionStore(db_uri).ensure_user("charlie")
+
+    project = project_store.create("c" * 32, "Work", "charlie")
+
+    first_class = conversation_store.create_conversation(title="first-class")
+    labelled = conversation_store.create_conversation(title="labelled")
+    conversation_store.set_conversation_project(first_class.id, project.id)
+    conversation_store.set_labels(labelled.id, {"omni_project": "Work"})
+
+    # Without project_owner, first-class membership cannot be resolved because
+    # owned_by is None, so only the legacy-label session matches.
+    no_owner = conversation_store.list_conversations(project="Work", owned_by=None)
+    assert {c.id for c in no_owner.data} == {labelled.id}
+
+    # With project_owner, the first-class project namespace resolves correctly
+    # even though no ownership/ACL filter is applied.
+    with_owner = conversation_store.list_conversations(
+        project="Work", owned_by=None, project_owner="charlie"
+    )
+    assert {c.id for c in with_owner.data} == {first_class.id, labelled.id}
+
+
 def test_list_conversations_filters_by_pinned_label(
     conversation_store: SqlAlchemyConversationStore,
 ) -> None:

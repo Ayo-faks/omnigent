@@ -66,7 +66,9 @@ from omnigent.server.auth import (
     LEVEL_EDIT,
     LEVEL_OWNER,
     LEVEL_READ,
+    RESERVED_USER_LOCAL,
     AuthProvider,
+    local_single_user_enabled,
 )
 from omnigent.server.background_session_titles import (
     BackgroundSessionTitleCoordinator,
@@ -823,11 +825,19 @@ def register_core_routes(
         # A specific project folder ("My sessions"-only) must show only the
         # viewer's own sessions — a session shared with them but filed under a
         # like-named project belongs on "Shared with me", not in this folder.
-        # Passing owned_by here also scopes the dual-read's first-class half:
-        # the store resolves the project NAME to the caller's own project id.
+        # ``project_owner`` scopes the first-class project NAME -> id lookup,
+        # while ``owned_by`` scopes the rows to the caller's own sessions.
         # The flat list (project=None) and Unfiled (project="") stay unscoped so
         # shared sessions still surface for the "Shared with me" tab.
-        owned_by = user_id if project else None
+        #
+        # Local single-user mode is the machine owner's runtime: drop the ACL
+        # and row-ownership filters so the operator sees every session. Keep
+        # ``project_owner`` set when a folder is requested so project-name
+        # resolution still happens under the local user's namespace.
+        is_local_single_user = user_id == RESERVED_USER_LOCAL and local_single_user_enabled()
+        accessible_by = None if is_local_single_user else user_id
+        owned_by = None if is_local_single_user else (user_id if project else None)
+        project_owner = user_id if project else None
         page = await asyncio.to_thread(
             conversation_store.list_conversations,
             limit=limit,
@@ -835,8 +845,9 @@ def register_core_routes(
             before=before,
             agent_id=agent_id,
             agent_name=agent_name,
-            accessible_by=user_id,
+            accessible_by=accessible_by,
             owned_by=owned_by,
+            project_owner=project_owner,
             has_agent_id=True,
             # The store treats ``None`` as "no kind filter"; the API
             # spells that ``kind=any`` to keep the param required-ish

@@ -2129,6 +2129,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         search_query: str | None = None,
         accessible_by: str | None = None,
         owned_by: str | None = None,
+        project_owner: str | None = None,
         include_archived: bool = False,
         project: str | None = None,
         pinned: bool = False,
@@ -2180,12 +2181,15 @@ class SqlAlchemyConversationStore(ConversationStore):
             archived rows alongside non-archived ones.
         :param project: Filter by project NAME, dual-reading both storage
             paths. A non-empty string returns sessions that EITHER have a
-            first-class membership (``metadata.project_id`` → ``owned_by``'s
-            project of this name) OR carry the legacy ``omni_project`` label
-            with this value. ``""`` returns sessions with NEITHER (unfiled).
-            ``None`` disables the filter. The name→id resolution is scoped to
-            ``owned_by`` (projects are owner-private), so pass ``owned_by``
-            alongside a specific name for the first-class half to resolve.
+            first-class membership (``metadata.project_id`` → ``project_owner``'s
+            project of this name, falling back to ``owned_by``) OR carry the
+            legacy ``omni_project`` label with this value. ``""`` returns
+            sessions with NEITHER (unfiled). ``None`` disables the filter.
+            The name→id resolution is scoped to ``project_owner`` (projects are
+            owner-private), so pass ``project_owner`` alongside a specific name
+            for the first-class half to resolve. When ``project_owner`` is
+            ``None`` the store falls back to ``owned_by`` for backwards
+            compatibility.
         :param pinned: When ``True``, restrict to sessions ``pinned_owner`` has
             pinned (their per-user ``omnigent.pinned.<user>`` label — the
             sidebar's Pinned section). ``False`` (default) disables the filter.
@@ -2326,6 +2330,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                 # label. The label is colocated on the AP DB (inline subquery);
                 # projects + metadata are on the Omnigent DB, so member ids are
                 # resolved there first, then combined with the label subquery.
+                project_lookup_owner = project_owner if project_owner is not None else owned_by
                 label_filed = select(SqlConversationLabel.conversation_id).where(
                     SqlConversationLabel.workspace_id == current_workspace_id(),
                     SqlConversationLabel.key == PROJECT_LABEL_KEY,
@@ -2356,9 +2361,10 @@ class SqlAlchemyConversationStore(ConversationStore):
                         SqlConversation.id.not_in(label_filed),
                     )
                 else:
-                    # Resolve the owner's project of this name → its member ids
-                    # (one join). No such project yields an empty match, so the
-                    # filter collapses to the label match alone (v1 behaviour).
+                    # Resolve the named project under ``project_lookup_owner``'s
+                    # namespace → its member ids (one join). No such project
+                    # yields an empty match, so the filter collapses to the
+                    # label match alone (v1 behaviour).
                     member_stmt = (
                         select(SqlConversationMetadata.id)
                         .join(
@@ -2368,7 +2374,7 @@ class SqlAlchemyConversationStore(ConversationStore):
                         .where(
                             SqlConversationMetadata.workspace_id == current_workspace_id(),
                             SqlProject.workspace_id == current_workspace_id(),
-                            SqlProject.owner_user_id == owned_by,
+                            SqlProject.owner_user_id == project_lookup_owner,
                             SqlProject.name == project,
                         )
                     )

@@ -608,6 +608,7 @@ class ConversationStore(ABC):
         search_query: str | None = None,
         accessible_by: str | None = None,
         owned_by: str | None = None,
+        project_owner: str | None = None,
         include_archived: bool = False,
         project: str | None = None,
         pinned: bool = False,
@@ -698,6 +699,13 @@ class ConversationStore(ABC):
             with them. Powers the per-project folder fetch, since
             projects only ever hold the owner's own sessions.
             ``None`` disables the filter.
+        :param project_owner: When set, resolve the project NAME under
+            *this* user's project namespace. This decouples project-name
+            resolution from row ownership and ACL, which matters for
+            admin / local-single-user views that must see all sessions
+            while still mapping project names to the right project id.
+            ``None`` falls back to ``owned_by`` for backwards compatibility.
+            Only used when ``project`` is a non-empty string.
         :param include_archived: When ``False`` (default), archived
             conversations are excluded. When ``True``, archived and
             non-archived conversations are both returned (the caller
@@ -706,11 +714,13 @@ class ConversationStore(ABC):
             first-class projects entity and the legacy ``omni_project``
             label (the sidebar's per-project folder fetch). A non-empty
             string returns sessions that EITHER have a first-class
-            membership (``metadata.project_id`` → ``owned_by``'s project of
-            this name) OR carry the ``omni_project`` label with this value.
+            membership (``metadata.project_id`` → ``project_owner``'s project of
+            this name, falling back to ``owned_by``) OR carry the
+            ``omni_project`` label with this value.
             ``""`` returns sessions with NEITHER (unfiled). ``None`` disables
             the filter. The name→id resolution is owner-scoped (projects are
-            owner-private), so pass ``owned_by`` alongside a specific name.
+            owner-private), so pass ``project_owner`` (or ``owned_by`` as a
+            fallback) alongside a specific name.
             See ``designs/PROJECTS_PRD.md``.
         :param pinned: When ``True``, only return sessions ``pinned_owner`` has
             pinned (their per-user ``omnigent.pinned.<user>`` label — the
