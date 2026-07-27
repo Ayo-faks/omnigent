@@ -1719,6 +1719,44 @@ def test_overview_lists_configured_acp_agents_as_rows(isolated_config, monkeypat
     assert "Custom ACP agent" not in names
 
 
+def test_overview_lists_openclaw_import_row(isolated_config, monkeypatch) -> None:
+    """Discovered OpenClaw/acpx agents appear as a setup import action."""
+    acpx_dir = isolated_config / ".acpx"
+    acpx_dir.mkdir()
+    (acpx_dir / "config.json").write_text(
+        '{"agents": {"Gemini CLI": {"command": "gemini", "args": ["--experimental-acp"]}}}',
+        encoding="utf-8",
+    )
+
+    options, selectable, _descriptions, _compact, _max_visible = _capture_setup_overview(
+        monkeypatch
+    )
+    names = _overview_row_names(options, selectable)
+
+    assert "Import OpenClaw agents" in names
+    assert names.index("Import OpenClaw agents") < names.index("Custom ACP agent")
+
+
+def test_setup_imports_openclaw_agents(isolated_config) -> None:
+    """Selecting the OpenClaw import row writes the generic ``acp:`` block."""
+    acpx_dir = isolated_config / ".acpx"
+    acpx_dir.mkdir()
+    (acpx_dir / "config.json").write_text(
+        '{"agents": {"Gemini CLI": {"command": "gemini", "args": ["--experimental-acp"]}}}',
+        encoding="utf-8",
+    )
+
+    stdin = "\n".join(["13", "", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+
+    assert result.exit_code == 0, result.output
+    assert "Import coding agents from OpenClaw?" in result.output
+    assert "Imported 1 OpenClaw/acpx agent" in result.output
+    assert _config_yaml(isolated_config)["acp"] == {
+        "agents": [{"name": "Gemini CLI", "command": "gemini --experimental-acp"}]
+    }
+
+
 def test_overview_rows_are_single_line(isolated_config, monkeypatch) -> None:
     """Every overview row is a single selectable line — no skipped sub-lines.
 

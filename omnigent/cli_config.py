@@ -2183,6 +2183,54 @@ def _add_acp_agent() -> None:
     console.print(f"  ✓ Added {name}")
 
 
+def _import_openclaw_agents() -> None:
+    """Import OpenClaw/acpx agents into the generic ``acp:`` block."""
+    from rich.markup import escape
+
+    from omnigent.onboarding.acp_auth import acp_agents_settings, command_binary_on_path
+    from omnigent.onboarding.interactive import console
+    from omnigent.onboarding.openclaw_config import (
+        discover_openclaw_agents,
+        merge_imported_acp_entries,
+        openclaw_agents_to_acp_entries,
+    )
+
+    discovery = discover_openclaw_agents()
+    if discovery.errors:
+        console.print("\n  [yellow]Some OpenClaw/acpx config files could not be read:[/yellow]")
+        for error in discovery.errors:
+            console.print(f"    • {escape(str(error.path))}: {escape(error.message)}")
+
+    imported = openclaw_agents_to_acp_entries(discovery.agents)
+    merged, added = merge_imported_acp_entries(imported)
+    if not imported:
+        console.print("  [yellow]No OpenClaw/acpx agents found.[/yellow]")
+        return
+    if not added:
+        console.print("  ✓ OpenClaw/acpx agents are already imported.")
+        return
+
+    console.print("\n  [bold]OpenClaw/acpx agents found[/bold]")
+    for entry in added:
+        suffix = (
+            ""
+            if command_binary_on_path(entry.command)
+            else " [yellow](binary not found on PATH)[/yellow]"
+        )
+        console.print(
+            f"    • [bold]{escape(entry.name)}[/bold] → [dim]{escape(entry.command)}[/dim]{suffix}"
+        )
+    console.print("  [dim]Omnigent stores only these launch commands, not credentials.[/dim]")
+
+    if not click.confirm("Import coding agents from OpenClaw?", default=True):
+        console.print("  [yellow]Skipped OpenClaw import.[/yellow]")
+        return
+
+    _save_global_config(acp_agents_settings(merged))
+    noun = "agent" if len(added) == 1 else "agents"
+    console.print(f"  ✓ Imported {len(added)} OpenClaw/acpx {noun}.")
+
+
 def _manage_acp_agent(slug: str) -> None:
     """Per-agent drill-in for one configured ACP agent: remove it.
 
@@ -3253,9 +3301,10 @@ def _run_configure_harnesses_interactive() -> None:
     # own drill-in rather than ``_manage_harness_providers``.
     _KIMI = "\x00kimi"
     # Sentinels for the generic-ACP rows. Each configured agent gets its own row
-    # (``_ACP_AGENT_PREFIX + slug`` → per-agent remove drill-in); a single
-    # ``_ACP_ADD`` row jumps straight into the add flow. Not a provider family —
-    # each ACP agent owns its own auth.
+    # (``_ACP_AGENT_PREFIX + slug`` → per-agent remove drill-in); import/add rows
+    # jump straight into those flows. Not a provider family — each ACP agent owns
+    # its own auth.
+    _ACP_IMPORT = "\x00acp-import-openclaw"
     _ACP_ADD = "\x00acp-add"
     _ACP_AGENT_PREFIX = "\x00acp-agent:"
     families = [ANTHROPIC_FAMILY, OPENAI_FAMILY, PI_SURFACE]
@@ -3555,6 +3604,11 @@ def _run_configure_harnesses_interactive() -> None:
         # harnesses, followed by an "Add" row that jumps straight into the add
         # flow. Not gated on a binary — each agent owns its own install.
         from omnigent.onboarding.acp_auth import acp_config_summary
+        from omnigent.onboarding.openclaw_config import (
+            discover_openclaw_agents,
+            merge_imported_acp_entries,
+            openclaw_agents_to_acp_entries,
+        )
 
         acp_summary = acp_config_summary()
         for agent in acp_summary.agents:
@@ -3565,6 +3619,23 @@ def _run_configure_harnesses_interactive() -> None:
                     f"ACP · {agent.command}",
                     "ready",
                     "Select to remove this ACP agent.",
+                )
+            )
+        openclaw_discovery = discover_openclaw_agents()
+        openclaw_imported = openclaw_agents_to_acp_entries(openclaw_discovery.agents)
+        _merged, openclaw_added = merge_imported_acp_entries(
+            openclaw_imported, existing=list(acp_summary.agents)
+        )
+        if openclaw_added:
+            count = len(openclaw_added)
+            noun = "agent" if count == 1 else "agents"
+            rows.append(
+                (
+                    _ACP_IMPORT,
+                    "Import OpenClaw agents",
+                    f"{count} new {noun}",
+                    "action",
+                    "Import coding agents from OpenClaw/acpx config.",
                 )
             )
         rows.append(
@@ -3634,6 +3705,8 @@ def _run_configure_harnesses_interactive() -> None:
             _manage_opencode_harness()
         elif target == _GOOSE:
             _manage_goose_harness()
+        elif target == _ACP_IMPORT:
+            _import_openclaw_agents()
         elif target == _ACP_ADD:
             _add_acp_agent()
         elif isinstance(target, str) and target.startswith(_ACP_AGENT_PREFIX):
