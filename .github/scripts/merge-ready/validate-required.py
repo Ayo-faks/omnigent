@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -26,16 +25,21 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 # Checks produced outside Actions job ``name:`` fields (GitHub Apps, etc.).
 EXTERNAL_CHECKS = frozenset({"DCO"})
 
-# Job names that run under gate workflows but are not PR merge checks
-# (setup/matrix helpers, artifact rollups, path-detect probes).
+# Job names that run under gate workflows but are not PR merge checks.
+# Exact-match sync: every extracted live job must be in REQUIRED *or* here.
+# Prefer documenting *why* in a trailing comment when adding an entry.
 NON_GATE_JOB_NAMES = frozenset(
     {
         "setup",
         "Security Gate",
-        "Coverage report",
+        "Coverage report",  # CI artifact rollup; Coverage status is separate
         "build codex-parity sidecar",
         "Detect render-affecting changes",
         "evaluate",  # merge-ready.yml's own job
+        # Intentional non-gating smoke (ci.yml harness-bench-smoke). Offline
+        # cells are all SKIPPED/NA, so it cannot detect capability drift and
+        # must not block merges. See docs/harness-bench-design.md / PR #3370.
+        "Harness bench (smoke)",
     }
 )
 
@@ -50,9 +54,7 @@ def _parse_bash_string_array(text: str, name: str) -> list[str]:
 
 def load_required(path: Path = REQUIRED_SH) -> tuple[list[str], list[str]]:
     text = path.read_text(encoding="utf-8")
-    return _parse_bash_string_array(text, "REQUIRED"), _parse_bash_string_array(
-        text, "ALLOW_SKIP"
-    )
+    return _parse_bash_string_array(text, "REQUIRED"), _parse_bash_string_array(text, "ALLOW_SKIP")
 
 
 def _strip_yaml_comments(line: str) -> str:
@@ -104,9 +106,17 @@ def _job_names_and_matrix_groups(workflow: Path) -> tuple[list[str], dict[str, l
             indent_matrix = indent
             continue
 
-        if current_name and indent_matrix >= 0 and indent <= indent_matrix and not line.strip().startswith("-"):
+        if (
+            current_name
+            and indent_matrix >= 0
+            and indent <= indent_matrix
+            and not line.strip().startswith("-")
+        ):
             # Left the matrix block.
-            if not re.search(r"\b(include|group|name|shard_id|num_shards|paths|workers|dist|extra|markexpr|timeout)\b", line):
+            if not re.search(
+                r"\b(include|group|name|shard_id|num_shards|paths|workers|dist|extra|markexpr|timeout)\b",
+                line,
+            ):
                 in_matrix_include = False
                 indent_matrix = -1
 
@@ -122,7 +132,14 @@ def _job_names_and_matrix_groups(workflow: Path) -> tuple[list[str], dict[str, l
     return names, groups_by_template
 
 
-def _expand_matrix_name(template: str, *, group: str | None = None, shard_id: int | None = None, num_shards: int | None = None, name: str | None = None) -> str:
+def _expand_matrix_name(
+    template: str,
+    *,
+    group: str | None = None,
+    shard_id: int | None = None,
+    num_shards: int | None = None,
+    name: str | None = None,
+) -> str:
     out = template
     if group is not None:
         out = out.replace("${{ matrix.group }}", group)
@@ -213,6 +230,16 @@ def collect_defined_checks() -> set[str]:
     return defined
 
 
+_CLASSIFY_HINT = """\
+Every job name extracted from merge-gate workflows must be classified as one of:
+  1. Add it to REQUIRED (and ALLOW_SKIP if path-skippable) in
+     .github/scripts/merge-ready/required.sh — if it should block merges, OR
+  2. Add it to NON_GATE_JOB_NAMES in
+     .github/scripts/merge-ready/validate-required.py — if it is an
+     intentional non-gating helper/smoke job (document why in a comment).
+Stale REQUIRED names auto-pass forever; omitted live jobs never gate."""
+
+
 def validate(required: list[str], defined: set[str]) -> list[str]:
     """Return human-readable error lines (empty means OK)."""
     errors: list[str] = []
@@ -220,14 +247,20 @@ def validate(required: list[str], defined: set[str]) -> list[str]:
 
     stale = sorted(req_set - defined)
     if stale:
-        errors.append("REQUIRED entries with no matching workflow/app check name:")
+        errors.append(
+            "REQUIRED entries with no matching workflow/app check name "
+            "(remove them, or fix a renamed job):"
+        )
         errors.extend(f"  - {n}" for n in stale)
 
     # Every defined merge-gate check must appear in REQUIRED so new shards
     # cannot land ungated (the omission half of the original bug).
     missing = sorted(defined - req_set)
     if missing:
-        errors.append("Live check names missing from REQUIRED:")
+        errors.append(
+            "Live check names missing from REQUIRED "
+            "(add to REQUIRED, or to NON_GATE_JOB_NAMES if intentional):"
+        )
         errors.extend(f"  - {n}" for n in missing)
 
     return errors
@@ -260,11 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         print("::error::merge-ready REQUIRED is out of sync with workflow job names")
         print("\n".join(errors))
-        print(
-            "\nUpdate .github/scripts/merge-ready/required.sh to match live "
-            "job names (REQUIRED and ALLOW_SKIP). Stale names auto-pass; "
-            "omitted names never gate."
-        )
+        print()
+        print(_CLASSIFY_HINT)
         return 1
 
     print(f"OK: {len(required)} REQUIRED check(s) match defined workflow/app names.")

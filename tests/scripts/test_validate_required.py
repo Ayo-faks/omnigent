@@ -65,3 +65,27 @@ def test_omitted_live_check_is_rejected(vr) -> None:
     assert "Pytest (codex-parity)" in defined
     errors = vr.validate(trimmed, defined)
     assert any("Pytest (codex-parity)" in line for line in errors)
+
+
+def test_harness_bench_smoke_is_non_gate(vr) -> None:
+    """#3370's smoke job must stay out of defined checks (not a merge gate)."""
+    assert "Harness bench (smoke)" in vr.NON_GATE_JOB_NAMES
+    defined = vr.collect_defined_checks()
+    assert "Harness bench (smoke)" not in defined
+    assert "Coverage report" not in defined
+
+
+def test_classify_hint_names_both_options(vr, capsys) -> None:
+    """Failure output must tell developers: REQUIRED or NON_GATE_JOB_NAMES."""
+    required, _ = vr.load_required()
+    # Inject a fake "live" name as if a new CI job appeared ungated.
+    defined = vr.collect_defined_checks() | {"Pytest (brand-new-shard)"}
+    errors = vr.validate(required, defined)
+    assert any("brand-new-shard" in line for line in errors)
+    # Simulate main()'s hint path.
+    print("\n".join(errors))
+    print()
+    print(vr._CLASSIFY_HINT)
+    out = capsys.readouterr().out
+    assert "REQUIRED" in out
+    assert "NON_GATE_JOB_NAMES" in out
