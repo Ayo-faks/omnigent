@@ -26,7 +26,6 @@ REQUIRED=(
   "Pytest (stores)"
   "Pytest (misc)"
   "Pytest (databricks)"
-  "Harness bench (offline)"
   "E2E Tests (shard 0/4)"
   "E2E Tests (shard 1/4)"
   "E2E Tests (shard 2/4)"
@@ -58,7 +57,6 @@ ALLOW_SKIP=(
   "Pytest (stores)"
   "Pytest (misc)"
   "Pytest (databricks)"
-  "Harness bench (offline)"
   "E2E Tests (shard 0/4)"
   "E2E Tests (shard 1/4)"
   "E2E Tests (shard 2/4)"
@@ -82,7 +80,6 @@ workflow_for() {
   case "$1" in
     "Docker build")          echo "Docker build" ;;
     "Pytest ("*)             echo "CI" ;;
-    "Harness bench (offline)") echo "CI" ;;
     "E2E Tests (shard "*)    echo "E2E Tests" ;;
     "E2E UI Tests (shard "*) echo "E2E UI Tests" ;;
     "UI Snapshot (visual baselines)") echo "UI Snapshot" ;;

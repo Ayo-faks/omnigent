@@ -420,9 +420,13 @@ jobs:
           path: artifacts/
           retention-days: 14
 
-  # Layer 1 offline harness conformance (docs/harness-bench-design.md): declared
-  # capability matrix only — no network, no credentials, no live probes. Exits
-  # non-zero on DRIFT. Live (--live) stays nightly/on-demand, not a PR gate.
+  # Layer 1 offline harness conformance (docs/harness-bench-design.md): no
+  # network/creds. Exercises registration, capability derivation, transport
+  # resolution, and declared-matrix render for every official harness. Offline
+  # cells are SKIPPED/NOT_APPLICABLE by design, so this does NOT detect
+  # observed-vs-declared DRIFT (that is Layer 2 / --live). Pass extras through
+  # to `uv run`: a bare `uv run` re-syncs without `dev` and drops pytest, which
+  # the bench imports via tests.e2e._harness_probes.
   harness-bench:
     name: Harness bench (offline)
     needs: gate
@@ -455,8 +459,44 @@ jobs:
       - name: Run offline harness conformance matrix
         shell: bash
         run: |
+          mkdir -p artifacts
+          # --extra must match the sync step: `uv run` otherwise re-syncs the
+          # project default extras and drops pytest (dev), breaking the import
+          # chain through tests.e2e._harness_probes.
           env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u DATABRICKS_TOKEN \
-            uv run python -m tests.harness_bench --no-live --no-color
+            uv run --extra all --extra dev python -m tests.harness_bench \
+              --no-live --no-color \
+              --report artifacts/harness-bench-offline.json
+          env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u DATABRICKS_TOKEN \
+            uv run --extra all --extra dev python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("artifacts/harness-bench-offline.json").read_text())
+          harnesses = payload["harnesses"]
+          # Guard against a silently empty / truncated matrix (false confidence).
+          assert len(harnesses) >= 14, f"expected >=14 harnesses, got {len(harnesses)}"
+          observed = {
+              cell["observed"]
+              for h in harnesses
+              for cell in h["cells"]
+          }
+          # Offline layer marks every applicable cell SKIPPED; NA for inapplicable.
+          assert observed <= {"skipped", "not_applicable"}, observed
+          drifted = [
+              (h["harness"], c["dimension"])
+              for h in harnesses
+              for c in h["cells"]
+              if c.get("verdict") == "drift"
+          ]
+          assert not drifted, f"offline must not report drift: {drifted}"
+          assert payload.get("has_drift") is False
+          n_cells = sum(len(h["cells"]) for h in harnesses)
+          print(
+              f"offline matrix ok: {len(harnesses)} harnesses, "
+              f"{n_cells} cells, observed={sorted(observed)}"
+          )
+          PY
 
   coverage-report:
     name: Coverage report
