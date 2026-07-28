@@ -255,6 +255,9 @@ jobs:
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
         run: |
           mkdir -p "${GITHUB_WORKSPACE}/.cc-cli" && cd "${GITHUB_WORKSPACE}/.cc-cli"
+          # Sentinel project root: without it npm walks up to the repo's pnpm
+          # package.json and installs into the workspace root instead.
+          echo '{}' > package.json
           npm install --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-code@2.1.170
           node node_modules/@anthropic-ai/claude-code/install.cjs
           echo "${GITHUB_WORKSPACE}/.cc-cli/node_modules/.bin" >> "$GITHUB_PATH"
