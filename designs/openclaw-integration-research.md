@@ -34,10 +34,14 @@ earlier draft feared):
   - **Option C — Drive OpenClaw over ACP**: register `openclaw acp` as an
   `acp:` agent so Omnigent drives a live *OpenClaw Gateway session* (its
   routing, memory, channels). Mechanically identical to A — a config entry, no
-  new harness. Effort: **a config entry + a half-day live compatibility
-  test**. See [Option C](#option-c--drive-openclaw-over-acp).
+  new harness. Cheap to build; and because OpenClaw is itself an aggregator,
+  this makes Omnigent a **central UI over a user's whole tool landscape** — the
+  most strategic path for a heavy OpenClaw user. Effort: **a config entry + a
+  half-day live compatibility test**. See
+  [Option C](#option-c--drive-openclaw-over-acp).
 - **Which to pick depends on the goal:** want their *coding agents* → A; their
-*history* → B; the *live OpenClaw experience itself* → C.
+*history* → B; a *single pane of glass over everything they run through
+OpenClaw* → C.
 
 ## Background: what OpenClaw actually is
 
@@ -245,17 +249,24 @@ corroborate; not hands-on verified (OpenClaw can't run on our environment).
 
 **Net effects:**
 
-- ✅ Surfaces the **live OpenClaw experience** (its routing, memory, channels)
-inside Omnigent's UI — distinct from A (their agents) and B (their history).
+- ✅ Makes Omnigent a **single pane of glass** over a user's whole tool
+landscape. OpenClaw is itself an aggregator (Slack/WhatsApp/voice/memory/
+routing), so C is a **hub over a hub** — distinct from A (pulls in the *leaf
+agents*, leaving OpenClaw's aggregation behind) and B (their history). For a
+user who already runs much of their workflow through OpenClaw, this is the
+most strategic of the three, not a niche case.
 - ✅ **No new harness** — a config entry, mechanically identical to A.
-- ⚠️ **Two orchestrators stacked.** OpenClaw's Gateway keeps its own
-routing/policy/session model → split policy control, added latency, a
-governance seam. This is the *deliberate price* of surfacing OpenClaw itself,
-not an accident.
-- ⚠️ Value is narrow: only worth it for users who *live in* OpenClaw. If the
-goal is coding-agent access, A delivers it more directly.
+- ✅ **Value scales with OpenClaw adoption.** The more channels/agents/memory a
+user has behind OpenClaw, the more a central Omnigent UI is worth.
+- ⚠️ **Two orchestrators stacked** — the real tradeoff to weigh. OpenClaw's
+Gateway keeps its own routing/policy/session model → split policy control,
+added latency, a governance seam. A large payoff doesn't erase this; it makes
+C a deliberate *hub-over-hub* design decision rather than an accident.
+- ⚠️ Over-engineered for a user who only wants coding-agent access — A delivers
+that more directly, without the second orchestrator.
 
-**Effort: a config entry + a half-day live compatibility test.**
+**Effort: a config entry + a half-day live compatibility test.** (Cheap to
+*build*; the product value, for heavy OpenClaw users, is not small.)
 
 ## Comparison
 
@@ -283,9 +294,11 @@ goal is coding-agent access, A delivers it more directly.
  environment can't host (see compliance note).
 3. **Which value first?** A (coding agents) is the higher-leverage, lower-risk
  start and its format is already confirmed, so it can begin now. B (history)
- follows once the schema grab lands. C (drive the Gateway) is nearly free to
- *try* but only worth pursuing if surfacing the live OpenClaw experience — not
- its agents — is the actual goal.
+ follows once the schema grab lands. C (drive the Gateway) is cheap to build
+ and, for a user whose workflow already runs through OpenClaw, the most
+ strategic — Omnigent as a single pane of glass over everything. Sequence it
+ by *who the target user is*: leaf-agent users → A; OpenClaw-centric users →
+ C. Tracked as [#3388](https://github.com/omnigent-ai/omnigent/issues/3388).
 
 ## Compliance note (not a blocker for OSS)
 
