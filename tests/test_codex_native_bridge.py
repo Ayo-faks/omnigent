@@ -15,6 +15,7 @@ from omnigent.codex_native_bridge import (
     mcp_startup_waiting_detail,
     pending_mcp_servers,
     prepare_bridge_dir,
+    prune_stale_bridge_dirs,
     read_bridge_startup_error,
     read_bridge_state,
     read_codex_config_model,
@@ -324,3 +325,67 @@ def test_clear_bridge_state_removes_mcp_startup(bridge_dir: Path) -> None:
     clear_bridge_state(bridge_dir)
 
     assert read_mcp_startup(bridge_dir) == {}
+
+
+def test_prune_stale_bridge_dirs_removes_old_and_keeps_recent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    ``prune_stale_bridge_dirs`` deletes dirs untouched past the age cutoff
+    while leaving recently-active ones (and non-dir siblings) in place.
+    """
+    import os
+    import time
+
+    root = tmp_path / "codex-native"
+    monkeypatch.setattr("omnigent.codex_native_bridge._BRIDGE_ROOT", root)
+
+    stale = prepare_bridge_dir("stale")
+    fresh = prepare_bridge_dir("fresh")
+    stray = root / "loose-file"
+    stray.write_text("keep me")
+
+    old = time.time() - 30 * 24 * 60 * 60
+    os.utime(stale, (old, old))
+    stale_home = codex_home_for_bridge_dir(stale)
+    if stale_home.exists():
+        os.utime(stale_home, (old, old))
+
+    prune_stale_bridge_dirs(max_age_seconds=7 * 24 * 60 * 60)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert stray.exists()
+
+
+def test_prune_stale_bridge_dirs_no_root_is_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing bridge root prunes nothing and does not raise."""
+    monkeypatch.setattr("omnigent.codex_native_bridge._BRIDGE_ROOT", tmp_path / "absent")
+    prune_stale_bridge_dirs()
+
+
+def test_prune_keeps_dir_when_codex_home_recently_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A dir whose own mtime is old but whose ``codex-home`` was written
+    recently is kept: the Codex CLI's writes count as activity.
+    """
+    import os
+    import time
+
+    root = tmp_path / "codex-native"
+    monkeypatch.setattr("omnigent.codex_native_bridge._BRIDGE_ROOT", root)
+
+    active = prepare_bridge_dir("active")
+    home = codex_home_for_bridge_dir(active)
+    home.mkdir(parents=True, exist_ok=True)
+
+    old = time.time() - 30 * 24 * 60 * 60
+    os.utime(active, (old, old))
+
+    prune_stale_bridge_dirs(max_age_seconds=7 * 24 * 60 * 60)
+
+    assert active.exists()

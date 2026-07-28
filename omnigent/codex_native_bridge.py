@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
+import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import tomllib
+
+logger = logging.getLogger(__name__)
 
 CODEX_NATIVE_BRIDGE_ID_LABEL_KEY = "omnigent.codex_native.bridge_id"
 CODEX_NATIVE_BRIDGE_DIR_ENV_VAR = "HARNESS_CODEX_NATIVE_BRIDGE_DIR"
@@ -45,6 +50,13 @@ _MCP_CONFIG_FILE = "bridge.json"
 # whereas ``state.json`` mutates on every turn/thread change.
 _POLICY_HOOK_FILE = "policy_hook.json"
 _BRIDGE_ROOT = Path.home() / ".omnigent" / "codex-native"
+
+# Each session's private ``CODEX_HOME`` accumulates the Codex CLI's own state
+# (a multi-tens-of-MB ``logs_*.sqlite``, caches, snapshots) and, unlike the
+# tmp-rooted native harnesses, this root lives under ``~/.omnigent`` and the OS
+# never reclaims it. Prune bridge dirs untouched for longer than this so the
+# root does not grow without bound across many sessions.
+_BRIDGE_DIR_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 def bridge_root() -> Path:
@@ -125,10 +137,60 @@ def prepare_bridge_dir(bridge_id: str) -> Path:
     :param bridge_id: Opaque bridge id, e.g. ``"bridge_abc123"``.
     :returns: Prepared absolute bridge directory.
     """
+    prune_stale_bridge_dirs()
     bridge_dir = bridge_dir_for_bridge_id(bridge_id)
     bridge_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(bridge_dir, 0o700)
     return bridge_dir
+
+
+def _bridge_dir_last_active(bridge_dir: Path) -> float:
+    """
+    Return the most recent activity time for a bridge directory.
+
+    Turn/thread updates rewrite ``state.json`` (bumping the dir's mtime) and
+    the Codex CLI writes into ``codex-home``, so the newest of the two mtimes
+    tracks liveness better than the bridge dir's mtime alone.
+
+    :param bridge_dir: A ``~/.omnigent/codex-native/<hash>`` directory.
+    :returns: Unix timestamp of the newest observed activity, or ``0.0`` when
+        the directory cannot be stat'd.
+    """
+    newest = 0.0
+    for candidate in (bridge_dir, codex_home_for_bridge_dir(bridge_dir)):
+        try:
+            newest = max(newest, candidate.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def prune_stale_bridge_dirs(*, max_age_seconds: float = _BRIDGE_DIR_MAX_AGE_SECONDS) -> None:
+    """
+    Delete bridge directories untouched for longer than *max_age_seconds*.
+
+    Best-effort and never raises: this runs opportunistically before a new
+    session prepares its own dir, so a permission error or a dir vanishing
+    mid-sweep (a concurrent launcher) must not break session startup.
+
+    :param max_age_seconds: Prune dirs whose last activity is older than this.
+    :returns: None.
+    """
+    root = bridge_root()
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    cutoff = time.time() - max_age_seconds
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        if _bridge_dir_last_active(entry) >= cutoff:
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            logger.warning("could not prune stale codex-native bridge dir %s (%s)", entry, exc)
 
 
 def write_mcp_bridge_config(bridge_dir: Path) -> None:
