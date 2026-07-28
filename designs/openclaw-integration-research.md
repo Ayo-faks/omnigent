@@ -15,23 +15,29 @@ model, and what it would take to help OpenClaw users onboard to Omnigent.
 plus terminal + web). It runs coding agents the *same way Omnigent does*:
 as an **ACP (Agent Client Protocol) client**, via its `@openclaw/acpx`
 plugin.
-- **Do not model OpenClaw as a harness.** A harness wraps a coding *agent*
-Omnigent drives. OpenClaw is an *ACP client only* — it can't be an ACP
-server for Omnigent to drive, and two ACP clients can't drive each other.
-- **"Omnigent drives OpenClaw" is a nightmare and low-value** — it stacks two
-orchestrators over an agent pool Omnigent already reaches directly. Rejected
-unless the explicit goal is to absorb OpenClaw's *distinctive* surface
-(Slack/voice/canvas), not its coding agents. See
-[Rejected: driving OpenClaw](#rejected-omnigent-drives-openclaw).
-- **Recommended: two independent, low-cost onboarding paths** that read
-OpenClaw's own files and require **no changes to OpenClaw**:
+- **OpenClaw is a harness *and* a peer, depending on direction.** It's an ACP
+*client* (spawns coding agents), but it *also* exposes an ACP **server** —
+`openclaw acp` speaks ACP over stdio and forwards to its Gateway. So Omnigent
+*can* drive it, using the generic `acp` harness pointed at that server. This
+is a **correction** to an earlier draft that claimed OpenClaw was "ACP client
+only"; the [cli/acp docs](https://docs.openclaw.ai/cli/acp) confirm the server
+surface.
+- **Three viable paths, all cheap** (none is the "weeks of scraping" the
+earlier draft feared):
   - **Option A — Config bridge**: translate a user's OpenClaw acpx agent list
-  into Omnigent's `acp:` config block. Their coding agents work in Omnigent
+  into Omnigent's `acp:` config block. Their *coding agents* work in Omnigent
   day one. Effort: **days**.
   - **Option B — Chat import**: add `"openclaw"` as an import source so users
   migrate existing conversations. OpenClaw uses a **SQLite** session store
   (a first for our importers, which are all JSONL). Effort: **days once the
   DB table schema is grabbed** — the one remaining unknown.
+  - **Option C — Drive OpenClaw over ACP**: register `openclaw acp` as an
+  `acp:` agent so Omnigent drives a live *OpenClaw Gateway session* (its
+  routing, memory, channels). Mechanically identical to A — a config entry, no
+  new harness. Effort: **a config entry + a half-day live compatibility
+  test**. See [Option C](#option-c--drive-openclaw-over-acp).
+- **Which to pick depends on the goal:** want their *coding agents* → A; their
+*history* → B; the *live OpenClaw experience itself* → C.
 
 ## Background: what OpenClaw actually is
 
@@ -56,36 +62,39 @@ copilot, qwen, opencode, and more.
 
 ### The critical structural fact
 
-**OpenClaw is an ACP *client only*.** It spawns external agents
-(`OpenClaw → agent`); it does not expose an ACP-server surface that another
-host could drive.
+**OpenClaw speaks ACP in *both* directions.**
 
-**Omnigent is *also* an ACP client.** Its generic `acp` harness
-(`omnigent/inner/acp_harness.py`, `omnigent/inner/acp_executor.py`) spawns any
-ACP agent, and it even lends those agents Omnigent's builtin tools over an MCP
-relay (`omnigent/inner/_acp_omnigent_mcp.py`). Data flows `Omnigent → agent`.
+- As an ACP **client**, it spawns external coding agents (`OpenClaw → agent`)
+via `@openclaw/acpx`.
+- As an ACP **server**, `openclaw acp` "speaks ACP over stdio for IDEs and
+forwards prompts to the Gateway over WebSocket" — i.e. it can be *driven* by
+an external ACP client ([cli/acp docs](https://docs.openclaw.ai/cli/acp)). It
+also offers `openclaw mcp serve` (OpenClaw as an MCP server).
 
-So the two products are **peers over a shared pool of coding agents**, reaching
-the same agents the same way. Neither sits above the other:
+**Omnigent's generic `acp` harness is an ACP client** only
+(`omnigent/inner/acp_harness.py`, `omnigent/inner/acp_executor.py`); it spawns
+an agent by command and lends it Omnigent's builtin tools over an MCP relay
+(`omnigent/inner/_acp_omnigent_mcp.py`).
+
+Because Omnigent is a client and OpenClaw can be a server, the two compose two
+ways — as **peers** over a shared agent pool (A), or **stacked** with Omnigent
+driving OpenClaw's Gateway session (C):
 
 ```
-        ┌─────────── OpenClaw (ACP client) ───────────┐
-        │  Slack / WhatsApp / voice / canvas / CLI     │
-        └───────────────────┬──────────────────────────┘
-                            │ ACP (acpx)
-                            ▼
-              ┌──────────────────────────────┐
-              │  codex · claude · gemini ·    │   ← the actual coding agents
-              │  cursor · qwen · opencode     │      (each with its own login)
-              └──────────────────────────────┘
-                            ▲
-                            │ ACP (acp: block)
-        ┌───────────────────┴──────────────────────────┐
-        │  Omnigent (ACP client) — web / CLI / sessions │
-        └───────────────────────────────────────────────┘
+                    ┌─── OpenClaw ───┐
+   as CLIENT ◄──────┤ Slack/WhatsApp │──────► spawns codex/claude/gemini…
+                    │ voice/canvas   │            ▲
+   as SERVER ◄──────┤ `openclaw acp` │            │ (A) Omnigent reaches
+        ▲           └────────────────┘            │     the same agents
+        │ (C) Omnigent drives                     │     directly
+        │     the Gateway session                 │
+        └───────────────┬─────────────────────────┘
+             ┌──────────┴───────────────────────────┐
+             │  Omnigent (ACP client) — web / CLI    │
+             └───────────────────────────────────────┘
 ```
 
-## Why OpenClaw is not a harness
+## Should OpenClaw be a "harness"?
 
 Omnigent has two harness tracks
 ([harness-integration-guide](../.claude/skills/harness-integration-guide/SKILL.md)):
@@ -95,44 +104,20 @@ ACP…) — Omnigent owns the model lifecycle.
 - **Native TUI** (`claude-native`, `pi-native`, `kimi-native`…) — Omnigent
 mirrors a vendor's own TUI.
 
-Both require a *coding agent* at the far end with a driveable protocol surface.
-OpenClaw is an orchestrator, not an agent, and exposes no ACP/MCP server. The
-only thing Omnigent could "drive" is OpenClaw's outer CLI/gateway — which lands
-us in the rejected option below.
-
-## Rejected: "Omnigent drives OpenClaw"
-
-To drive OpenClaw, Omnigent would wrap OpenClaw's **outer CLI/gateway**
-(`openclaw message send`, `openclaw agent`, WebChat) as a native-harness-shaped
-integration — spawn the gateway, send messages, scrape/mirror replies back.
-
-```
-Omnigent (orchestrator) ──drives CLI──► OpenClaw (orchestrator) ──ACP──► agents
-```
-
-Net effects:
-
-- **Two orchestrators stacked.** Two policy/permission engines, two session
-models, doubled latency and failure surface.
-- **The middle layer is redundant.** Omnigent already reaches the bottom agents
-directly (Option A). OpenClaw in the middle only earns its place if you
-specifically want *OpenClaw's* channels/voice/canvas surfaced through
-Omnigent.
-- **Heavy, fragile build.** Full native-harness P0+P1 checklist (transport,
-output forwarder, auth, elicitation mapping, interrupt, cost, tests) —
-**weeks** — against an orchestrator's outer surface, not a stable protocol.
-- **Governance gap.** OpenClaw's own tool calls run under *its* policy engine,
-partly outside Omnigent's control.
-
-**Verdict: rejected** for the coding-agent use case. Revisit only if the goal
-is explicitly to absorb OpenClaw's multi-channel/voice/canvas surface.
+Neither track needs a *new* class of harness for OpenClaw. OpenClaw's ACP
+server (`openclaw acp`) is driveable by Omnigent's **existing generic `acp`
+harness** — so "integrating OpenClaw" is a **config entry**, not new harness
+code, whether you're reaching its leaf agents (A) or its Gateway session (C).
+There is no case here for building a bespoke `openclaw-native` harness; an
+earlier draft assumed one was required because it wrongly believed OpenClaw
+exposed no server surface.
 
 ## Recommended options
 
-Both read OpenClaw's own on-disk files, embed in Omnigent, and require **no
-changes to OpenClaw** and **no export format / `--format` flag**. They are
-**independent** code paths — A is live agent access, B is historical
-transcripts — and can ship in either order.
+Three paths, all cheap and all reusing Omnigent's existing `acp` machinery. A
+and B read OpenClaw's own files and touch nothing in OpenClaw; C points the
+`acp` harness at OpenClaw's ACP server. They are **independent** and can ship
+in any order.
 
 ### Option A — Config bridge (live agent access)
 
@@ -217,28 +202,90 @@ install — the only remaining unknown. Note B would be the **first
 SQLite-backed importer** (existing readers are all JSONL), so it queries a DB
 rather than parsing a file.
 
+### Option C — Drive OpenClaw over ACP
+
+`openclaw acp` exposes a **live OpenClaw Gateway session as an ACP server**.
+Because Omnigent's `acp` harness drives any ACP server by command, C is the
+*same mechanism as A* — just pointed at OpenClaw instead of a leaf agent:
+
+```yaml
+# ~/.omnigent/config.yaml
+acp:
+  agents:
+    - name: OpenClaw
+      command: openclaw acp --url <gateway-url> --token <token>
+      omnigent_mcp: false   # REQUIRED — see below
+```
+
+```
+Omnigent (acp client) ──ACP/stdio──► `openclaw acp` (ACP server)
+                                          └─► OpenClaw Gateway session
+                                                └─► routing · memory · channels · its own agents
+```
+
+**Protocol compatibility (validation spike).** Omnigent's `acp` client and
+OpenClaw's `openclaw acp` server line up on the methods that matter —
+`initialize` (protocolVersion 1), `session/new`→`newSession`,
+`session/prompt`→`prompt`, `session/cancel`→`cancel`, `session/update`
+streaming, and `session/request_permission`. Two caveats:
+
+1. **Required config: `omnigent_mcp: false`.** Omnigent's client always sends
+`mcpServers` in `session/new`, and OpenClaw's bridge *rejects* per-session
+mcpServers with an error — so session creation fails unless the relay is
+disabled (per-agent `omnigent_mcp: false`, or global `OMNIGENT_ACP_MCP=0`).
+The cost: Omnigent's builtin tools aren't lent to OpenClaw — acceptable, since
+OpenClaw brings its own tools.
+2. **One residual risk — needs a live test.** The docs confirm the bridge
+streams `agent_thought_chunk` / `tool_call` updates, but assistant final-text
+streaming (`agent_message_chunk`) isn't explicitly documented, and a separate
+`openclaw-acp` shim exists specifically to *fall back to the `openclaw agent`
+CLI for a real reply*. So a half-day live test against a real Gateway is needed
+to confirm final replies stream cleanly. Confidence today: protocol docs
+corroborate; not hands-on verified (OpenClaw can't run on our environment).
+
+**Net effects:**
+
+- ✅ Surfaces the **live OpenClaw experience** (its routing, memory, channels)
+inside Omnigent's UI — distinct from A (their agents) and B (their history).
+- ✅ **No new harness** — a config entry, mechanically identical to A.
+- ⚠️ **Two orchestrators stacked.** OpenClaw's Gateway keeps its own
+routing/policy/session model → split policy control, added latency, a
+governance seam. This is the *deliberate price* of surfacing OpenClaw itself,
+not an accident.
+- ⚠️ Value is narrow: only worth it for users who *live in* OpenClaw. If the
+goal is coding-agent access, A delivers it more directly.
+
+**Effort: a config entry + a half-day live compatibility test.**
+
 ## Comparison
 
 
-|                         | A: Config bridge               | B: Chat import                    | Rejected: drive OpenClaw |
-| ----------------------- | ------------------------------ | --------------------------------- | ------------------------ |
-| Delivers                | Live coding-agent access       | Historical transcripts            | OpenClaw's full surface  |
-| New code                | Config translator + setup step | One reader in existing dispatcher | Full native harness      |
-| Touches OpenClaw?       | No (reads its config)          | No (reads its transcripts)        | No (drives its CLI)      |
-| `--format` flag needed? | No                             | No                                | No                       |
-| Effort                  | Days (format confirmed)        | Days (after DB schema grab)       | Weeks                    |
-| Policy control          | Full (Omnigent)                | Full (Omnigent)                   | Split across two engines |
-| Fragility               | Low (stable ACP)               | Low (file read)                   | High (scraping)          |
+|                         | A: Config bridge               | B: Chat import                    | C: Drive OpenClaw over ACP        |
+| ----------------------- | ------------------------------ | --------------------------------- | --------------------------------- |
+| Delivers                | Their coding agents            | Their history                     | Their live OpenClaw session       |
+| Mechanism               | acpx config → `acp:` block     | SQLite reader in importer         | `acp:` entry → `openclaw acp`     |
+| New code                | Config translator + setup step | One reader in existing dispatcher | None (config entry)               |
+| Touches OpenClaw?       | No (reads its config)          | No (reads its transcripts)        | No (drives its ACP server)        |
+| Effort                  | Days (format confirmed)        | Days (after DB schema grab)       | Config + half-day live test       |
+| Policy control          | Full (Omnigent)                | Full (Omnigent)                   | Split across two engines          |
+| Fragility               | Low (stable ACP)               | Low (file read)                   | Low protocol; 1 streaming unknown |
 
 
 ## Open questions / next steps
 
-1. **B's session-DB table schema (the one gating unknown):** path/format are
+1. **B's session-DB table schema (gating unknown for B):** path/format are
  known (`~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite`); the row shape
  is not. A `sqlite3 .schema` dump from a real install unblocks B.
-2. **Which value first?** A (get agents working) is the higher-leverage,
- lower-risk start and its format is already confirmed, so it can begin now; B
- (bring history) follows once the schema grab lands.
+2. **C's live streaming behavior (gating unknown for C):** does `openclaw acp`
+ stream assistant final-text (`agent_message_chunk`) cleanly, or is the
+ `openclaw-acp` CLI fallback needed? A half-day live test against a real
+ Gateway settles it. Both C unknowns need a running OpenClaw install, which our
+ environment can't host (see compliance note).
+3. **Which value first?** A (coding agents) is the higher-leverage, lower-risk
+ start and its format is already confirmed, so it can begin now. B (history)
+ follows once the schema grab lands. C (drive the Gateway) is nearly free to
+ *try* but only worth pursuing if surfacing the live OpenClaw experience — not
+ its agents — is the actual goal.
 
 ## Compliance note (not a blocker for OSS)
 
@@ -254,7 +301,9 @@ come from an OSS contributor's unmanaged machine.
 
 - OpenClaw repo — [https://github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)
 - OpenClaw ACP agents setup — [https://docs.openclaw.ai/tools/acp-agents-setup](https://docs.openclaw.ai/tools/acp-agents-setup)
+- OpenClaw `openclaw acp` server bridge — [https://docs.openclaw.ai/cli/acp](https://docs.openclaw.ai/cli/acp)
 - acpx (ACP client CLI) — [https://github.com/openclaw/acpx](https://github.com/openclaw/acpx)
+- `openclaw-acp` shim (PyPI) — [https://pypi.org/project/openclaw-acp/](https://pypi.org/project/openclaw-acp/)
 - Agent Client Protocol spec — [https://agentclientprotocol.com/overview/introduction](https://agentclientprotocol.com/overview/introduction)
 - Zed ACP ("bring your own agent") — [https://zed.dev/acp](https://zed.dev/acp)
 
