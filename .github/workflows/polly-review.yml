@@ -28,7 +28,9 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: polly-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+  # Keyed by event too: the bot posting its own review comment fires
+  # issue_comment, which must not cancel the pull_request run posting it.
+  group: polly-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
   cancel-in-progress: true
 
 env:
