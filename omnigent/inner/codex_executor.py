@@ -30,6 +30,7 @@ from omnigent.spec.types import RetryPolicy
 
 from . import _proc
 from ._subprocess_lifecycle import close_subprocess_transport
+from .codex_goal_command import goal_objective_from_content as _goal_objective_from_content
 from .databricks_executor import (
     _databricks_gateway_host,
 )
@@ -130,7 +131,7 @@ _CODEX_MINIMAL_CONFIG_ENV = "HARNESS_CODEX_MINIMAL_CONFIG"
 _CODEX_ENV_DENY_EXACT: frozenset[str] = frozenset({"OPENAI_API_KEY"})
 
 
-def _extract_codex_last_turn_usage(params: object) -> dict[str, int] | None:
+def _extract_codex_last_turn_usage(params: object, model: str) -> dict[str, Any] | None:
     """Map a ``thread/tokenUsage/updated`` payload's ``last`` breakdown
     onto the wire shape that :class:`TurnComplete` consumes.
 
@@ -141,6 +142,16 @@ def _extract_codex_last_turn_usage(params: object) -> dict[str, int] | None:
     out into ``cache_read_input_tokens`` and keep only the remainder in
     ``input_tokens`` — otherwise cached tokens are billed at the full input
     rate. Mirrors the codex-native forwarder split.
+
+    :param model: The resolved model this turn ran with, e.g.
+        ``"gpt-5.4-mini"`` — the ``run_turn`` argument, which carries the
+        harness/provider's resolved default even when the agent spec pins
+        none. Stamped into the returned usage as ``"model"`` so the
+        server's per-model cost/token attribution (``session_usage.by_model``)
+        can key on it instead of silently falling back to an unresolvable
+        spec model and dropping the turn from the per-model breakdown
+        (mirrors ``claude_sdk_executor``'s ``observed_model`` and every
+        other relay executor, all of which already report ``usage.model``).
     """
     if not isinstance(params, dict):
         return None
@@ -153,13 +164,15 @@ def _extract_codex_last_turn_usage(params: object) -> dict[str, int] | None:
     input_total = int(last.get("inputTokens") or 0)
     # Clamp so a malformed cached > total never makes input_tokens negative.
     cached = min(int(last.get("cachedInputTokens") or 0), input_total)
-    usage = {
+    usage: dict[str, Any] = {
         "input_tokens": input_total - cached,  # non-cached portion
         "output_tokens": int(last.get("outputTokens") or 0),
         "total_tokens": int(last.get("totalTokens") or 0),
     }
     if cached:
         usage["cache_read_input_tokens"] = cached
+    if model:
+        usage["model"] = model
     return usage
 
 
@@ -1210,25 +1223,6 @@ def _extract_latest_user_content(
     return ""
 
 
-def _goal_objective_from_content(content: str | list[dict[str, Any]]) -> str | None:
-    """Return the objective from a standalone ``/goal`` user command."""
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for block in content:
-            if block.get("type") not in {"input_text", "text"}:
-                return None
-            text = block.get("text")
-            if not isinstance(text, str):
-                return None
-            text_parts.append(text)
-        content = "".join(text_parts)
-    command, separator, objective = content.strip().partition(" ")
-    if command != "/goal" or not separator:
-        return None
-    objective = objective.strip()
-    return objective or None
-
-
 def _build_initial_prompt(
     messages: list[Message],
 ) -> str | list[dict[str, Any]]:
@@ -2064,7 +2058,7 @@ class _CodexAppServerSession:
                         continue
 
                 if method == "thread/tokenUsage/updated":
-                    self._last_turn_usage = _extract_codex_last_turn_usage(params)
+                    self._last_turn_usage = _extract_codex_last_turn_usage(params, model)
                     continue
 
                 if method == "turn/completed":
