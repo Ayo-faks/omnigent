@@ -671,10 +671,15 @@ class _RunnerHandle:
         ``Path("~/.omnigent/logs/runner/runner-ab12.log")``.
         Read back for diagnostics when the runner dies before
         connecting its tunnel.
+    :param workspace: Canonical workspace path the process was spawned
+        with. Used to gate runner reuse — sessions with different
+        workspaces must not share a runner (the workspace is baked into
+        the subprocess env and drives filesystem root resolution).
     """
 
     proc: subprocess.Popen[bytes]
     log_path: Path
+    workspace: Path | None = None
 
 
 class HostProcess:
@@ -1141,10 +1146,20 @@ class HostProcess:
         # unchanged; we just reuse one process for multiple tunnel connections.
         stable_id = get_stable_runner_id()
         existing_handle = self._runners.get(stable_id)
+        # Only reuse the runner when the workspace matches — the runner's
+        # OMNIGENT_RUNNER_WORKSPACE env var is frozen at spawn time and
+        # drives filesystem-root resolution, so a different workspace must
+        # get a fresh process.
+        workspace_matches = (
+            existing_handle is not None
+            and existing_handle.workspace is not None
+            and existing_handle.workspace == workspace
+        )
         if (
             existing_handle is not None
             and existing_handle.proc.poll() is None
             and RUNNER_ADD_SESSION_SIGNAL is not None
+            and workspace_matches
         ):
             try:
                 token_dir = pending_tokens_dir(stable_id)
@@ -1258,7 +1273,7 @@ class HostProcess:
                 error=_runner_exit_error(proc.returncode, log_path),
             )
 
-        handle = _RunnerHandle(proc=proc, log_path=log_path)
+        handle = _RunnerHandle(proc=proc, log_path=log_path, workspace=workspace)
         self._runners[runner_id] = handle
         # Also register under the stable host runner_id so subsequent sessions
         # find this process and reuse it via the add-session signal path.
@@ -1306,6 +1321,11 @@ class HostProcess:
                 status="failed",
                 error=f"unknown runner: {frame.runner_id}",
             )
+        # Also remove the stable_id alias that was registered alongside this
+        # runner at launch time so stale entries don't persist after stop.
+        stable_id = get_stable_runner_id()
+        if self._runners.get(stable_id) is handle:
+            self._runners.pop(stable_id, None)
         if handle.proc.poll() is None:
             handle.proc.terminate()
             try:

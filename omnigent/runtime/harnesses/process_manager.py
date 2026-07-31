@@ -243,15 +243,11 @@ def _harness_key(harness: str, env: dict[str, str] | None = None) -> str:
     """
     if not env:
         return harness
-    # Build a stable, compact key from the sorted env pairs without passing
-    # any env values through a hash function (which would trigger CodeQL's
-    # weak-cryptographic-algorithm query via taint analysis on the env vars).
-    # CRC32 is not a cryptographic hash and is not flagged by that query.
-    import binascii
+    import hashlib
 
-    relevant = sorted(env.items())
-    tag = binascii.crc32("|".join(f"{k}={v}" for k, v in relevant).encode()) & 0xFFFFFFFF
-    return f"{harness}:{tag:08x}"
+    canonical = "|".join(f"{k}={v}" for k, v in sorted(env.items()))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return f"{harness}:{digest}"
 
 
 def _resolve_module_path(harness: str) -> str:
@@ -942,7 +938,6 @@ class HarnessProcessManager:
         spawn_lock = await self._get_spawn_lock(hkey)
         async with spawn_lock:
             async with self._registry_lock:
-                self._release_generations[hkey] = self._release_generations.get(hkey, 0) + 1
                 self._conv_to_hkey.pop(conversation_id, None)
                 self._in_flight_response_ids.pop(conversation_id, None)
                 refcount = self._hkey_refcounts.get(hkey, 1) - 1
@@ -952,6 +947,13 @@ class HarnessProcessManager:
                 if close_entry:
                     self._entries.pop(hkey, None)
                     self._hkey_refcounts.pop(hkey, None)
+                    # Only bump the release generation when the subprocess is
+                    # actually being torn down. Bumping on every release would
+                    # spuriously invalidate concurrent get_client waiters for
+                    # other co-tenant conversations that still share this entry.
+                    self._release_generations[hkey] = (
+                        self._release_generations.get(hkey, 0) + 1
+                    )
             # Call close_session on the runner (best-effort) to free
             # per-conversation executor state inside the shared subprocess.
             if entry is not None and not close_entry:

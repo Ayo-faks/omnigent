@@ -1271,11 +1271,16 @@ async def _run_tunnel_from_env() -> None:
     # Prepare the pending-tokens directory so the host can drop new binding
     # tokens here and signal us via RUNNER_ADD_SESSION_SIGNAL to pick them up.
     from omnigent.runner.identity import (
+        get_disk_stable_runner_id,
         pending_tokens_dir,
         token_bound_runner_id,
     )
 
-    _pending_tokens_dir = pending_tokens_dir(runner_id)
+    # Always key the pending-tokens dir on the on-disk stable runner id,
+    # not runner_id (which is the token-bound tunnel id from RUNNER_ID_ENV_VAR).
+    # The host also uses the disk stable id when writing tokens, so both sides
+    # agree on the directory path regardless of which binding token was used.
+    _pending_tokens_dir = pending_tokens_dir(get_disk_stable_runner_id())
     _pending_tokens_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     # Set (instead of stop_event) on an idle-reaper shutdown so the tunnel

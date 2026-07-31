@@ -111,6 +111,20 @@ def get_stable_runner_id() -> str:
     return load_or_create_runner_id(_default_runner_id_path())
 
 
+def get_disk_stable_runner_id() -> str:
+    """Return the stable runner id from disk, ignoring :data:`RUNNER_ID_ENV_VAR`.
+
+    Used by the runner subprocess to locate the pending-tokens directory
+    regardless of which token-bound id the host passed in
+    :data:`RUNNER_ID_ENV_VAR` for the tunnel identity. The pending-tokens
+    dir is always keyed on the on-disk stable id so the host (which also
+    reads the same file) and the runner agree on the path.
+
+    :returns: The on-disk stable runner id.
+    """
+    return load_or_create_runner_id(_default_runner_id_path())
+
+
 def token_bound_runner_id(token: str) -> str:
     """Return the runner id authorized by a tunnel binding token.
 
