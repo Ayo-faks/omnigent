@@ -2565,11 +2565,17 @@ def create_runner_app(
                 if _start_verdict.data is not None:
                     _apply_sandbox_override_from_verdict(spec, _start_verdict.data)
 
+            await _ensure_session_subagent_router(
+                session_id,
+                harness_name,
+                server_client=server_client,
+            )
             spawn_env = _build_spawn_env_from_spec(
                 spec,
                 harness_name,
                 workdir=_resolved_spec_workdir(spec_entry),
                 cwd=await _session_runtime_cwd(session_id),
+                session_id=session_id,
             )
             if spawn_env is None:
                 spawn_env = await _resolve_native_spawn_env(
@@ -3096,6 +3102,13 @@ def create_runner_app(
             server_client=server_client,
             session_id=session_id,
         )
+
+        # The SDK harnesses' router is started here (not by a terminal launch
+        # path), so this is its only teardown: without it the session leaks an
+        # HTTP server, its thread, and a live bearer token on disk.
+        from omnigent.runner.subagent_routing import shutdown_session_router
+
+        await asyncio.to_thread(shutdown_session_router, session_id)
 
         _session_spec_cache.pop(session_id, None)
         _session_skills_cache.pop(session_id, None)
@@ -4992,6 +5005,7 @@ def create_runner_app(
                 workdir=cached_spec_workdir,
                 cwd=await _session_runtime_cwd(conv),
                 model_override=msg_body.get("model_override"),
+                session_id=conv,
             )
             from omnigent.runtime.prompt import build_instructions
 
@@ -5023,6 +5037,19 @@ def create_runner_app(
             "role": "user",
             "model": msg_body.get("model", ""),
         }
+        # The routed model rides in-band on the forwarded message. This body is
+        # built field by field (not copied), so it must be threaded explicitly:
+        # the harness forwards it onto CreateResponseRequest.model_override and
+        # the executor adapter into ExecutorConfig.model, which is how a native
+        # terminal learns to switch models for this turn.
+        _model_override = msg_body.get("model_override")
+        if isinstance(_model_override, str) and _model_override:
+            harness_body["model_override"] = _model_override
+            _logger.info(
+                "_run_turn_bg: conv=%s received model_override=%s (forwarding to harness)",
+                conv,
+                _model_override,
+            )
         if _session_histories[conv]:
             history = _session_histories[conv]
             if any("created_by" in item for item in history):
@@ -5785,7 +5812,8 @@ def create_runner_app(
         body = await request.json()
         body_type = body.get("type") if isinstance(body, dict) else None
         _logger.info(
-            "post_session_events: conv=%s type=%s active=%s buffer_len=%d content_types=%s",
+            "post_session_events: conv=%s type=%s active=%s buffer_len=%d content_types=%s "
+            "model_override=%s",
             conversation_id,
             body_type,
             conversation_id in _active_turns,
@@ -5793,6 +5821,7 @@ def create_runner_app(
             [b.get("type") for b in body.get("content", []) if isinstance(b, dict)]
             if isinstance(body, dict)
             else "N/A",
+            body.get("model_override") if isinstance(body, dict) else None,
         )
         if body_type == "message" or body_type is None:
             if not isinstance(body, dict):
@@ -8480,7 +8509,12 @@ async def _resolve_harness_config(
             harness = harness_override or spec.executor.config.get("harness") or spec.executor.type
             harness = canonicalize_harness(harness) or harness
             spawn_env = _build_spawn_env_from_spec(
-                spec, harness, cwd=cwd, workdir=workdir, model_override=model_override
+                spec,
+                harness,
+                cwd=cwd,
+                workdir=workdir,
+                model_override=model_override,
+                session_id=session_id,
             )
             return harness, spawn_env
 
@@ -8515,6 +8549,40 @@ _HARNESS_MODEL_ENV_KEY: dict[str, str] = {
 _HARNESS_MODEL_ENV_KEY = model_env_keys()
 
 
+async def _ensure_session_subagent_router(
+    session_id: str,
+    harness: str | None,
+    *,
+    server_client: httpx.AsyncClient | None,
+) -> None:
+    """Start this session's subagent-routing endpoint.
+
+    Only for the SDK harness families: the native terminals know their own
+    bridge directory and start the router from their launch paths, where
+    the harness's hooks are also pointed at it. Started for every session
+    regardless of its routing state — the server gates each spawn on the
+    session's (mid-session togglable) subagent-routing setting.
+
+    Never raises: ``ensure_session_router_quietly`` owns the bridge-dir
+    resolution too, so a hostile or pre-existing ``$TMPDIR`` root cannot
+    fail session creation for harnesses that do not even use routing.
+
+    :param session_id: Session/conversation identifier.
+    :param harness: Canonical harness name, e.g. ``"claude-sdk"``.
+    :param server_client: Runner→server client the relay forwards on.
+        ``None`` (in-process tests) skips the start.
+    """
+    from omnigent.runner.subagent_routing import ensure_session_router_quietly
+
+    if is_native_harness(harness):
+        return
+    ensure_session_router_quietly(
+        session_id,
+        server_client=server_client,
+        harness=harness,
+    )
+
+
 def _build_spawn_env_from_spec(
     spec: Any,
     harness: str,
@@ -8522,6 +8590,7 @@ def _build_spawn_env_from_spec(
     cwd: Path | None = None,
     workdir: Path | None = None,
     model_override: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, str] | None:
     """Build spawn-env from spec — mirrors workflow.py's helpers.
 
@@ -8529,6 +8598,8 @@ def _build_spawn_env_from_spec(
     :param harness: Canonical harness name, e.g. ``"claude-sdk"``.
     :param cwd: Runtime working directory for harnesses that need it.
     :param workdir: Bundle workdir, threaded to the builders.
+    :param session_id: Session/conversation id, used to hand the harness
+        this session's subagent-routing endpoint. ``None`` omits it.
     :param model_override: The per-session ``/model`` override, e.g.
         ``"claude-sonnet-4-6"``, or ``None``. When set, it overrides the
         ``HARNESS_<H>_MODEL`` the builder baked in (spec model / provider
@@ -8597,6 +8668,15 @@ def _build_spawn_env_from_spec(
                 return None
     except ImportError:
         return None
+
+    # Point the harness process at this session's subagent-routing endpoint
+    # when one is running (started at session init). Scoped to *harness* so a
+    # codex executor beneath a claude session never sees the codex router vars
+    # carrying the parent's session id. Empty when the session has no router.
+    if env is not None and session_id:
+        from omnigent.runner.subagent_routing import session_router_env
+
+        env.update(session_router_env(session_id, harness))
 
     # Per-session ``/model`` override wins over everything the builder baked
     # into HARNESS_<H>_MODEL. Without this, `/model` is recorded in the
