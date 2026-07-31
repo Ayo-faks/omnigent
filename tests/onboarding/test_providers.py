@@ -483,3 +483,74 @@ def test_unknown_provider_gets_default_api_key_mode() -> None:
     assert config.default_mode == "api_key"
     assert len(config.auth_modes) == 1
     assert config.auth_modes[0].fields[0].name == "api_key"
+
+
+class _SyncThread:
+    """Thread stand-in that runs its target inline, for deterministic tests."""
+
+    def __init__(self, target=None, **_kwargs) -> None:
+        """Record the target callable."""
+        self._target = target
+
+    def start(self) -> None:
+        """Run the target synchronously instead of spawning a thread."""
+        if self._target is not None:
+            self._target()
+
+
+def test_catalog_disk_cache_serves_stale_and_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A TTL-cold fetch serves the disk copy immediately and refreshes it."""
+    import json as _json
+
+    monkeypatch.delenv("OMNIGENT_DISABLE_CATALOG_LOOKUP", raising=False)
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path))
+    _providers_mod._catalog_cache.clear()
+    calls: list[str] = []
+
+    def _download(provider: str) -> dict | None:
+        calls.append(provider)
+        return {"models": {}, "gen": len(calls)}
+
+    monkeypatch.setattr(_providers_mod, "_download_provider_catalog", _download)
+
+    # First-ever run (no disk copy): blocking download, persisted to disk.
+    assert _REAL_FETCH_PROVIDER_CATALOG("anthropic")["gen"] == 1
+    disk_path = _providers_mod._catalog_disk_cache_path("anthropic")
+    assert _json.loads(disk_path.read_text())["gen"] == 1
+
+    # Restart / hourly TTL expiry: the stale disk copy is served without a
+    # network wait, while the (inline here) background refresh updates both
+    # the memory cache and the disk copy for subsequent callers.
+    _providers_mod._catalog_cache.clear()
+    monkeypatch.setattr(_providers_mod.threading, "Thread", _SyncThread)
+    assert _REAL_FETCH_PROVIDER_CATALOG("anthropic")["gen"] == 1
+    assert _json.loads(disk_path.read_text())["gen"] == 2
+    assert _REAL_FETCH_PROVIDER_CATALOG("anthropic")["gen"] == 2
+    assert calls == ["anthropic", "anthropic"]
+
+
+def test_catalog_disk_cache_survives_failed_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A failed background refresh keeps serving the last-known disk copy."""
+    import json as _json
+
+    monkeypatch.delenv("OMNIGENT_DISABLE_CATALOG_LOOKUP", raising=False)
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path))
+    _providers_mod._catalog_cache.clear()
+
+    disk_path = _providers_mod._catalog_disk_cache_path("anthropic")
+    disk_path.parent.mkdir(parents=True, exist_ok=True)
+    disk_path.write_text(_json.dumps({"models": {}, "gen": "disk"}))
+
+    monkeypatch.setattr(_providers_mod, "_download_provider_catalog", lambda _p: None)
+    monkeypatch.setattr(_providers_mod.threading, "Thread", _SyncThread)
+
+    assert _REAL_FETCH_PROVIDER_CATALOG("anthropic")["gen"] == "disk"
+    # The failed refresh must not clobber the disk copy or the cache.
+    assert _json.loads(disk_path.read_text())["gen"] == "disk"
+    assert _REAL_FETCH_PROVIDER_CATALOG("anthropic")["gen"] == "disk"

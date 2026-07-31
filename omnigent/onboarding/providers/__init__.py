@@ -12,11 +12,13 @@ omnigent-specific and lives here permanently.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import urllib.request
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import cachetools
@@ -136,8 +138,6 @@ def _download_provider_catalog(provider: str) -> dict[str, Any] | None:
     :returns: Parsed JSON dict (the full catalog file), or ``None`` on
         any network or parse error or when the lookup is disabled.
     """
-    import os
-
     if os.environ.get("OMNIGENT_DISABLE_CATALOG_LOOKUP") == "1":
         return None
     url = _MLFLOW_CATALOG_URL.format(provider=provider)
@@ -149,9 +149,94 @@ def _download_provider_catalog(provider: str) -> dict[str, Any] | None:
         return None
 
 
+def _catalog_disk_cache_path(provider: str) -> Path:
+    """
+    Path of the on-disk copy of *provider*'s catalog.
+
+    Lives under the persistent data dir (honoring ``OMNIGENT_DATA_DIR``)
+    so it survives process restarts and hourly TTL expiries.
+
+    :param provider: Provider name, e.g. ``"anthropic"``.
+    :returns: Absolute path of the cached catalog JSON file.
+    """
+    override = os.environ.get("OMNIGENT_DATA_DIR")
+    data_dir = Path(override).expanduser() if override else Path.home() / ".omnigent"
+    return data_dir / "model-catalog" / f"{provider}.json"
+
+
+def _read_catalog_from_disk(provider: str) -> dict[str, Any] | None:
+    """
+    Load the last-downloaded catalog for *provider* from disk.
+
+    :param provider: Provider name, e.g. ``"anthropic"``.
+    :returns: The parsed catalog dict, or ``None`` when absent/corrupt.
+    """
+    try:
+        raw = _catalog_disk_cache_path(provider).read_text(encoding="utf-8")
+        result = json.loads(raw)
+        return result if isinstance(result, dict) else None
+    except Exception:
+        return None
+
+
+def _write_catalog_to_disk(provider: str, catalog: dict[str, Any]) -> None:
+    """
+    Best-effort atomic write of *catalog* to the disk cache.
+
+    :param provider: Provider name, e.g. ``"anthropic"``.
+    :param catalog: The freshly downloaded catalog dict to persist.
+    """
+    try:
+        path = _catalog_disk_cache_path(provider)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(catalog), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        return
+
+
+_catalog_refresh_inflight: set[str] = set()
+
+
+def _refresh_catalog_in_background(provider: str) -> None:
+    """
+    Re-download *provider*'s catalog off-thread, single-flight.
+
+    Updates the in-memory TTL cache and the disk copy on success;
+    a failed download leaves both serving the previous copy.
+
+    :param provider: Provider name, e.g. ``"anthropic"``.
+    """
+    with _catalog_cache_lock:
+        if provider in _catalog_refresh_inflight:
+            return
+        _catalog_refresh_inflight.add(provider)
+
+    def _run() -> None:
+        try:
+            result = _download_provider_catalog(provider)
+            if result is not None:
+                with _catalog_cache_lock:
+                    _catalog_cache[provider] = result
+                _write_catalog_to_disk(provider, result)
+        finally:
+            with _catalog_cache_lock:
+                _catalog_refresh_inflight.discard(provider)
+
+    threading.Thread(target=_run, name=f"catalog-refresh-{provider}", daemon=True).start()
+
+
 def _fetch_provider_catalog(provider: str) -> dict[str, Any]:
     """
-    Return the MLflow catalog for *provider*, cached with a 1-hour TTL.
+    Return the MLflow catalog for *provider* without blocking on the network.
+
+    Resolution order: the 1-hour in-process TTL cache; then the on-disk
+    copy of the last successful download (served immediately while a
+    background single-flight refresh updates both caches); then — only
+    when no disk copy exists yet (true first run) — a blocking download.
+    This keeps the fetch off latency-sensitive request paths (the session
+    snapshot blocks the web UI's "Loading conversation" gate on it).
 
     Falls back to an empty dict on network failure (or when the lookup
     is disabled via ``OMNIGENT_DISABLE_CATALOG_LOOKUP``) so callers
@@ -165,9 +250,22 @@ def _fetch_provider_catalog(provider: str) -> dict[str, Any]:
         cached = _catalog_cache.get(provider, _CATALOG_MISS)
         if cached is not _CATALOG_MISS:
             return cached or {}
+    if os.environ.get("OMNIGENT_DISABLE_CATALOG_LOOKUP") == "1":
+        # Fully inert under the test seam: no disk reads, no refresh threads.
+        with _catalog_cache_lock:
+            _catalog_cache[provider] = None
+        return {}
+    disk = _read_catalog_from_disk(provider)
+    if disk is not None:
+        with _catalog_cache_lock:
+            _catalog_cache[provider] = disk
+        _refresh_catalog_in_background(provider)
+        return disk
     result = _download_provider_catalog(provider)
     with _catalog_cache_lock:
         _catalog_cache[provider] = result
+    if result is not None:
+        _write_catalog_to_disk(provider, result)
     return result or {}
 
 
