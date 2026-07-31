@@ -1804,6 +1804,13 @@ def _ucode_config_for_profile(
         _UCODE_CLAUDE_BASE_URL_ENV: base_url,
         _CLAUDE_CODE_API_KEY_HELPER_TTL_ENV: str(refresh_interval_ms),
         _CLAUDE_CODE_USE_GATEWAY_ENV: "1",
+        # The gateway allowlists beta flags and 400s the whole request
+        # ("invalid beta flag") on one it does not know, failing the turn
+        # rather than the feature. This env var is the only client-side way to
+        # drop them: the CLI computes ``anthropic-beta`` itself and ignores
+        # ANTHROPIC_CUSTOM_HEADERS. Tool search rides on a rejected flag
+        # (``advanced-tool-use``), so it was never reachable here anyway.
+        _CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS_ENV: "1",
     }
     # Pin each Claude Code model-tier alias to the corresponding Databricks
     # gateway model ID so that the /model picker natively shows gateway model
