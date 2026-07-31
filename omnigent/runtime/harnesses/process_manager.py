@@ -243,12 +243,15 @@ def _harness_key(harness: str, env: dict[str, str] | None = None) -> str:
     """
     if not env:
         return harness
+    # Use a stable, non-cryptographic fingerprint of the spawn env so that
+    # identical configurations share one subprocess. Python's built-in hash()
+    # is not stable across processes; use a simple CRC-style fold instead.
     import hashlib
 
     relevant = dict(sorted(env.items()))
-    fingerprint = hashlib.sha256(
-        "|".join(f"{k}={v}" for k, v in relevant.items()).encode()
-    ).hexdigest()[:16]
+    # md5 is fine here: this is a configuration fingerprint, not a secret.
+    config_bytes = "|".join(f"{k}={v}" for k, v in relevant.items()).encode()
+    fingerprint = hashlib.md5(config_bytes, usedforsecurity=False).hexdigest()[:16]
     return f"{harness}:{fingerprint}"
 
 
