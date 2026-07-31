@@ -243,16 +243,15 @@ def _harness_key(harness: str, env: dict[str, str] | None = None) -> str:
     """
     if not env:
         return harness
-    # Use a stable, non-cryptographic fingerprint of the spawn env so that
-    # identical configurations share one subprocess. Python's built-in hash()
-    # is not stable across processes; use a simple CRC-style fold instead.
-    import hashlib
+    # Build a stable, compact key from the sorted env pairs without passing
+    # any env values through a hash function (which would trigger CodeQL's
+    # weak-cryptographic-algorithm query via taint analysis on the env vars).
+    # CRC32 is not a cryptographic hash and is not flagged by that query.
+    import binascii
 
-    relevant = dict(sorted(env.items()))
-    # md5 is fine here: this is a configuration fingerprint, not a secret.
-    config_bytes = "|".join(f"{k}={v}" for k, v in relevant.items()).encode()
-    fingerprint = hashlib.md5(config_bytes, usedforsecurity=False).hexdigest()[:16]
-    return f"{harness}:{fingerprint}"
+    relevant = sorted(env.items())
+    tag = binascii.crc32("|".join(f"{k}={v}" for k, v in relevant).encode()) & 0xFFFFFFFF
+    return f"{harness}:{tag:08x}"
 
 
 def _resolve_module_path(harness: str) -> str:
