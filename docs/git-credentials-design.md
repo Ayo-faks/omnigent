@@ -736,8 +736,27 @@ rule survives the merge; `sandbox.type: none` still refuses.
 clone from the runner through the proxy instead, as a first-class step with its own
 `on_stage("cloning")` progress and its own error. Public and deployment-token pre-clones stay
 exactly as they are (D7).
-*Test:* a private repo clones with the principal's key and **not** the shared one; a key with no
-grant surfaces the forge's 404, not an empty workspace; a public repo still pre-clones.
+
+Two mechanics decide whether this actually works, and both need to be explicit rather than left
+to git's defaults:
+
+- **Displace the baked helper, don't race it.** `Dockerfile:233` installs a `--system`
+  host-blind helper that answers *any* host from `GIT_TOKEN`. A credentialed clone adds a second
+  willing helper, and resolution order then decides which token leaves the box. Reset the
+  inherited chain first so the per-principal helper wins outright:
+  `git -c credential.helper= -c credential.helper=<ours> ...`. The empty assignment clears the
+  chain; ours is then the only entry. Without it, the ambient token can answer for a host the
+  principal was never granted — the exact leak D7 exists to prevent.
+- **Persist the helper into the checkout.** Pass both `-c` options to `clone` itself, not to a
+  wrapping shell. Git uses them for the clone's own fetch **and** writes them into the new
+  repo's local config, so the agent's later `fetch` / `push` in that workspace resolve the same
+  principal credential with no re-teaching and no ambient fallback. This is what closes §8
+  item 2's other half for a fresh clone.
+
+*Test:* a private repo clones with the principal's key and **not** the shared one; with
+`GIT_TOKEN` also set in the environment, the ambient token is **not** offered; a later `push`
+in the resulting checkout still authenticates as the principal without re-injection; a key with
+no grant surfaces the forge's 404, not an empty workspace; a public repo still pre-clones.
 
 ### Wave 4
 
@@ -745,6 +764,20 @@ grant surfaces the forge's 404, not an empty workspace; a public repo still pre-
 delivered credential, and add `target_kind = mcp_server` resolution for `MCPServerConfig` —
 copying the `databricks_profile` reference pattern instead of static YAML. Note macOS is
 excluded for `gh` (§1, item 3).
+
+Give `gh` a **per-session `GH_CONFIG_DIR`** rather than letting it use the default. The point is
+*not* secrecy — `gh` holds only a synthetic `oa_cred_*` decoy
+(`credential_proxy.py:52`), so isolating decoys buys little. It is that the config dir is the
+only place `gh` can be told about a non-GitHub host, which is what an Enterprise target needs,
+and a per-session dir keeps no `gh` state across sessions.
+
+**Do not route git through `gh auth git-credential`.** It is a clean idiom on a developer laptop,
+but it inverts our dependency: it makes `gh` the credential authority and git the consumer, which
+requires `gh` to hold a *real* token locally. Git authenticates by swap-on-access with nothing in
+its environment (`parser.py:1923-1931` binds the git host as `basic` with no `inject_env`); `gh`
+gets a decoy only because it refuses to issue a request without seeing something locally. Routing
+git through `gh` would add a dependency and undo that property.
+
 *Test:* `gh` authenticates with only a decoy in its environment; a decoy replayed at another
 host gets a 403; an MCP server resolves its header at runtime.
 
@@ -767,7 +800,7 @@ genuine risk lives; everything before it is additive and everything after it is 
 
 ## 8. Still open
 
-Three questions. None blocks starting; all need answers before ship.
+Four questions. None blocks starting; all need answers before ship.
 
 1. **Identity in a shared session.** #2758 chose owner-authority plus warn-and-allow: an EDIT
    grantee can direct the agent to push as the owner. Deliberate — a hard gate leaves the agent
@@ -786,3 +819,12 @@ Three questions. None blocks starting; all need answers before ship.
    it. D7 keeps that path deliberately alive, which makes this a **sequencing** problem for
    operators: stand up per-principal keys, verify them, *then* remove the shared token. That
    sequence needs writing down as operator documentation, not inferring.
+4. **Is `gh` actually in the image?** I cannot find it installed anywhere. `Dockerfile:213`
+   installs `git tmux procps lsof bubblewrap curl ca-certificates unzip iproute2 nftables`, and
+   the npm globals at `:251` are `@anthropic-ai/claude-code` and `@openai/codex`. Neither
+   `github-cli` nor `cli.github.com` appears in the repo. Yet `gh_basic` exists specifically to
+   wire `gh`, and carries a detailed macOS/Go TLS rejection path (`parser.py:1763-1774`) written
+   as though exercised. Either `gh` is expected from a user-supplied image, or that preset has
+   never run end-to-end on a shipped image. **Confirm before PR9 leans on it** — if `gh` is
+   BYO-image, PR9 owes a clear failure when the binary is absent rather than a confusing
+   credential error.
