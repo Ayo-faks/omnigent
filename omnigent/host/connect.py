@@ -24,6 +24,7 @@ from websockets.exceptions import InvalidStatus, InvalidURI
 
 from omnigent._platform import WINDOWS_ENV_PASSTHROUGH
 from omnigent.env_credentials import env_names_with_omnigent_prefix
+from omnigent.gateway_inference import gateway_inference_map
 from omnigent.harness_aliases import canonicalize_harness
 from omnigent.harness_availability import HARNESS_BINARY_MISSING, HarnessAvailability
 from omnigent.host.frames import (
@@ -1623,6 +1624,7 @@ class HostProcess:
                 request_id=frame.request_id,
                 status="ok",
                 configured_harnesses=configured_harness_map(),
+                gateway_inference=gateway_inference_map(),
             )
         installed, reason = try_install_harness_cli(key)
         if not installed:
@@ -1636,6 +1638,7 @@ class HostProcess:
             request_id=frame.request_id,
             status="ok",
             configured_harnesses=configured_harness_map(),
+            gateway_inference=gateway_inference_map(),
         )
 
     def _handle_store_secret(self, frame: HostStoreSecretFrame) -> HostStoreSecretResultFrame:
@@ -1737,6 +1740,7 @@ class HostProcess:
             request_id=frame.request_id,
             status="ok",
             configured_harnesses=configured_harness_map(),
+            gateway_inference=gateway_inference_map(),
         )
 
     def _handle_detect_credentials(
@@ -2312,6 +2316,7 @@ class HostProcess:
         except Exception:  # noqa: BLE001
             pass
         configured_harnesses = await asyncio.to_thread(configured_harness_map)
+        gateway_inference = await asyncio.to_thread(gateway_inference_map)
         hello = HostHelloFrame(
             version=VERSION,
             frame_protocol_version=1,
@@ -2320,6 +2325,7 @@ class HostProcess:
             # Off the event loop: probes PATH and reads local config.
             # The loop below refreshes changes; launch remains authoritative.
             configured_harnesses=configured_harnesses,
+            gateway_inference=gateway_inference,
             telemetry_opt_out=_tel_opt_out,
             installation_id=_tel_install_id,
         )
@@ -2368,16 +2374,22 @@ class HostProcess:
 
             if refresh_full_map:
                 latest_harnesses = await asyncio.to_thread(configured_harness_map)
+                latest_gateway_inference = await asyncio.to_thread(gateway_inference_map)
                 next_full_refresh = now + HARNESS_READINESS_FULL_REFRESH_INTERVAL_S
-                if latest_harnesses != configured_harnesses:
+                if (
+                    latest_harnesses != configured_harnesses
+                    or latest_gateway_inference != gateway_inference
+                ):
                     await ws.send(
                         encode_host_frame(
                             HostHarnessReadinessFrame(
                                 configured_harnesses=latest_harnesses,
+                                gateway_inference=latest_gateway_inference,
                             )
                         )
                     )
                     configured_harnesses = latest_harnesses
+                    gateway_inference = latest_gateway_inference
             if isinstance(raw, str):
                 await self._handle_raw_message(ws, raw)
 

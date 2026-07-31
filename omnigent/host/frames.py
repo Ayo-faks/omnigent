@@ -93,6 +93,12 @@ class HostHelloFrame:
         treat ``None`` as "nothing is configured". Changes arrive in
         :class:`HostHarnessReadinessFrame`; launch-time checks remain
         authoritative.
+    :param gateway_inference: Per-harness flag for whether that family's
+        launch on this host resolves AI-Gateway-backed inference, e.g.
+        ``{"claude-native": True, "codex": False}`` (see
+        ``omnigent.gateway_inference``). A family that could not be evaluated
+        is omitted. ``None`` means unknown (an older host that doesn't report
+        it) — never treat it as "nothing is gateway-backed".
     """
 
     version: str
@@ -100,6 +106,7 @@ class HostHelloFrame:
     name: str
     runners: list[str] = field(default_factory=list)
     configured_harnesses: dict[str, HarnessAvailability] | None = None
+    gateway_inference: dict[str, bool] | None = None
     telemetry_opt_out: bool = False
     installation_id: str | None = None
 
@@ -110,9 +117,16 @@ class HostHarnessReadinessFrame:
 
     :param configured_harnesses: Current launch readiness keyed by every
         accepted harness spelling. Sent only when the map changes.
+    :param gateway_inference: Per-harness flag for whether that family's
+        launch on this host resolves AI-Gateway-backed inference, e.g.
+        ``{"claude-native": True, "codex": False}`` (see
+        ``omnigent.gateway_inference``). A family that could not be evaluated
+        is omitted. ``None`` means unknown (an older host that doesn't report
+        it) — never treat it as "nothing is gateway-backed".
     """
 
     configured_harnesses: dict[str, HarnessAvailability]
+    gateway_inference: dict[str, bool] | None = None
 
 
 @dataclass
@@ -626,6 +640,12 @@ class HostInstallHarnessResultFrame:
         after the install attempt, e.g. ``{"claude-native": True,
         "codex-native": "needs-auth"}``. ``None`` when the install could
         not run (the server keeps its prior readiness view).
+    :param gateway_inference: Per-harness flag for whether that family's
+        launch on this host resolves AI-Gateway-backed inference, e.g.
+        ``{"claude-native": True, "codex": False}`` (see
+        ``omnigent.gateway_inference``). A family that could not be evaluated
+        is omitted. ``None`` means unknown (an older host that doesn't report
+        it) — never treat it as "nothing is gateway-backed".
     :param error: Why the install failed, e.g. ``"npm not found"`` or
         ``"install timed out"``. ``None`` on success.
     """
@@ -633,6 +653,7 @@ class HostInstallHarnessResultFrame:
     request_id: str
     status: str
     configured_harnesses: dict[str, HarnessAvailability] | None = None
+    gateway_inference: dict[str, bool] | None = None
     error: str | None = None
 
 
@@ -694,6 +715,12 @@ class HostStoreSecretResultFrame:
         otherwise (paired with a non-secret ``error``).
     :param configured_harnesses: Readiness recomputed after the write, e.g.
         ``{"claude-native": True}``. ``None`` when the write could not run.
+    :param gateway_inference: Per-harness flag for whether that family's
+        launch on this host resolves AI-Gateway-backed inference, e.g.
+        ``{"claude-native": True, "codex": False}`` (see
+        ``omnigent.gateway_inference``). A family that could not be evaluated
+        is omitted. ``None`` means unknown (an older host that doesn't report
+        it) — never treat it as "nothing is gateway-backed".
     :param error: Non-secret failure reason, e.g. ``"a gateway requires a
         base_url"``. ``None`` on success.
     """
@@ -701,6 +728,7 @@ class HostStoreSecretResultFrame:
     request_id: str
     status: str
     configured_harnesses: dict[str, HarnessAvailability] | None = None
+    gateway_inference: dict[str, bool] | None = None
     error: str | None = None
 
 
@@ -888,6 +916,7 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "name": frame.name,
                 "runners": list(frame.runners),
                 "configured_harnesses": frame.configured_harnesses,
+                "gateway_inference": frame.gateway_inference,
                 "telemetry_opt_out": frame.telemetry_opt_out,
                 "installation_id": frame.installation_id,
             }
@@ -897,6 +926,7 @@ def encode_host_frame(frame: HostFrame) -> str:
             {
                 "kind": HostFrameKind.HARNESS_READINESS.value,
                 "configured_harnesses": frame.configured_harnesses,
+                "gateway_inference": frame.gateway_inference,
             }
         )
     if isinstance(frame, HostLaunchRunnerFrame):
@@ -1104,6 +1134,7 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "request_id": frame.request_id,
                 "status": frame.status,
                 "configured_harnesses": frame.configured_harnesses,
+                "gateway_inference": frame.gateway_inference,
                 "error": frame.error,
             }
         )
@@ -1128,6 +1159,7 @@ def encode_host_frame(frame: HostFrame) -> str:
                 "request_id": frame.request_id,
                 "status": frame.status,
                 "configured_harnesses": frame.configured_harnesses,
+                "gateway_inference": frame.gateway_inference,
                 "error": frame.error,
             }
         )
@@ -1325,6 +1357,7 @@ def _decode_host_hello(msg: dict[str, Any]) -> HostHelloFrame:
         name=_required_str(msg, "name"),
         runners=_optional_str_list(msg, "runners"),
         configured_harnesses=_optional_str_availability_map(msg, "configured_harnesses"),
+        gateway_inference=_optional_str_bool_map(msg, "gateway_inference"),
         telemetry_opt_out=bool(msg.get("telemetry_opt_out", False)),
         installation_id=_optional_nullable_str(msg, "installation_id"),
     )
@@ -1340,7 +1373,10 @@ def _decode_harness_readiness(msg: dict[str, Any]) -> HostHarnessReadinessFrame:
         raise ValueError("harness readiness frame contains an unsupported availability state")
     if not configured_harnesses:
         raise ValueError("harness readiness frame requires a non-empty configured_harnesses map")
-    return HostHarnessReadinessFrame(configured_harnesses=configured_harnesses)
+    return HostHarnessReadinessFrame(
+        configured_harnesses=configured_harnesses,
+        gateway_inference=_optional_str_bool_map(msg, "gateway_inference"),
+    )
 
 
 def _decode_launch_runner(msg: dict[str, Any]) -> HostLaunchRunnerFrame:
@@ -1681,6 +1717,7 @@ def _decode_install_harness_result(msg: dict[str, Any]) -> HostInstallHarnessRes
         request_id=_required_str(msg, "request_id"),
         status=_required_str(msg, "status"),
         configured_harnesses=_optional_str_availability_map(msg, "configured_harnesses"),
+        gateway_inference=_optional_str_bool_map(msg, "gateway_inference"),
         error=_optional_nullable_str(msg, "error"),
     )
 
@@ -1713,6 +1750,7 @@ def _decode_store_secret_result(msg: dict[str, Any]) -> HostStoreSecretResultFra
         request_id=_required_str(msg, "request_id"),
         status=_required_str(msg, "status"),
         configured_harnesses=_optional_str_availability_map(msg, "configured_harnesses"),
+        gateway_inference=_optional_str_bool_map(msg, "gateway_inference"),
         error=_optional_nullable_str(msg, "error"),
     )
 
@@ -1898,6 +1936,25 @@ def _optional_str_availability_map(
     if not isinstance(val, dict):
         return None
     return {k: v for k, v in val.items() if isinstance(k, str) and is_harness_availability(v)}
+
+
+def _optional_str_bool_map(msg: dict[str, Any], key: str) -> dict[str, bool] | None:
+    """Return an optional string→bool mapping field.
+
+    Tolerant like :func:`_optional_str_availability_map`: absent, null, or
+    non-mapping values decode to ``None`` ("unknown"), and entries whose key
+    isn't a string or whose value isn't a bool are dropped, so a garbled or
+    newer peer's payload never breaks the tunnel.
+
+    :param msg: Decoded frame object.
+    :param key: Field name, e.g. ``"gateway_inference"``.
+    :returns: The mapping, e.g. ``{"claude-native": True}``, or ``None`` when
+        absent / null / not a JSON object.
+    """
+    val = msg.get(key)
+    if not isinstance(val, dict):
+        return None
+    return {k: v for k, v in val.items() if isinstance(k, str) and isinstance(v, bool)}
 
 
 def _optional_nullable_str(msg: dict[str, Any], key: str) -> str | None:
