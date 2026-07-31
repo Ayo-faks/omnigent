@@ -1154,13 +1154,13 @@ class HarnessApp:
         if isinstance(body, InterruptEvent):
             return await self._handle_interrupt_event(conversation_id)
         if isinstance(body, ToolResultEvent):
-            return await self._handle_tool_result_event(body)
+            return await self._handle_tool_result_event(body, conversation_id)
         if isinstance(body, ApprovalEvent):
             return await self._resolve_elicitation(
-                body.elicitation_id, body.to_elicitation_result()
+                body.elicitation_id, body.to_elicitation_result(), conversation_id
             )
         if isinstance(body, PolicyVerdictEvent):
-            return await self._handle_policy_verdict_event(body)
+            return await self._handle_policy_verdict_event(body, conversation_id)
         # Pydantic's discriminated-union validator should reject
         # unknown variants before we reach this branch; if it ever
         # falls through, fail loud rather than silently no-op.
@@ -1205,35 +1205,42 @@ class HarnessApp:
                 self._active_turn_ctxs.pop(conversation_id, None)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    async def _handle_tool_result_event(self, body: ToolResultEvent) -> Response:
+    async def _handle_tool_result_event(
+        self, body: ToolResultEvent, conversation_id: str | None = None
+    ) -> Response:
         """
         Apply a :class:`ToolResultEvent` to whichever in-flight
         turn has a matching parked tool-call Future.
 
+        In shared-runner mode only turns belonging to *conversation_id*
+        are searched; ``None`` searches all turns (legacy).
+
         Loose-by-default semantics — stale ``call_id`` entries
-        silently no-op. Benign races (turn cancelled mid-event,
-        Future already resolved on a different path) MUST NOT
-        surface as hard failures upstream; the streaming response
-        is the source of truth for whether the result actually
-        landed.
+        silently no-op.
 
         :param body: The decoded :class:`ToolResultEvent`.
+        :param conversation_id: Target conversation, or ``None``.
         :returns: 204 No Content.
         """
         for ctx in self._in_flight.values():
+            if conversation_id is not None and ctx.conversation_id != conversation_id:
+                continue
             if ctx._complete_tool(body.call_id, body.output):
                 break
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    async def _handle_policy_verdict_event(self, body: PolicyVerdictEvent) -> Response:
+    async def _handle_policy_verdict_event(
+        self, body: PolicyVerdictEvent, conversation_id: str | None = None
+    ) -> Response:
         """
         Apply a :class:`PolicyVerdictEvent` to whichever in-flight
         turn has a matching parked policy-evaluation Future.
 
-        Loose semantics — stale ``evaluation_id`` entries silently
-        no-op, same as :meth:`_handle_tool_result_event`.
+        In shared-runner mode only turns belonging to *conversation_id*
+        are searched; ``None`` searches all turns (legacy).
 
         :param body: The decoded :class:`PolicyVerdictEvent`.
+        :param conversation_id: Target conversation, or ``None``.
         :returns: 204 No Content.
         """
         verdict = PolicyVerdictPayload(
@@ -1242,6 +1249,8 @@ class HarnessApp:
             data=body.data,
         )
         for ctx in self._in_flight.values():
+            if conversation_id is not None and ctx.conversation_id != conversation_id:
+                continue
             if ctx._complete_policy_evaluation(body.evaluation_id, verdict):
                 break
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1716,6 +1725,7 @@ class HarnessApp:
         self,
         elicitation_id: str,
         body: ElicitationResult,
+        conversation_id: str | None = None,
     ) -> Response:
         """
         Resolve a parked elicitation Future from an
@@ -1733,6 +1743,8 @@ class HarnessApp:
             matches the id (across all in-flight turns).
         """
         for ctx in self._in_flight.values():
+            if conversation_id is not None and ctx.conversation_id != conversation_id:
+                continue
             if ctx._complete_elicitation(elicitation_id, body):
                 return Response(status_code=status.HTTP_204_NO_CONTENT)
         raise OmnigentError(

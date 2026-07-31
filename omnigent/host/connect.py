@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping
@@ -1147,16 +1148,16 @@ class HostProcess:
         ):
             try:
                 token_dir = pending_tokens_dir(stable_id)
-                token_dir.mkdir(parents=True, exist_ok=True)
-                # Validate token is safe to use as a filename (secrets.token_urlsafe
-                # produces [A-Za-z0-9_-] only, but assert defensively).
-                safe_token = os.path.basename(frame.binding_token)
-                if not safe_token or safe_token != frame.binding_token:
-                    raise OSError(
-                        f"binding token contains path separators: {frame.binding_token!r}"
-                    )
-                token_file = token_dir / safe_token
+                # Create directory with restricted permissions (0o700) so
+                # the token files are not world-readable on multi-user hosts.
+                token_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # Use a random filename (not the token) to avoid leaking the
+                # secret via directory listing. Token content is written with
+                # restricted permissions (0o600).
+                token_filename = secrets.token_hex(8)
+                token_file = token_dir / token_filename
                 token_file.write_text(frame.binding_token)
+                token_file.chmod(0o600)
                 existing_handle.proc.send_signal(RUNNER_ADD_SESSION_SIGNAL)
                 # Wait for the runner to pick up the token (it deletes the
                 # file after starting the extra tunnel task). This prevents

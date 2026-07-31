@@ -1276,7 +1276,7 @@ async def _run_tunnel_from_env() -> None:
     )
 
     _pending_tokens_dir = pending_tokens_dir(runner_id)
-    _pending_tokens_dir.mkdir(parents=True, exist_ok=True)
+    _pending_tokens_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     # Set (instead of stop_event) on an idle-reaper shutdown so the tunnel
     # drains its session streams and closes cleanly — the server then sees an
@@ -1295,13 +1295,20 @@ async def _run_tunnel_from_env() -> None:
         except OSError:
             return
         for token_file in token_files:
-            token = token_file.name.strip()
-            # Skip empty or suspicious filenames (should only be token_urlsafe chars).
+            try:
+                # Token is stored as file content, not filename, so it is
+                # not exposed by directory listing on multi-user hosts.
+                token = token_file.read_text().strip()
+            except OSError:
+                continue
+            # Validate token contains only safe chars before using it.
             _SAFE_TOKEN_CHARS = frozenset(
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
             )
             if not token or not all(c in _SAFE_TOKEN_CHARS for c in token):
-                _logger.warning("skipping suspicious pending-token file: %r", token_file.name)
+                _logger.warning(
+                    "skipping suspicious pending-token content in: %r", token_file.name
+                )
                 continue
             extra_runner_id = token_bound_runner_id(token)
             _logger.info("adopting new session tunnel: %s", extra_runner_id)

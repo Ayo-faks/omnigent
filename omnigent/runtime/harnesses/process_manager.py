@@ -922,9 +922,7 @@ class HarnessProcessManager:
         """
         self._in_flight_response_ids.pop(conversation_id, None)
 
-    async def release(
-        self, conversation_id: str, *, only_if_idle_cutoff: float | None = None
-    ) -> None:
+    async def release(self, conversation_id: str) -> None:
         """
         Release a conversation from its shared harness subprocess.
 
@@ -933,13 +931,8 @@ class HarnessProcessManager:
         count for the harness entry. The subprocess is torn down only
         when the reference count reaches zero (last conversation released).
 
-        ``only_if_idle_cutoff`` makes the release conditional: the
-        conversation is released only if its harness entry is still
-        idle — untouched since the cutoff and with no turn in flight.
-
         :param conversation_id: AP-allocated conversation id.
         """
-        # For the idle-reaper path, use the hkey to check idleness.
         async with self._registry_lock:
             hkey = self._conv_to_hkey.get(conversation_id)
         if hkey is None:
@@ -947,19 +940,6 @@ class HarnessProcessManager:
         spawn_lock = await self._get_spawn_lock(hkey)
         async with spawn_lock:
             async with self._registry_lock:
-                if only_if_idle_cutoff is not None:
-                    entry = self._entries.get(hkey)
-                    if (
-                        entry is None
-                        or entry.last_used_at > only_if_idle_cutoff
-                        or conversation_id in self._in_flight_response_ids
-                    ):
-                        _logger.info(
-                            "skipping idle reap for conversation %s: harness entry "
-                            "became active or was already released during the pass",
-                            conversation_id,
-                        )
-                        return
                 self._release_generations[hkey] = self._release_generations.get(hkey, 0) + 1
                 self._conv_to_hkey.pop(conversation_id, None)
                 self._in_flight_response_ids.pop(conversation_id, None)
