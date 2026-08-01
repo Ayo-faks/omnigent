@@ -3,8 +3,11 @@ Provider catalog and model discovery for onboarding.
 
 Model lists are fetched live from the MLflow GitHub Release catalog
 (``https://github.com/mlflow/mlflow/releases/download/model-catalog%2Flatest/{provider}.json``)
-with a 1-hour in-process TTL cache. MLflow is **not** a required
-dependency — the fetch uses only the stdlib ``urllib.request``.
+with a 1-hour memory/disk freshness window and a validated 7-day
+stale-if-error cache. A stale disk entry serves immediately while a
+single-flight background refresh replaces it, so the download stays off
+latency-sensitive request paths. MLflow is **not** a required dependency —
+the fetch uses only the standard library ``urllib.request``.
 Auth configuration (``PROVIDER_ENV_VARS``, ``get_provider_config``) is
 omnigent-specific and lives here permanently.
 """
@@ -12,16 +15,25 @@ omnigent-specific and lives here permanently.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import re
+import sys
+import tempfile
 import threading
+import time
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Collection
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 import cachetools
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -120,11 +132,166 @@ _MLFLOW_CATALOG_URL = (
     "https://github.com/mlflow/mlflow/releases/download/model-catalog%2Flatest/{provider}.json"
 )
 _CATALOG_TTL_SECONDS = 3600
-_catalog_cache: cachetools.TTLCache[str, dict[str, Any] | None] = cachetools.TTLCache(
+_CATALOG_STALE_IF_ERROR_SECONDS = 7 * 24 * 60 * 60
+_CATALOG_DISK_SCHEMA_VERSION = 1
+_CATALOG_UPSTREAM_SCHEMA_MAJOR = 1
+_CATALOG_CACHE_PROVIDER_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
+@dataclass(frozen=True)
+class _DiskCatalogEntry:
+    """Validated persistent catalog plus its source metadata."""
+
+    catalog: dict[str, Any]
+    source_url: str
+    fetched_at: float
+
+
+_catalog_cache: cachetools.TTLCache[str, _DiskCatalogEntry | None] = cachetools.TTLCache(
     maxsize=64, ttl=_CATALOG_TTL_SECONDS
 )
 _catalog_cache_lock = threading.Lock()
-_CATALOG_MISS = object()
+
+
+def _catalog_source_url(provider: str) -> str:
+    """Return the release-asset URL for one provider catalog."""
+    return _MLFLOW_CATALOG_URL.format(provider=urllib.parse.quote(provider, safe=""))
+
+
+def _catalog_now() -> float:
+    """Return wall-clock time through a test-local patch seam."""
+    return time.time()
+
+
+def _catalog_cache_root() -> Path:
+    """Return the platform user-cache directory for model catalogs."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Caches" / "Omnigent" / "model-catalog"
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        root = Path(local_app_data) if local_app_data else home / "AppData" / "Local"
+        return root / "Omnigent" / "Cache" / "model-catalog"
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    root = Path(xdg_cache).expanduser() if xdg_cache else home / ".cache"
+    return root / "omnigent" / "model-catalog"
+
+
+def _catalog_cache_path(provider: str) -> Path | None:
+    """Return the safe cache path for *provider*, or ``None`` if invalid."""
+    if _CATALOG_CACHE_PROVIDER_RE.fullmatch(provider) is None:
+        return None
+    return _catalog_cache_root() / f"{provider}.json"
+
+
+def _supported_catalog_schema_version(value: object) -> bool:
+    """Return whether *value* has a compatible MLflow catalog major version."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == _CATALOG_UPSTREAM_SCHEMA_MAJOR
+    if not isinstance(value, str):
+        return False
+    components = value.split(".")
+    return (
+        bool(components)
+        and all(component.isascii() and component.isdigit() for component in components)
+        and int(components[0]) == _CATALOG_UPSTREAM_SCHEMA_MAJOR
+    )
+
+
+def _valid_catalog_payload(value: object) -> TypeGuard[dict[str, Any]]:
+    """Return whether *value* matches a compatible MLflow catalog schema."""
+    if not isinstance(value, dict):
+        return False
+    if not _supported_catalog_schema_version(value.get("schema_version")):
+        return False
+    models = value.get("models")
+    return (
+        isinstance(models, dict)
+        and bool(models)
+        and all(
+            isinstance(model_id, str) and bool(model_id) and isinstance(entry, dict)
+            for model_id, entry in models.items()
+        )
+    )
+
+
+def _read_disk_catalog(provider: str, source_url: str) -> _DiskCatalogEntry | None:
+    """Read and validate one persistent catalog cache entry."""
+    path = _catalog_cache_path(provider)
+    if path is None:
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    fetched_at = value.get("fetched_at")
+    if (
+        isinstance(fetched_at, bool)
+        or not isinstance(fetched_at, (int, float))
+        or not math.isfinite(fetched_at)
+    ):
+        return None
+    catalog = value.get("catalog")
+    if (
+        value.get("cache_schema_version") != _CATALOG_DISK_SCHEMA_VERSION
+        or value.get("source_url") != source_url
+    ):
+        return None
+    if not _valid_catalog_payload(catalog):
+        return None
+    if value.get("catalog_schema_version") != catalog.get("schema_version"):
+        return None
+    return _DiskCatalogEntry(
+        catalog=catalog,
+        source_url=source_url,
+        fetched_at=float(fetched_at),
+    )
+
+
+def _write_disk_catalog(entry: _DiskCatalogEntry, provider: str) -> None:
+    """Atomically persist one validated provider catalog."""
+    path = _catalog_cache_path(provider)
+    if path is None or not _valid_catalog_payload(entry.catalog):
+        return
+    value = {
+        "cache_schema_version": _CATALOG_DISK_SCHEMA_VERSION,
+        "catalog_schema_version": entry.catalog["schema_version"],
+        "source_url": entry.source_url,
+        "fetched_at": entry.fetched_at,
+        "catalog": entry.catalog,
+    }
+    temp_path: Path | None = None
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(value, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    except (OSError, TypeError, ValueError) as exc:
+        _logger.debug("Could not persist model catalog cache for %s: %s", provider, exc)
+    finally:
+        if temp_path is not None:
+            with suppress(OSError):
+                temp_path.unlink(missing_ok=True)
+
+
+def _catalog_age_seconds(entry: _DiskCatalogEntry, now: float) -> float:
+    """Return a non-negative age, tolerating a local clock moving backward."""
+    return max(0.0, now - entry.fetched_at)
 
 
 def _download_provider_catalog(provider: str) -> dict[str, Any] | None:
@@ -140,71 +307,47 @@ def _download_provider_catalog(provider: str) -> dict[str, Any] | None:
     """
     if os.environ.get("OMNIGENT_DISABLE_CATALOG_LOOKUP") == "1":
         return None
-    url = _MLFLOW_CATALOG_URL.format(provider=provider)
+    url = _catalog_source_url(provider)
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
             result: dict[str, Any] = json.loads(resp.read())
+        if not _valid_catalog_payload(result):
+            _logger.warning("Ignoring incompatible model catalog payload for %s", provider)
+            return None
         return result
     except Exception:
         return None
 
 
-def _catalog_disk_cache_path(provider: str) -> Path:
-    """
-    Path of the on-disk copy of *provider*'s catalog.
-
-    Lives under the persistent data dir (honoring ``OMNIGENT_DATA_DIR``)
-    so it survives process restarts and hourly TTL expiries.
-
-    :param provider: Provider name, e.g. ``"anthropic"``.
-    :returns: Absolute path of the cached catalog JSON file.
-    """
-    override = os.environ.get("OMNIGENT_DATA_DIR")
-    data_dir = Path(override).expanduser() if override else Path.home() / ".omnigent"
-    return data_dir / "model-catalog" / f"{provider}.json"
-
-
-def _read_catalog_from_disk(provider: str) -> dict[str, Any] | None:
-    """
-    Load the last-downloaded catalog for *provider* from disk.
-
-    :param provider: Provider name, e.g. ``"anthropic"``.
-    :returns: The parsed catalog dict, or ``None`` when absent/corrupt.
-    """
-    try:
-        raw = _catalog_disk_cache_path(provider).read_text(encoding="utf-8")
-        result = json.loads(raw)
-        return result if isinstance(result, dict) else None
-    except Exception:
-        return None
-
-
-def _write_catalog_to_disk(provider: str, catalog: dict[str, Any]) -> None:
-    """
-    Best-effort atomic write of *catalog* to the disk cache.
-
-    :param provider: Provider name, e.g. ``"anthropic"``.
-    :param catalog: The freshly downloaded catalog dict to persist.
-    """
-    try:
-        path = _catalog_disk_cache_path(provider)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(catalog), encoding="utf-8")
-        tmp.replace(path)
-    except Exception:
-        return
-
-
 _catalog_refresh_inflight: set[str] = set()
+
+
+def _refresh_provider_catalog_now(provider: str) -> None:
+    """
+    Blocking live refresh of one provider catalog.
+
+    Downloads, validates, persists, and updates the in-memory cache; an
+    unusable download leaves both tiers serving the previous copy.
+
+    :param provider: Provider name, e.g. ``"anthropic"``.
+    """
+    now = _catalog_now()
+    result = _download_provider_catalog(provider)
+    if result is None or not _valid_catalog_payload(result):
+        return
+    entry = _DiskCatalogEntry(
+        catalog=result,
+        source_url=_catalog_source_url(provider),
+        fetched_at=now,
+    )
+    _write_disk_catalog(entry, provider)
+    with _catalog_cache_lock:
+        _catalog_cache[provider] = entry
 
 
 def _refresh_catalog_in_background(provider: str) -> None:
     """
-    Re-download *provider*'s catalog off-thread, single-flight.
-
-    Updates the in-memory TTL cache and the disk copy on success;
-    a failed download leaves both serving the previous copy.
+    Run :func:`_refresh_provider_catalog_now` off-thread, single-flight.
 
     :param provider: Provider name, e.g. ``"anthropic"``.
     """
@@ -215,11 +358,7 @@ def _refresh_catalog_in_background(provider: str) -> None:
 
     def _run() -> None:
         try:
-            result = _download_provider_catalog(provider)
-            if result is not None:
-                with _catalog_cache_lock:
-                    _catalog_cache[provider] = result
-                _write_catalog_to_disk(provider, result)
+            _refresh_provider_catalog_now(provider)
         finally:
             with _catalog_cache_lock:
                 _catalog_refresh_inflight.discard(provider)
@@ -229,44 +368,71 @@ def _refresh_catalog_in_background(provider: str) -> None:
 
 def _fetch_provider_catalog(provider: str) -> dict[str, Any]:
     """
-    Return the MLflow catalog for *provider* without blocking on the network.
+    Return the MLflow catalog for *provider* through memory and disk caches.
 
-    Resolution order: the 1-hour in-process TTL cache; then the on-disk
-    copy of the last successful download (served immediately while a
-    background single-flight refresh updates both caches); then — only
-    when no disk copy exists yet (true first run) — a blocking download.
-    This keeps the fetch off latency-sensitive request paths (the session
-    snapshot blocks the web UI's "Loading conversation" gate on it).
-
-    Falls back to an empty dict on network failure (or when the lookup
-    is disabled via ``OMNIGENT_DISABLE_CATALOG_LOOKUP``) so callers
-    degrade gracefully rather than raising.
+    Fresh entries (memory, or a disk copy under one hour old) serve
+    directly. A stale validated disk entry serves immediately — for at
+    most seven days — while a single-flight background refresh replaces
+    it: the download must stay off latency-sensitive request paths (the
+    session snapshot blocks the web UI's "Loading conversation" gate on
+    it). Only a true first run (no usable disk entry) blocks on the
+    network; otherwise callers receive an empty dict. Setting
+    ``OMNIGENT_DISABLE_CATALOG_LOOKUP=1`` bypasses every cache tier and
+    network.
 
     :param provider: Provider name, e.g. ``"anthropic"``.
     :returns: Parsed catalog dict (``schema_version`` + ``models`` keys),
         or ``{}`` on failure.
     """
-    with _catalog_cache_lock:
-        cached = _catalog_cache.get(provider, _CATALOG_MISS)
-        if cached is not _CATALOG_MISS:
-            return cached or {}
     if os.environ.get("OMNIGENT_DISABLE_CATALOG_LOOKUP") == "1":
-        # Fully inert under the test seam: no disk reads, no refresh threads.
-        with _catalog_cache_lock:
-            _catalog_cache[provider] = None
         return {}
-    disk = _read_catalog_from_disk(provider)
-    if disk is not None:
-        with _catalog_cache_lock:
-            _catalog_cache[provider] = disk
-        _refresh_catalog_in_background(provider)
-        return disk
-    result = _download_provider_catalog(provider)
+    now = _catalog_now()
+    source_url = _catalog_source_url(provider)
     with _catalog_cache_lock:
-        _catalog_cache[provider] = result
-    if result is not None:
-        _write_catalog_to_disk(provider, result)
-    return result or {}
+        cached: _DiskCatalogEntry | None
+        try:
+            cached = _catalog_cache[provider]
+        except KeyError:
+            pass
+        else:
+            if cached is None:
+                return {}
+            if _catalog_age_seconds(cached, now) <= _CATALOG_STALE_IF_ERROR_SECONDS:
+                return cached.catalog
+            del _catalog_cache[provider]
+    disk_entry = _read_disk_catalog(provider, source_url)
+    if disk_entry is not None:
+        age_seconds = _catalog_age_seconds(disk_entry, now)
+        if age_seconds <= _CATALOG_TTL_SECONDS:
+            with _catalog_cache_lock:
+                _catalog_cache[provider] = disk_entry
+            return disk_entry.catalog
+        if age_seconds <= _CATALOG_STALE_IF_ERROR_SECONDS:
+            _logger.warning(
+                "Using stale model catalog cache provider=%s age_seconds=%.0f source=%s",
+                provider,
+                age_seconds,
+                disk_entry.source_url,
+            )
+            with _catalog_cache_lock:
+                _catalog_cache[provider] = disk_entry
+            _refresh_catalog_in_background(provider)
+            return disk_entry.catalog
+    # First run, or an over-age/invalid disk entry: nothing to serve, so
+    # the download runs in-line. Over-age entries stay failed-closed — a
+    # week-old catalog must not become a default silently.
+    result = _download_provider_catalog(provider)
+    live_entry: _DiskCatalogEntry | None = None
+    if result is not None and _valid_catalog_payload(result):
+        live_entry = _DiskCatalogEntry(
+            catalog=result,
+            source_url=source_url,
+            fetched_at=now,
+        )
+        _write_disk_catalog(live_entry, provider)
+    with _catalog_cache_lock:
+        _catalog_cache[provider] = live_entry
+    return live_entry.catalog if live_entry is not None else {}
 
 
 def _list_provider_names() -> list[str]:
