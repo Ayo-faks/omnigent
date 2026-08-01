@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Create the catalog / schema / volume the skillpack POC needs.
 #
-# Idempotent: re-running is safe (existing objects return HTTP 409, which this
-# script treats as success). Talks to the UC OSS REST API directly with curl
-# so it has no Python dependency.
+# Idempotent: re-running is safe, and it succeeds whether the server is bare or
+# already has unity/omnigent/skillpacks. The v0.5.0 image ships with the `unity`
+# catalog pre-created, so "already exists" must be a success — UC signals it as
+# either HTTP 409 or HTTP 400 with an *_ALREADY_EXISTS error_code body. Talks to
+# the UC OSS REST API directly with curl so it has no Python dependency.
 #
 # POC / not for production.
 set -euo pipefail
@@ -19,19 +21,24 @@ VOLUME="${SKILLPACK_VOLUME:-skillpacks}"
 # bytes under ./data/${VOLUME}.
 VOLUME_STORAGE="file:///home/unitycatalog/etc/data/${VOLUME}"
 
-# POST helper: succeeds on 2xx AND on 409 (already exists).
+# POST helper: succeeds on 2xx AND on an already-exists signal — either HTTP 409
+# or HTTP 400 with an *_ALREADY_EXISTS error_code body (what UC OSS v0.5.0
+# returns for a pre-existing catalog/schema/volume).
 post() {
-  local path="$1" body="$2" code
+  local path="$1" body="$2" code out
   code="$(curl -sS -o /tmp/skillpack_boot.out -w '%{http_code}' \
     -X POST "${API}${path}" \
     -H 'Content-Type: application/json' \
     -d "${body}")"
+  out="$(cat /tmp/skillpack_boot.out)"
   if [[ "${code}" == 2* ]]; then
     echo "  ok (${code})"
   elif [[ "${code}" == "409" ]]; then
     echo "  already exists (409)"
+  elif [[ "${code}" == "400" && "${out}" == *ALREADY_EXISTS* ]]; then
+    echo "  already exists (400 ALREADY_EXISTS)"
   else
-    echo "  FAILED (${code}): $(cat /tmp/skillpack_boot.out)" >&2
+    echo "  FAILED (${code}): ${out}" >&2
     return 1
   fi
 }

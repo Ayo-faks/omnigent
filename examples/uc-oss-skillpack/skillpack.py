@@ -241,12 +241,21 @@ def _ensure_table_registered(
     storage_location: str,
 ) -> None:
     """
-    Register the metadata table in UC if it is not already present.
+    Best-effort register the metadata table in UC.
 
     Creates ``unity.omnigent.skills`` as an EXTERNAL table pointing at the
     manifest's storage location so the three-level name exists and is
     inspectable over REST. Row data itself lives in the manifest blob (see the
     module docstring) — this is registration only.
+
+    Registration is **best-effort**: the blob + manifest are the source of
+    truth and were already written before this runs. A real UC OSS server
+    rejects an EXTERNAL table whose ``storage_location`` isn't under a
+    registered external location (HTTP 400), so on any non-2xx (other than a
+    409, treated as idempotent success) this logs a concise note to stderr and
+    returns rather than raising — a failed table registration must not abort an
+    otherwise-successful push. The round-trip (push → list → pull) reads the
+    manifest, not this table, so it is unaffected.
 
     :param client: The UC REST client.
     :param table: Three-level table name, e.g. ``"unity.omnigent.skills"``.
@@ -303,9 +312,17 @@ def _ensure_table_registered(
         "comment": "Omnigent skill/knowledge pack registry (POC, store-only).",
     }
     resp = client._client.post("/tables", json=body)
-    if resp.status_code == httpx.codes.CONFLICT:
+    if resp.is_success or resp.status_code == httpx.codes.CONFLICT:
         return
-    resp.raise_for_status()
+    # Non-2xx (e.g. 400 when storage_location isn't under a registered external
+    # location): keep the push successful — table registration is inspectability
+    # only. Surface a one-line note without the full body.
+    reason = resp.reason_phrase or "error"
+    print(
+        f"note: skill metadata table registration skipped: {resp.status_code} "
+        f"{reason}; blob+manifest stored, round-trip unaffected",
+        file=sys.stderr,
+    )
 
 
 def _make_store(args: argparse.Namespace) -> UnityCatalogOSSArtifactStore:

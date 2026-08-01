@@ -13,7 +13,7 @@ services:
   uc:
     # Pinned to a specific published tag for reproducibility. If this image
     # cannot be pulled, build from source instead (see README "Fallback").
-    image: unitycatalog/unitycatalog:v0.5.1
+    image: unitycatalog/unitycatalog:v0.5.0
     container_name: uc-oss-skillpack
     ports:
       - "8080:8080"

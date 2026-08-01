@@ -75,7 +75,7 @@ make up            # or: ./run.sh up
 ```
 
 `make up` will:
-1. `docker compose up -d` the pinned `unitycatalog/unitycatalog:v0.5.1` image
+1. `docker compose up -d` the pinned `unitycatalog/unitycatalog:v0.5.0` image
    (REST API on `:8080`).
 2. Wait for the REST API to answer.
 3. Run `./bootstrap.sh` to create the catalog / schema / volume (idempotent).
@@ -89,13 +89,13 @@ curl -s localhost:8080/api/2.1/unity-catalog/volumes/unity.omnigent.skillpacks |
 
 ### Fallback: build the image from source
 
-If `unitycatalog/unitycatalog:v0.5.1` can't be pulled, build it locally and
+If `unitycatalog/unitycatalog:v0.5.0` can't be pulled, build it locally and
 retag (the compose file references that exact tag):
 
 ```bash
-git clone --depth 1 --branch v0.5.1 https://github.com/unitycatalog/unitycatalog
+git clone --depth 1 --branch v0.5.0 https://github.com/unitycatalog/unitycatalog
 cd unitycatalog
-docker build -t unitycatalog/unitycatalog:v0.5.1 .
+docker build -t unitycatalog/unitycatalog:v0.5.0 .
 ```
 
 Then `make up` as above.
@@ -191,7 +191,7 @@ make clean         # also delete ./data (wipes stored packs)
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | UC OSS server (pinned `v0.5.1`), `:8080`, `./data` bind mount |
+| `docker-compose.yml` | UC OSS server (pinned `v0.5.0`), `:8080`, `./data` bind mount |
 | `run.sh` | `up` / `down` / `clean` / `logs` / `status` |
 | `Makefile` | `make up/down/clean/logs/status/demo` wrappers |
 | `bootstrap.sh` | Create catalog / schema / volume over REST (idempotent) |
@@ -204,7 +204,7 @@ backends.
 
 ## What was assumed / stubbed (for reviewers)
 
-- **Image tag**: pinned to `unitycatalog/unitycatalog:v0.5.1` (a published tag
+- **Image tag**: pinned to `unitycatalog/unitycatalog:v0.5.0` (a published tag
   on Docker Hub at time of writing). Fallback build instructions above.
 - **Credential vending**: for a local `file://` volume there are no cloud
   credentials to vend, so the store resolves the storage location and

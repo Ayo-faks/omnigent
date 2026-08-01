@@ -244,6 +244,59 @@ def test_push_list_pull_round_trip_via_cli(tmp_path, monkeypatch, store_factory,
     assert pulled.read_text() == (skill_dir / "SKILL.md").read_text()
 
 
+def test_push_survives_table_registration_failure(tmp_path, monkeypatch, capsys):
+    """A non-409 error from the /tables endpoint (a real UC OSS server rejects
+    the EXTERNAL JSON table with 400) must NOT abort push: the blob + manifest
+    are the source of truth and are already written, and table registration is
+    inspectability-only. Guards demo.sh against a non-atomic push abort."""
+    storage = (tmp_path / "vol").as_uri()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and path.endswith(f"/volumes/{_VOLUME}"):
+            return httpx.Response(
+                200,
+                json={
+                    "catalog_name": "unity",
+                    "schema_name": "omnigent",
+                    "name": "skillpacks",
+                    "volume_id": "vol-1",
+                    "volume_type": "EXTERNAL",
+                    "storage_location": storage,
+                    "full_name": _VOLUME,
+                },
+            )
+        if request.method == "POST" and path.endswith("/tables"):
+            # What real UC OSS returns: storage_location not under a registered
+            # external location.
+            return httpx.Response(400, json={"error_code": "INVALID_PARAMETER_VALUE"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    client = httpx.Client(
+        base_url="http://uc.test/api/2.1/unity-catalog",
+        transport=httpx.MockTransport(handler),
+    )
+    rest = UnityCatalogRestClient(uri="http://uc.test", client=client)
+    store = UnityCatalogOSSArtifactStore(storage_location=_VOLUME, client=rest)
+    monkeypatch.setattr(skillpack, "_make_store", lambda args: store)
+
+    skill_dir = _write_skill(tmp_path / "src", "gamma", "Registration-failure skill.")
+    parser = skillpack.build_parser()
+
+    # push must succeed (exit 0) despite the 400 from /tables ...
+    rc = skillpack.cmd_push(parser.parse_args(["push", str(skill_dir)]))
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "gamma v1" in captured.out
+    # ... and it must warn (best-effort) rather than raise.
+    assert "table registration skipped" in captured.err
+    assert "400" in captured.err
+
+    # The blob + manifest are still stored, so the round-trip is intact.
+    assert store.get(skillpack._blob_key("gamma")) == skillpack.pack_skill(skill_dir).blob
+    assert skillpack._load_manifest(store)["gamma"].blob_key == "skills/gamma/gamma.tar.gz"
+
+
 def test_pull_unknown_name_errors(tmp_path, monkeypatch, store_factory, capsys):
     """pull of an unknown pack name returns exit code 1 with a clear message."""
     store = store_factory()
