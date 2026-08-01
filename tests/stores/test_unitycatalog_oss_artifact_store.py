@@ -199,6 +199,23 @@ def test_put_overwrites(store):
     assert store.get("k") == b"second"
 
 
+def test_directory_prefix_is_not_an_artifact(store):
+    """A key that resolves to a directory (a prefix) is not an artifact:
+    exists() is False and get() raises KeyError, not IsADirectoryError —
+    matching object-store semantics."""
+    store.put("skills/foo/foo.tar.gz", b"x")
+    # "skills" and "skills/foo" are directories on disk, not stored blobs.
+    assert store.exists("skills") is False
+    assert store.exists("skills/foo") is False
+    with pytest.raises(KeyError):
+        store.get("skills")
+    with pytest.raises(KeyError):
+        store.get("skills/foo")
+    # delete on a directory key is a no-op (never a recursive delete).
+    store.delete("skills")
+    assert store.exists("skills/foo/foo.tar.gz") is True
+
+
 # ── list (concrete-only, not on the ABC) ────────────────────
 
 

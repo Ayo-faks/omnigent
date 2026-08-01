@@ -84,11 +84,25 @@ def test_pack_skill_archive_contains_files_under_name_prefix(tmp_path):
     assert names == ["triage/SKILL.md", "triage/reference.md"]
 
 
-def test_pack_skill_is_deterministic(tmp_path):
-    """Packing the same directory twice yields identical bytes (mtimes/order
-    don't leak in), so re-pushing an unchanged skill is stable."""
+def test_pack_skill_is_deterministic(tmp_path, monkeypatch):
+    """Packing the same directory twice yields byte-identical output even when
+    wall-clock time advances between the two packs. This is meaningful only
+    because the gzip layer is written with a fixed mtime=0 header (mode="w:gz"
+    stamps a live mtime and would fail this)."""
     skill_dir = _write_skill(tmp_path, "same", "Deterministic pack.")
-    assert skillpack.pack_skill(skill_dir).blob == skillpack.pack_skill(skill_dir).blob
+
+    # First pack at t=1000, second at t=2000 — a different second, so a live
+    # gzip-header mtime would differ between the two blobs.
+    monkeypatch.setattr("time.time", lambda: 1000.0)
+    blob1 = skillpack.pack_skill(skill_dir).blob
+    monkeypatch.setattr("time.time", lambda: 2000.0)
+    blob2 = skillpack.pack_skill(skill_dir).blob
+
+    assert blob1 == blob2
+    # gzip header stores mtime little-endian in bytes 4..8; assert it's zeroed
+    # so the determinism doesn't merely rely on both calls landing in the same
+    # second.
+    assert blob1[4:8] == b"\x00\x00\x00\x00"
 
 
 def test_pack_skill_missing_skill_md(tmp_path):
@@ -98,6 +112,35 @@ def test_pack_skill_missing_skill_md(tmp_path):
     empty.mkdir()
     with pytest.raises(FileNotFoundError, match=r"SKILL\.md"):
         skillpack.pack_skill(empty)
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["/escape", "../escape", "a/b", "C:\\evil", "\\\\unc\\share", "..", ""],
+)
+def test_pack_skill_rejects_unsafe_names(tmp_path, bad_name):
+    """A malicious/malformed SKILL.md `name:` is rejected at pack time, before
+    it can become a traversing tar member or a corrupt store key. Proves the
+    PACKER (not just _safe_extract) refuses unsafe names."""
+    # The directory name is safe; only the frontmatter `name:` is hostile.
+    skill_dir = tmp_path / "src"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {bad_name!r}\ndescription: hostile.\n---\n\nBody.\n"
+    )
+    with pytest.raises(ValueError, match="invalid skill name"):
+        skillpack.pack_skill(skill_dir)
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["/escape", "../escape", "a/b", "C:\\evil", "\\\\unc\\share"],
+)
+def test_blob_key_rejects_unsafe_names(bad_name):
+    """_blob_key validates the name too, so the store key and the tar arcname
+    can't diverge on an unsafe name."""
+    with pytest.raises(ValueError, match="invalid skill name"):
+        skillpack._blob_key(bad_name)
 
 
 # ── push / list / pull round-trip ───────────────────────────

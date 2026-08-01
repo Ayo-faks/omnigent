@@ -36,6 +36,7 @@ POC / not for production.
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import json
 import os
@@ -43,8 +44,7 @@ import sys
 import tarfile
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from omnigent.spec.parser import _parse_skill
 from omnigent.spec.types import SkillSpec
@@ -103,26 +103,68 @@ class PackedSkill:
     blob: bytes
 
 
+def _validate_skill_name(name: str) -> str:
+    """
+    Validate a skill's ``name`` before it becomes path material.
+
+    A skill's ``name`` (from its ``SKILL.md`` frontmatter) is used both as a
+    store-key path component (:func:`_blob_key`) and as the tar member prefix
+    (the arcname in :func:`pack_skill`). A malformed/malicious name like
+    ``/escape``, ``../escape``, ``a/b``, ``C:\\evil``, or ``\\\\unc\\share``
+    could otherwise emit an absolute/traversing tar member or a corrupt store
+    key (e.g. ``skills//escape//escape.tar.gz``) that stores but won't pull.
+    Require a single safe path component: reject empties, ``.``/``..``, forward
+    and back slashes, and Windows drive/UNC forms.
+
+    :param name: The ``name`` field parsed from ``SKILL.md``.
+    :returns: *name* unchanged when valid (for convenient inline use).
+    :raises ValueError: If *name* is not a single safe path component.
+    """
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or PurePosixPath(name).is_absolute()
+        or PureWindowsPath(name).is_absolute()
+        or PureWindowsPath(name).drive
+    ):
+        raise ValueError(
+            f"invalid skill name {name!r}: must be a single path component "
+            "(no '/', '\\\\', '..', absolute paths, or Windows drive/UNC forms)"
+        )
+    return name
+
+
 def _blob_key(name: str) -> str:
     """
     Compute the artifact-store key for a pack's tar.gz blob.
 
-    :param name: The skill name, e.g. ``"code-review"``.
+    :param name: The skill name, e.g. ``"code-review"``. Validated as a single
+        safe path component via :func:`_validate_skill_name`.
     :returns: The forward-slash key, e.g.
         ``"skills/code-review/code-review.tar.gz"``.
+    :raises ValueError: If *name* is not a single safe path component.
     """
+    _validate_skill_name(name)
     return f"skills/{name}/{name}.tar.gz"
 
 
 def pack_skill(skill_dir: Path) -> PackedSkill:
     """
-    Read a skill's frontmatter and produce a deterministic tar.gz.
+    Read a skill's frontmatter and produce a byte-stable tar.gz.
 
     Reuses the project's ``SKILL.md`` frontmatter parser
     (:func:`omnigent.spec.parser._parse_skill`) rather than duplicating the
-    YAML-frontmatter logic. The archive is reproducible: entries are sorted
-    and their mtimes zeroed, so packing the same directory twice yields
-    identical bytes.
+    YAML-frontmatter logic. The skill ``name`` is validated as a single safe
+    path component (:func:`_validate_skill_name`) before it becomes the tar
+    member prefix, so a malicious ``name:`` can't emit a traversing arcname.
+
+    The archive is reproducible across time: the gzip layer is written with a
+    fixed ``mtime=0`` header (via :class:`gzip.GzipFile`), entries are sorted,
+    and each member's mtime / uid / gid / uname / gname are normalized — so
+    packing the same directory twice yields byte-identical output regardless of
+    wall-clock time.
 
     :param skill_dir: Path to the skill directory containing a ``SKILL.md``,
         e.g. ``Path("~/.claude/skills/code-review")``.
@@ -130,6 +172,8 @@ def pack_skill(skill_dir: Path) -> PackedSkill:
         gzip-compressed tar bytes of the directory.
     :raises FileNotFoundError: If *skill_dir* is not a directory or has no
         ``SKILL.md``.
+    :raises ValueError: If the parsed skill ``name`` is not a single safe path
+        component.
     """
     skill_dir = skill_dir.expanduser()
     if not skill_dir.is_dir():
@@ -139,14 +183,20 @@ def pack_skill(skill_dir: Path) -> PackedSkill:
         raise FileNotFoundError(f"no SKILL.md in {skill_dir}")
 
     spec = _parse_skill(skill_md)
+    name = _validate_skill_name(spec.name)
 
     buf = io.BytesIO()
-    # mtime=0 + sorted entries → reproducible archive bytes.
-    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+    # gzip header mtime=0 + sorted entries + normalized member metadata →
+    # byte-stable archive across wall-clock time (mode="w:gz" would stamp a
+    # live mtime into the gzip header, breaking determinism).
+    with (
+        gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz,
+        tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar,
+    ):
         for path in sorted(skill_dir.rglob("*")):
             if not path.is_file():
                 continue
-            arcname = f"{spec.name}/{path.relative_to(skill_dir).as_posix()}"
+            arcname = f"{name}/{path.relative_to(skill_dir).as_posix()}"
             info = tar.gettarinfo(str(path), arcname=arcname)
             info.mtime = 0
             info.uid = info.gid = 0
@@ -242,7 +292,7 @@ def _ensure_table_registered(
             "nullable": False,
         },
     ]
-    body: dict[str, Any] = {
+    body: dict[str, object] = {
         "name": name,
         "catalog_name": catalog,
         "schema_name": schema,
@@ -427,10 +477,13 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="UC OSS server URI (env UC_OSS_URI; default http://localhost:8080)",
         )
+        # Prefer the env var: a --token on the command line can leak via shell
+        # history / the process list. Local UC OSS needs no token at all.
         sp.add_argument(
             "--token",
             default=None,
-            help="bearer token (env UC_OSS_TOKEN; local UC OSS needs none)",
+            help="bearer token (prefer env UC_OSS_TOKEN to avoid shell/process leaks; "
+            "local UC OSS needs none)",
         )
         sp.add_argument(
             "--local-root",

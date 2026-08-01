@@ -507,12 +507,17 @@ class UnityCatalogOSSArtifactStore(ArtifactStore):
         """
         Read bytes from the volume storage.
 
+        Only regular files are artifacts: a key that resolves to a directory
+        (e.g. a prefix like ``"skills"``) raises :class:`KeyError`, not an
+        ``IsADirectoryError`` — matching object-store semantics where a prefix
+        is not itself a retrievable object.
+
         :param key: Forward-slash-separated artifact key.
         :returns: The raw bytes of the stored blob.
-        :raises KeyError: If no blob exists for the key.
+        :raises KeyError: If no regular file exists for the key.
         """
         path = self._resolve(key)
-        if not path.exists():
+        if not path.is_file():
             raise KeyError(key)
         return path.read_bytes()
 
@@ -520,20 +525,26 @@ class UnityCatalogOSSArtifactStore(ArtifactStore):
         """
         Remove a blob from the volume storage. No-op if absent.
 
+        Only a regular file is unlinked; a key resolving to a directory (a
+        prefix) is a no-op, never a recursive delete.
+
         :param key: Forward-slash-separated artifact key.
         """
         path = self._resolve(key)
-        if path.exists():
+        if path.is_file():
             path.unlink()
 
     def exists(self, key: str) -> bool:
         """
         Check whether a blob exists for *key*.
 
+        Returns ``True`` only for a regular file; a directory key (a prefix)
+        is ``False``, so ``exists`` and ``get`` agree on what is an artifact.
+
         :param key: Forward-slash-separated artifact key.
-        :returns: ``True`` if the blob exists, ``False`` otherwise.
+        :returns: ``True`` if a regular file exists for the key, else ``False``.
         """
-        return self._resolve(key).exists()
+        return self._resolve(key).is_file()
 
     # ── beyond the ABC ───────────────────────────────────────
 
