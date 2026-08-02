@@ -242,14 +242,53 @@ def test_hello_frame_configured_harnesses_round_trip() -> None:
     assert decoded.configured_harnesses == {"claude-sdk": True, "codex": "needs-auth"}
 
 
+def test_hello_frame_gateway_inference_round_trip() -> None:
+    """Verify the hello frame's gateway_inference map survives encode → decode.
+
+    The False must survive as well as the True — the web gates the Smart
+    Routing option on it, and False is the actionable "hide the option" value
+    (plan 3f).
+    """
+    original = HostHelloFrame(
+        version="0.1.0",
+        frame_protocol_version=1,
+        name="corey-laptop",
+        gateway_inference={"claude-native": True, "codex": False},
+    )
+    decoded = decode_host_frame(encode_host_frame(original))
+    assert isinstance(decoded, HostHelloFrame)
+    assert decoded.gateway_inference == {"claude-native": True, "codex": False}
+
+
+def test_hello_frame_legacy_payload_gateway_inference_is_none() -> None:
+    """A hello payload with no gateway_inference key decodes to None (unknown).
+
+    An older host that never reports the map must read as "unknown" — never {}
+    or a raise — so the server can tell it apart from "nothing gateway-backed".
+    """
+    encoded = json.dumps(
+        {
+            "kind": "host.hello",
+            "version": "0.1.0",
+            "frame_protocol_version": 1,
+            "name": "old-host",
+        }
+    )
+    decoded = decode_host_frame(encoded)
+    assert isinstance(decoded, HostHelloFrame)
+    assert decoded.gateway_inference is None
+
+
 def test_harness_readiness_frame_round_trip() -> None:
     """Verify a live readiness refresh survives encode and decode."""
     original = HostHarnessReadinessFrame(
         configured_harnesses={"pi": True, "codex": "needs-auth"},
+        gateway_inference={"codex": True},
     )
     decoded = decode_host_frame(encode_host_frame(original))
     assert isinstance(decoded, HostHarnessReadinessFrame)
     assert decoded.configured_harnesses == {"pi": True, "codex": "needs-auth"}
+    assert decoded.gateway_inference == {"codex": True}
 
 
 def test_harness_readiness_frame_rejects_unknown_availability() -> None:
