@@ -13,10 +13,25 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from omnigent.model_catalog import model_family_token
 from omnigent.model_metadata import ModelCostTier, ModelIntent, ModelWireAPI
+
+# The frozen arms/fallbacks/spelling-pin live in the guard-blessed home
+# (omnigent/model_fallbacks.py) and are re-exported by the wave-0 contract; the
+# seam imports them from the contract so every stream reads one place. The
+# contract's resolve_route body is a stub — the real implementation is defined
+# here (this stream owns it) and callers import resolve_route/ResolvedRoute from
+# this module.
+from omnigent.server.routing_contract import (
+    FAMILY_FALLBACK,
+    MODEL_ID_PREFIXES,
+    SERVABLE_ALIASES,
+    ResolvedRoute,
+)
 
 if TYPE_CHECKING:
     import httpx  # used in type annotations only; runtime import is lazy in fetch_runner_models
@@ -607,6 +622,130 @@ class ExternalRoutingClient:
             rationale=out.rationale,
             harness=selected.harness or None,
         )
+
+
+# ── Route resolution seam (plan 3i) ──────────────────────────────────────────
+#
+# The four-step chain that translates the router's picked arm into a servable
+# catalog id: strip prefix → exact catalog match → one fixed family fallback →
+# honest decline. The wave-2 create path and turn gate import ``resolve_route``
+# from here. This is the WHOLE resolver: plan 3i rule 1 cuts the cost ladder
+# (MODEL_LISTS / _cost_position / nearest-cost walk / id allowlist) the oracle
+# carried, so there is exactly one fallback per family and nothing else.
+
+#: Family key -> the native harness whose pane serves that family (CUJ A is the
+#: model choice on Claude Code and Codex). gpt AND glm serve on the codex wire,
+#: so both land on the codex harness — a glm fallback never leaves it (plan 3i).
+_FAMILY_HARNESS: dict[str, str] = {
+    "claude": "claude-native",
+    "gpt": "codex-native",
+    "glm": "codex-native",
+}
+
+
+def _strip_catalog_prefix(model: str, prefixes: Sequence[str]) -> str:
+    """Strip the first matching *prefixes* entry from a catalog model id.
+
+    Separator-safe (oracle 0d trap, transcribed from ``strip_catalog_prefix``):
+    a prefix configured without its trailing separator (e.g. ``system.ai``)
+    would leave a leading ``.`` behind and corrupt the id, so one leading
+    ``.``/``-``/``_`` is dropped too.
+    """
+    for prefix in prefixes:
+        if prefix and model.startswith(prefix):
+            rest = model[len(prefix) :]
+            return rest[1:] if rest[:1] in ".-_" else rest
+    return model
+
+
+def _bare_id(model: str, prefixes: Sequence[str] = MODEL_ID_PREFIXES) -> str:
+    """Comparison spelling for a model id: prefix stripped, dots→dashes, folded.
+
+    A comparison key only, never an id to send anywhere: a picker's
+    ``gpt-5.6-sol`` and the router's ``gpt-5-6-sol`` reduce to one arm.
+    """
+    return _strip_catalog_prefix(model, prefixes).replace(".", "-").lower()
+
+
+def _arm_family(bare: str) -> str | None:
+    """Family key ('claude' | 'gpt' | 'glm') for a bare arm id, else ``None``.
+
+    Indexes :data:`FAMILY_FALLBACK`. glm is its own key — ``glm-5-2`` is neither
+    a gpt nor a codex spelling, so it is matched by name before the shared token
+    rule — though its fallback target (luna) is the same as gpt's.
+    """
+    if "glm" in bare:
+        return "glm"
+    token = model_family_token(bare)
+    if token == "claude":
+        return "claude"
+    if token == "openai":
+        return "gpt"
+    return None
+
+
+def _apply_servable_alias(model: str, prefixes: Sequence[str]) -> str:
+    """Map a resolved id onto the spelling this gateway actually serves.
+
+    A spelling, not a substitution (plan 3i): ``glm-5-2`` serves the Responses
+    API only under ``system.ai.glm-5-2`` (probed). ``raw_model`` still names the
+    arm, and the bare ids match, so the chip never reads it as a different pick.
+    """
+    return SERVABLE_ALIASES.get(_bare_id(model, prefixes), model)
+
+
+def resolve_route(
+    picked_model: str,
+    *,
+    servable: Sequence[str],
+    prefixes: Sequence[str] = MODEL_ID_PREFIXES,
+) -> ResolvedRoute | None:
+    """Translate the router's picked arm into a servable ``ResolvedRoute``.
+
+    The four-step chain (plan 3i): strip the prefix → match the catalog exactly
+    → apply the one fixed family fallback → decline honestly.
+
+    :param picked_model: The router's pick, in either catalog vocabulary.
+    :param servable: The catalog ids this workspace actually serves.
+    :param prefixes: Catalog prefixes to strip before comparing ids.
+    :returns: A :class:`ResolvedRoute` (``raw_model`` always the router's pick,
+        differing from ``model`` only on a fallback or the spelling pin), or
+        ``None`` on an honest decline (no servable arm and no servable
+        fallback) — the caller then writes ``applied=false`` and keeps the
+        session default.
+    """
+    raw = (picked_model or "").strip()
+    if not raw:
+        return None
+    servable_by_bare = {_bare_id(m, prefixes): m for m in servable}
+    pick_bare = _bare_id(raw, prefixes)
+    family = _arm_family(pick_bare)
+
+    # Step 2: exact catalog match — the workspace serves the picked arm itself.
+    exact = servable_by_bare.get(pick_bare)
+    if exact is not None:
+        return ResolvedRoute(
+            model=_apply_servable_alias(exact, prefixes),
+            harness=_FAMILY_HARNESS.get(family or ""),
+            raw_model=raw,
+        )
+
+    # Step 3: family fallback — the workspace does not serve the pick, so apply
+    # the one fixed fallback for its family, keeping raw_model = the router's
+    # pick so the record and chip stay honest. The fallback must itself be
+    # servable; otherwise the decline below fires.
+    fallback = FAMILY_FALLBACK.get(family or "")
+    if fallback is not None:
+        fallback_local = servable_by_bare.get(_bare_id(fallback, prefixes))
+        if fallback_local is not None:
+            return ResolvedRoute(
+                model=_apply_servable_alias(fallback_local, prefixes),
+                harness=_FAMILY_HARNESS.get(family or ""),
+                raw_model=raw,
+            )
+
+    # Step 4: honest decline — nothing servable for the pick or its family.
+    return None
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
