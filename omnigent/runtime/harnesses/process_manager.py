@@ -246,6 +246,7 @@ def _harness_key(harness: str, env: dict[str, str] | None = None) -> str:
     import hashlib
 
     canonical = "|".join(f"{k}={v}" for k, v in sorted(env.items()))
+    # lgtm[py/weak-cryptographic-algorithm] — config fingerprint, not a password hash
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
     return f"{harness}:{digest}"
 
@@ -920,16 +921,22 @@ class HarnessProcessManager:
         """
         self._in_flight_response_ids.pop(conversation_id, None)
 
-    async def release(self, conversation_id: str) -> None:
+    async def release(self, conversation_id: str, *, force: bool = False) -> None:
         """
         Release a conversation from its shared harness subprocess.
 
         Calls ``POST /v1/sessions/{id}/close`` on the runner to free
         per-conversation executor state, then decrements the reference
         count for the harness entry. The subprocess is torn down only
-        when the reference count reaches zero (last conversation released).
+        when the reference count reaches zero (last conversation released),
+        OR when *force* is ``True`` (explicit session stop — tears down the
+        subprocess regardless of co-tenant count so the server correctly
+        observes runner-offline).
 
         :param conversation_id: AP-allocated conversation id.
+        :param force: When ``True`` always kill the subprocess (used by
+            the ``stop_session`` path where the user explicitly stopped the
+            runner and the server polls for runner-offline status).
         """
         async with self._registry_lock:
             hkey = self._conv_to_hkey.get(conversation_id)
@@ -943,7 +950,7 @@ class HarnessProcessManager:
                 refcount = self._hkey_refcounts.get(hkey, 1) - 1
                 self._hkey_refcounts[hkey] = refcount
                 entry = self._entries.get(hkey)
-                close_entry = refcount <= 0
+                close_entry = refcount <= 0 or force
                 if close_entry:
                     self._entries.pop(hkey, None)
                     self._hkey_refcounts.pop(hkey, None)
@@ -951,9 +958,7 @@ class HarnessProcessManager:
                     # actually being torn down. Bumping on every release would
                     # spuriously invalidate concurrent get_client waiters for
                     # other co-tenant conversations that still share this entry.
-                    self._release_generations[hkey] = (
-                        self._release_generations.get(hkey, 0) + 1
-                    )
+                    self._release_generations[hkey] = self._release_generations.get(hkey, 0) + 1
             # Call close_session on the runner (best-effort) to free
             # per-conversation executor state inside the shared subprocess.
             if entry is not None and not close_entry:

@@ -1,3 +1,10 @@
 llm:
   model: databricks-claude-haiku-4-5
   profile: oss
+
+# routing:
+#   provider: external
+#   base_url: https://eng-ml-inference.staging.cloud.databricks.com/ai-gateway/routing/v1
+#   router_name: task_v0
+#   model_prefix: databricks-
+#   profile: eng-ml-inference
