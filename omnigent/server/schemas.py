@@ -1350,6 +1350,14 @@ class SessionCreateRequest(BaseModel):
     reasoning_effort: str | None = None
     cost_control_mode_override: str | None = None
     harness_override: str | None = None
+    # Wave-0 contract (routing rebuild, plan 2e/2f). Additive, defaulted.
+    # ``smart_routing_message``: first message that seeds create-time
+    # harness+model routing for a Smart Routing session. ``subagent_routing_override``:
+    # per-session "on"/"off"/None gate for routing in-harness spawns. The
+    # create-path stream (wave-2 s2) consumes both; see
+    # routing_contract.SESSION_CREATE_ADDED_FIELDS.
+    smart_routing_message: str | None = None
+    subagent_routing_override: str | None = None
 
     @model_validator(mode="after")
     def _check_git_requires_host(self) -> SessionCreateRequest:
@@ -1840,6 +1848,14 @@ class SessionResponse(BaseModel):
     harness: str | None = None
     model_override: str | None = None
     cost_control_mode_override: str | None = None
+    # Wave-0 contract (routing rebuild, plan 3f). Additive, defaulted.
+    # ``subagent_routing_override``: read-back of the per-session spawn gate.
+    # ``gateway_inference``: this session's host's per-family gateway backing
+    # (harness spelling -> bool), consumed by the web to gate Smart Routing.
+    # ``None`` means the host reported nothing (unknown, never hides the option).
+    # Wave-1 s4 + wave-2 s5; see routing_contract.SESSION_RESPONSE_ADDED_FIELDS.
+    subagent_routing_override: str | None = None
+    gateway_inference: dict[str, bool] | None = None
     context_window: int | None = None
     last_total_tokens: int | None = None
     total_cost_usd: float | None = None

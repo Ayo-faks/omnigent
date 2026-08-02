@@ -78,3 +78,12 @@ class RuntimeCaps:
     # Managed deployments can supply a different implementation (e.g.
     # a rules engine or remote service).  ``None`` disables routing.
     routing_client: RoutingClient | None = None
+    # Wave-0 contract (routing rebuild, plan 2f/7h). Per-REQUEST backend
+    # predicate: the seam consults it on every route() to pick the backend —
+    # True => the external AI Gateway client, False => the LLM judge. Mirrors
+    # policy_llm_connection_factory above: the managed plugin registers it and
+    # binds it to its SAFE flag (databricks.mas.omnigent.intelligentRouting,
+    # default OFF), so a flag-off workspace still routes via the judge. ``None``
+    # => the seam's default (gateway client when configured, judge otherwise).
+    # Type is routing_contract.RoutingBackendPredicate; wave-1 s2 consumes it.
+    routing_backend_predicate: Callable[[], bool] | None = None

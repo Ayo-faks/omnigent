@@ -28,6 +28,96 @@ _CLAUDE_SUBSCRIPTION_MODELS = (
 
 _CODEX_MODELS = ("gpt-5-6-sol", "gpt-5-6-luna", "gpt-5-6-terra", "gpt-5-5")
 
+# ── Smart Routing task_v1 arms + family fallback (routing rebuild) ───────────
+#
+# The frozen task_v1 arm menus and the one-per-family fallback. These are static
+# because task_v1's arm set is a wire contract (the router 400s on a partial
+# menu) and is frozen upstream, so they cannot be discovered from a workspace
+# catalog. Owned here with provenance per the no-hardcoded-ids guard; the
+# routing seam (omnigent/server/smart_routing.py) and routing_contract import
+# them rather than inlining the literals.
+
+_TASK_V1_CLAUDE_ARMS: tuple[str, ...] = ("claude-opus-4-8", "claude-sonnet-5")
+_TASK_V1_CODEX_ARMS: tuple[str, ...] = ("glm-5-2", "gpt-5-6-sol", "gpt-5-6-luna")
+
+TASK_V1_ARMS: dict[str, StaticModelFallback] = {
+    "claude": StaticModelFallback(
+        model_ids=_TASK_V1_CLAUDE_ARMS,
+        owner="Smart Routing task_v1 claude arms",
+        provenance="Omnigent's frozen task_v1 router arm menu (claude family)",
+        discovery_gap=(
+            "task_v1's arm set is a frozen wire contract; sending a partial "
+            "menu 400s, so the arms cannot be derived from a workspace catalog"
+        ),
+    ),
+    "codex": StaticModelFallback(
+        model_ids=_TASK_V1_CODEX_ARMS,
+        owner="Smart Routing task_v1 codex arms",
+        provenance="Omnigent's frozen task_v1 router arm menu (codex/gpt family)",
+        discovery_gap=(
+            "task_v1's arm set is a frozen wire contract; sending a partial "
+            "menu 400s, so the arms cannot be derived from a workspace catalog"
+        ),
+    ),
+}
+
+# One fixed fallback per family when the workspace does not serve the router's
+# pick (plan 3i rule 3). claude -> the id the ``sonnet`` alias pin resolves to;
+# gpt AND glm -> luna, itself a frozen codex arm so a glm fallback never leaves
+# the codex harness. The fallback stamps raw_model so the record stays honest.
+# The ids live in module-level tuples consumed only as StaticModelFallback
+# model_ids (the guard-owned form); the lookups below are built from those
+# records, never from fresh literals.
+_CLAUDE_FALLBACK_IDS = ("databricks-claude-sonnet-5",)
+_CODEX_FALLBACK_IDS = ("databricks-gpt-5-6-luna",)
+# The glm gateway spelling pin as an (arm, served-spelling) pair. glm-5-2 serves
+# the Responses API only under system.ai.glm-5-2 (probed 2026-08-01,
+# staging+prod). A spelling, not a substitution (plan 3i).
+_GLM_SPELLING_IDS = ("glm-5-2", "system.ai.glm-5-2")
+
+_FAMILY_FALLBACK_RECORDS: dict[str, StaticModelFallback] = {
+    "claude": StaticModelFallback(
+        model_ids=_CLAUDE_FALLBACK_IDS,
+        owner="Smart Routing claude family fallback",
+        provenance="Bryan's per-family fallback ruling 2026-08-02 (claude -> sonnet)",
+        discovery_gap=(
+            "the fallback target must be deterministic when discovery reports "
+            "the picked arm unservable; it is a fixed product decision"
+        ),
+    ),
+    "codex": StaticModelFallback(
+        model_ids=_CODEX_FALLBACK_IDS,
+        owner="Smart Routing codex family fallback",
+        provenance="Bryan's per-family fallback ruling 2026-08-02 (gpt/glm -> luna)",
+        discovery_gap=(
+            "the fallback target must be deterministic when discovery reports "
+            "the picked arm unservable; it is a fixed product decision"
+        ),
+    ),
+}
+
+_GLM_SPELLING_RECORD = StaticModelFallback(
+    model_ids=_GLM_SPELLING_IDS,
+    owner="Smart Routing glm gateway spelling pin",
+    provenance=(
+        "probed 2026-08-01 staging+prod: glm serves the Responses API only "
+        "under its system.ai route"
+    ),
+    discovery_gap="the served spelling differs from the catalog id and is not discoverable",
+)
+
+#: Family -> its fallback catalog id, built from the owned records above.
+FAMILY_FALLBACK_ID: dict[str, str] = {
+    "claude": _FAMILY_FALLBACK_RECORDS["claude"].model_ids[0],
+    "gpt": _FAMILY_FALLBACK_RECORDS["codex"].model_ids[0],
+    "glm": _FAMILY_FALLBACK_RECORDS["codex"].model_ids[0],
+}
+
+#: Router arm id -> the gateway spelling it is actually served under.
+SERVABLE_ALIASES: dict[str, str] = {
+    _GLM_SPELLING_RECORD.model_ids[0]: _GLM_SPELLING_RECORD.model_ids[1],
+}
+
 _STATIC_MODEL_FALLBACKS = {
     (SUBSCRIPTION_KIND, "claude"): StaticModelFallback(
         model_ids=_CLAUDE_SUBSCRIPTION_MODELS,

@@ -541,6 +541,22 @@ class RoutingDecisionData(BaseModel):
     #: item is being mirrored into the parent's transcript, e.g. ``"claude_code"``.
     #: ``None`` for session-local routing decisions (the usual case).
     agent: str | None = None
+    # ── Wave-0 contract (routing rebuild, plan 3i). Additive + defaulted, so
+    # every pre-existing persisted row deserializes unchanged. Wave-1 stream 3
+    # owns the writer/reader; see routing_contract.ROUTING_DECISION_ADDED_FIELDS.
+    #: The harness the routed model belongs to, e.g. ``"claude-native"``.
+    harness: str | None = None
+    #: Which decision this is: a session-scope pick, a per-turn pick, a child
+    #: session's pick, or a native in-harness subagent spawn's pick.
+    scope: Literal["session", "turn", "child_session", "native_subagent"] = "turn"
+    #: Stable id joining this transcript row to its telemetry / subagent verdict.
+    decision_id: str | None = None
+    #: The router's pick verbatim, kept so the chip can show what the router
+    #: said when a fallback or gateway-spelling pin made ``model`` differ.
+    raw_model: str | None = None
+    #: The model the user had pinned when routing was asked to run, if any —
+    #: rendered as "would have picked X, kept your Y".
+    attempted_override: str | None = None
 
     @field_validator("model")
     @classmethod
