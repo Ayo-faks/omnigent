@@ -22,6 +22,7 @@ from omnigent.codex_native_bridge import (
     read_bridge_state,
     read_mcp_startup,
     update_active_turn_id,
+    write_codex_config_model,
 )
 from omnigent.inner.codex_goal_command import goal_objective_from_content
 from omnigent.inner.executor import (
@@ -40,6 +41,7 @@ from omnigent.inner.native_attachments import (
     unresolved_attachment_marker,
 )
 from omnigent.reasoning_effort import CODEX_EFFORTS, validate_effort
+from omnigent.server.routing_contract import MODEL_ID_PREFIXES, SERVABLE_ALIASES
 
 _logger = logging.getLogger(__name__)
 
@@ -301,6 +303,21 @@ class CodexNativeExecutor(Executor):
                                     **settings_overrides,
                                 },
                             )
+                            # Mirror the accepted switch into config.toml — the
+                            # file the forwarder's model mirror
+                            # (_refresh_model_from_config) and the cost-gate
+                            # hook read. thread/settings/update does not write
+                            # it, so without this the stale launch model is
+                            # mirrored back at the next turn/started and
+                            # silently reverts the switch.
+                            switched_model = settings_overrides.get("model")
+                            if isinstance(switched_model, str) and switched_model:
+                                if not write_codex_config_model(self._bridge_dir, switched_model):
+                                    _logger.warning(
+                                        "Failed to mirror codex model switch into "
+                                        "config.toml: model=%s",
+                                        switched_model,
+                                    )
                         turn_params: dict[str, object] = {
                             "threadId": state.thread_id,
                             "input": input_items,
@@ -355,7 +372,7 @@ def _model_effort_overrides(config: ExecutorConfig | None) -> dict[str, object]:
     overrides: dict[str, object] = {}
     model = config.model
     if isinstance(model, str) and model:
-        overrides["model"] = model
+        overrides["model"] = _served_codex_model(model)
     raw_effort = config.extra.get("reasoning_effort")
     try:
         effort = validate_effort(raw_effort, "codex", CODEX_EFFORTS)
@@ -367,6 +384,33 @@ def _model_effort_overrides(config: ExecutorConfig | None) -> dict[str, object]:
     if effort:
         overrides["effort"] = effort
     return overrides
+
+
+def _served_codex_model(model: str) -> str:
+    """
+    Map a routed arm id onto the spelling the gateway actually serves.
+
+    The Smart Routing ``glm-5-2`` arm resolves to the catalog id
+    ``databricks-glm-5-2``, which the codex turn cannot serve: that endpoint
+    advertises chat-completions only and 400s on ``/codex/v1``. Probed
+    2026-08-01 (staging + prod), the Responses API serves glm only under the
+    gateway model route ``system.ai.glm-5-2``, and glm appears in no discovery
+    listing, so the working spelling is pinned in the contract's
+    ``SERVABLE_ALIASES`` (imported, never inlined). This is a spelling, not a
+    substitution: the alias strips to the same bare arm id, so decision records
+    (owned by the routing seam) still show ``glm-5-2`` with no substitution.
+    Idempotent — the served spelling maps to itself — and a no-op for every
+    non-aliased model.
+
+    :param model: The routed/pinned model id, in any catalog vocabulary.
+    :returns: The served spelling, or *model* unchanged when no alias applies.
+    """
+    bare = model
+    for prefix in MODEL_ID_PREFIXES:
+        if bare.startswith(prefix):
+            bare = bare[len(prefix) :]
+            break
+    return SERVABLE_ALIASES.get(bare, model)
 
 
 def _bridge_dir_from_env() -> Path:
