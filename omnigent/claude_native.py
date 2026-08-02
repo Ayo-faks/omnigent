@@ -3517,6 +3517,7 @@ async def _prepare_claude_terminal(
             bridge_id=bridge_id,
             workspace=Path.cwd(),
             launch_model=claude_config.model if claude_config else None,
+            launch_env=claude_config.env if claude_config else None,
         )
         _mark_startup_step(
             startup_profiler,
