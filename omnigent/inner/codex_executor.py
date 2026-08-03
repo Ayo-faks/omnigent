@@ -13,10 +13,12 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
+import sys
 import tempfile
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +27,10 @@ from typing import Any, Protocol, TypeAlias
 from omnigent import model_catalog
 from omnigent._platform import resolve_cli_binary
 from omnigent.inner.agent_env import clean_agent_env, declared_passthrough
+from omnigent.json_types import JsonObject as _JsonObject
 from omnigent.llms._usage_observer import notify_from_dict as _notify_usage_from_dict
 from omnigent.reasoning_effort import CODEX_EFFORTS, EFFORT_ALIASES, validate_effort
+from omnigent.server.routing_contract import SUBAGENT_LOOPBACK_PATH
 from omnigent.spec.types import RetryPolicy
 
 from . import _proc
@@ -120,6 +124,9 @@ _CODEX_HOME_COPY_FILES = ("config.toml",)
 # shared cache exactly as they would without the private home.
 _CODEX_HOME_SYMLINK_DIRS = (Path("plugins") / "cache",)
 _CODEX_MINIMAL_CONFIG_ENV = "HARNESS_CODEX_MINIMAL_CONFIG"
+# Name of the hooks file inside a CODEX_HOME. Symlinked from the user's home
+# by default; generated as a merged regular file when subagent routing is on.
+_CODEX_HOOKS_FILENAME = "hooks.json"
 
 # Environment variables explicitly excluded from the codex subprocess even
 # when their prefix is in the allowlist. ``OPENAI_API_KEY`` is stripped so
@@ -681,6 +688,7 @@ def _populate_codex_home_config(
     source_dir: Path,
     *,
     minimal_config: bool | None = None,
+    subagent_routing: bool = False,
 ) -> None:
     """
     Bridge user config files from the real ``CODEX_HOME`` into the temp one.
@@ -713,6 +721,9 @@ def _populate_codex_home_config(
         skipped.
     :param minimal_config: Copy only auth and provider-routing config when
         ``True``. ``None`` preserves the environment-controlled behavior.
+    :param subagent_routing: Skip the ``hooks.json`` symlink because
+        :func:`write_codex_router_hooks_file` generates a merged file (user
+        hooks + Omnigent routing hooks) at that path instead.
     """
     if not source_dir.is_dir():
         return
@@ -726,6 +737,10 @@ def _populate_codex_home_config(
     symlink_files: tuple[str, ...] = _CODEX_HOME_SYMLINK_FILES
     if not minimal_config:
         symlink_files += _CODEX_HOME_GLOBAL_INSTRUCTION_FILES
+    if subagent_routing:
+        # The generated hooks file owns this path — a symlink to the user's
+        # home would either shadow it or (worse) be written through.
+        symlink_files = tuple(name for name in symlink_files if name != _CODEX_HOOKS_FILENAME)
     for filename in symlink_files:
         source_file = source_dir / filename
         if not source_file.is_file():
@@ -858,6 +873,454 @@ def _normalize_copied_codex_effort(config_path: Path) -> None:
             config_path.write_text("".join(lines), encoding="utf-8")
         except OSError:
             logger.warning("could not normalize model_reasoning_effort in %s", config_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Codex subagent-routing: hooks.json generation + trust handshake
+# ─────────────────────────────────────────────────────────────────────────
+#
+# The deterministic substrate for native subagent routing on codex. A
+# ``PreToolUse`` hook on the spawn tool asks the runner's loopback endpoint
+# what model an in-harness spawn may use and rewrites / denies accordingly.
+# This module generates the Omnigent half of ``hooks.json`` (merged with the
+# user's own hooks) and trusts it over the app-server protocol.
+#
+# Deliberately NOT generated here: the ``SessionStart`` canary and the
+# ``SubagentStart`` audit hooks. Those belong to the codex enforcement stack
+# (canary / watcher / spawn audit / banner) that the rewrite cuts entirely
+# (plan 3b) — the product answer is to make hook execution reliable, not to
+# report when it silently did not. Only the route-subagent gate that makes
+# routing happen survives.
+
+# Bound app-server JSON-RPC request coroutine, e.g. the SDK executor's
+# ``_request`` (or a native client's ``request``). The trust handshake works
+# over either transport because both expose this shape.
+CodexRequestFn = Callable[[str, CodexParams], Awaitable[CodexMessage]]
+
+# Bridge directory holding the ``subagent_router.json`` advertisement. Its
+# presence in the codex process env is what turns generated routing hooks on:
+# without an endpoint to ask there is nothing to enforce, so the user's
+# ``hooks.json`` keeps being symlinked untouched.
+CODEX_ROUTER_DIR_ENV_VAR = "OMNIGENT_CODEX_SUBAGENT_ROUTER_DIR"
+# Session the spawns belong to, baked into the generated hook commands.
+CODEX_ROUTER_SESSION_ID_ENV_VAR = "OMNIGENT_CODEX_SUBAGENT_ROUTER_SESSION_ID"
+# The route-subagent hook script (wave-2 stream 3 owns this module; it is
+# absent in this wave, hence referenced by dotted name, never imported).
+_CODEX_ROUTER_HOOK_MODULE = "omnigent.inner.hook_scripts.codex_router_hook"
+# Codex flattens the spawn tool name (``collaborationspawn_agent`` on
+# 0.145.x), so the matcher is a regex suffix and never a bare literal.
+_CODEX_SPAWN_AGENT_MATCHER = r".*spawn_agent"
+# 0d (timeout ladder): the wave-2 subagent_router owns the authoritative
+# per-request budget (its ``REQUEST_TIMEOUT_S = 30.0``); transcribed here as a
+# literal because that module does not exist in this wave.
+_CODEX_ROUTER_HOOK_REQUEST_TIMEOUT_SECONDS = 30
+# 0d (timeout ladder): kept just above the hook's own request budget so
+# codex's kill is the outermost bound — the hook fails open on its own
+# timeout, and codex only steps in if the hook itself wedged.
+_CODEX_ROUTER_HOOK_TIMEOUT_SECONDS = _CODEX_ROUTER_HOOK_REQUEST_TIMEOUT_SECONDS + 10
+# 0d (version probe): minimum codex CLI that carries the hook-trust protocol
+# (``currentHash`` / ``trustStatus`` in ``hooks/list``), added in codex 0.129.
+# Below this floor a hook can never be trusted, so codex silently drops the
+# generated hooks.json — the routing gate would fail open invisibly. Probed
+# BEFORE the CODEX_HOME is populated so an unsupported codex keeps the user's
+# hooks.json symlinked in rather than generating a file codex will discard.
+_MIN_ROUTER_HOOK_CODEX_VERSION = (0, 129, 0)
+
+# Codex hook trust statuses that let a hook actually execute. Anything else
+# (notably ``untrusted``) means codex silently skips the hook.
+_TRUSTED_HOOK_STATUSES = frozenset({"trusted", "managed"})
+
+
+def _codex_router_hooks_supported(version: tuple[int, int, int] | None) -> bool:
+    """
+    Report whether this codex build runs generated routing hooks.
+
+    0d (version probe): an UNPARSEABLE version (``None`` from the probe) is
+    treated as SUPPORTED. A flaky ``codex --version`` must never silently
+    disable routing — that would wedge a terminal on a spawn prompt no
+    subagent can answer. A genuinely old codex fails later at the trust gate,
+    which degrades loudly (a logged warning), not silently.
+
+    :param version: Parsed codex version, or ``None`` when the probe could
+        not parse one.
+    :returns: ``True`` when routing hooks should be generated + trusted.
+    """
+    return version is None or version >= _MIN_ROUTER_HOOK_CODEX_VERSION
+
+
+def _codex_router_hook_command(
+    subcommand: str,
+    bridge_dir: Path,
+    *,
+    session_id: str | None,
+    python_executable: str | None,
+    extra_args: Iterable[str] = (),
+) -> str:
+    """
+    Build the shell command codex runs for the routing hook event.
+
+    0d (``python -I``): runs python in isolated mode. Codex executes hooks
+    with the session's *workspace* as cwd, and ``-m`` would otherwise put
+    that workspace first on ``sys.path``. A workspace containing a directory
+    named ``omnigent`` (any checkout of this project — the most likely
+    workspace of all) then shadows the installed package, the hook dies on
+    ``ModuleNotFoundError``, and codex discards the failure — the routing
+    gate silently fails open. ``-I`` (isolated) drops cwd from ``sys.path``
+    so the real installed package always wins.
+
+    The generated command threads the contract's canonical
+    :data:`SUBAGENT_LOOPBACK_PATH` through ``--loopback-path`` so the wave-2
+    hook script targets the one frozen endpoint spelling rather than
+    re-hardcoding it.
+
+    :param subcommand: Hook-script subcommand, e.g. ``"route-subagent"``.
+    :param bridge_dir: Session bridge directory holding the router
+        advertisement.
+    :param session_id: Omnigent session id, or ``None`` when the
+        advertisement is expected to carry it.
+    :param python_executable: Python to run; ``None`` uses
+        :data:`sys.executable`.
+    :param extra_args: Extra flags, e.g. ``("--harness", "codex-native")``.
+    :returns: A shell-escaped command string.
+    """
+    argv = [
+        python_executable or sys.executable,
+        "-I",
+        "-m",
+        _CODEX_ROUTER_HOOK_MODULE,
+        subcommand,
+        "--bridge-dir",
+        str(bridge_dir),
+        "--loopback-path",
+        SUBAGENT_LOOPBACK_PATH,
+    ]
+    if session_id:
+        argv.extend(["--session-id", session_id])
+    argv.extend(extra_args)
+    return shlex.join(argv)
+
+
+def codex_router_hooks_settings(
+    bridge_dir: Path,
+    *,
+    session_id: str | None = None,
+    harness: str = "codex",
+    python_executable: str | None = None,
+) -> _JsonObject:
+    """
+    Build the Omnigent half of a routing ``hooks.json`` payload.
+
+    One event: a ``PreToolUse`` gate on the spawn tool, matched by regex
+    because codex flattens the tool name. This is the hook that makes
+    subagent routing happen; the cut enforcement stack's ``SessionStart``
+    canary and ``SubagentStart`` audit are deliberately not generated
+    (plan 3b).
+
+    :param bridge_dir: Session bridge directory.
+    :param session_id: Omnigent session id baked into the command.
+    :param harness: Harness label sent to the endpoint, e.g. ``"codex"``.
+    :param python_executable: Python for the hook command.
+    :returns: A ``hooks.json``-shaped dict.
+    """
+    route_hook: _JsonObject = {
+        "type": "command",
+        "command": _codex_router_hook_command(
+            "route-subagent",
+            bridge_dir,
+            session_id=session_id,
+            python_executable=python_executable,
+            extra_args=("--harness", harness),
+        ),
+        "timeout": _CODEX_ROUTER_HOOK_TIMEOUT_SECONDS,
+    }
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": _CODEX_SPAWN_AGENT_MATCHER,
+                    "hooks": [route_hook],
+                }
+            ],
+        }
+    }
+
+
+def merge_codex_user_hooks(payload: _JsonObject, user_hooks_path: Path) -> _JsonObject:
+    """
+    Merge the user's ``hooks.json`` entries into a generated payload.
+
+    Omnigent's entries stay in first position per event so the routing gate
+    runs before user hooks; events the user declares alone are added
+    wholesale. A missing or malformed user file leaves *payload* unchanged —
+    routing must not break because the user's hooks file is bad.
+
+    :param payload: Payload from :func:`codex_router_hooks_settings`.
+    :param user_hooks_path: The user's real ``hooks.json``.
+    :returns: The merged payload.
+    """
+    try:
+        user_data = json.loads(user_hooks_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return payload
+    user_hooks = user_data.get("hooks", {}) if isinstance(user_data, dict) else {}
+    if not isinstance(user_hooks, dict) or not user_hooks:
+        return payload
+    return merge_codex_hook_payloads([payload, {"hooks": user_hooks}])
+
+
+def merge_codex_hook_payloads(payloads: Iterable[Mapping[str, object]]) -> _JsonObject:
+    """
+    Merge ``hooks.json``-shaped payloads, earlier ones first per event.
+
+    Codex loads exactly one hooks file per ``CODEX_HOME``, so every generator
+    (routing hooks, the user's own hooks, and — on the native path — policy
+    hooks) has to share a single payload; order decides which hook gates
+    first.
+
+    :param payloads: Payloads to merge, most privileged first.
+    :returns: The merged payload.
+    """
+    merged_hooks: dict[str, list[object]] = {}
+    for payload in payloads:
+        hooks = payload.get("hooks") or {}
+        if not isinstance(hooks, Mapping):
+            continue
+        for event, entries in hooks.items():
+            if not isinstance(entries, list):
+                continue
+            merged_hooks.setdefault(str(event), []).extend(entries)
+    return {"hooks": merged_hooks}
+
+
+def write_codex_hooks_file(
+    codex_home: Path,
+    payloads: Sequence[Mapping[str, object]],
+    *,
+    user_hooks_source: Path | None = None,
+) -> Path:
+    """
+    Write the private CODEX_HOME's single ``hooks.json`` (atomically).
+
+    The one writer for every hook generator: *payloads* are merged in order
+    (Omnigent's stay in first position per event) and the user's hooks are
+    appended last. A symlink to the user's file is replaced by the merged
+    regular file, and is the merge source when *user_hooks_source* is not
+    given.
+
+    :param codex_home: Private per-session ``CODEX_HOME``.
+    :param payloads: ``hooks.json``-shaped payloads, most privileged first.
+    :param user_hooks_source: The user's real ``hooks.json`` to merge.
+    :returns: Path of the written file.
+    """
+    codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = codex_home / _CODEX_HOOKS_FILENAME
+    payload = merge_codex_hook_payloads(payloads)
+    merge_source = user_hooks_source
+    if merge_source is None and path.is_symlink() and path.exists():
+        merge_source = path.resolve()
+    if merge_source is not None and merge_source.is_file():
+        payload = merge_codex_user_hooks(payload, merge_source)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{_CODEX_HOOKS_FILENAME}.", dir=str(codex_home))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    return path
+
+
+def write_codex_router_hooks_file(
+    codex_home: Path,
+    bridge_dir: Path,
+    *,
+    session_id: str | None = None,
+    harness: str = "codex",
+    python_executable: str | None = None,
+    user_hooks_source: Path | None = None,
+) -> Path:
+    """
+    Write a ``hooks.json`` holding only the routing hook (plus user hooks).
+
+    Used by harnesses that register no other hooks (the codex SDK executor);
+    the native app-server merges the routing payload with its policy hooks
+    through :func:`write_codex_hooks_file` instead.
+
+    :param codex_home: Private per-session ``CODEX_HOME``.
+    :param bridge_dir: Session bridge directory.
+    :param session_id: Omnigent session id baked into the hook command.
+    :param harness: Harness label sent to the endpoint.
+    :param python_executable: Python for the hook command.
+    :param user_hooks_source: The user's real ``hooks.json`` to merge.
+    :returns: Path of the written file.
+    """
+    return write_codex_hooks_file(
+        codex_home,
+        [
+            codex_router_hooks_settings(
+                bridge_dir,
+                session_id=session_id,
+                harness=harness,
+                python_executable=python_executable,
+            )
+        ],
+        user_hooks_source=user_hooks_source,
+    )
+
+
+def codex_router_bridge_dir(env: Mapping[str, str] | None = None) -> Path | None:
+    """
+    Read the routing bridge directory from a process environment.
+
+    :param env: Environment to read; ``None`` uses :data:`os.environ`.
+    :returns: Bridge directory, or ``None`` when routing is off for this
+        session (no endpoint advertised, so nothing to enforce).
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(CODEX_ROUTER_DIR_ENV_VAR) or "").strip()
+    return Path(raw) if raw else None
+
+
+def codex_router_session_id(env: Mapping[str, str] | None = None) -> str | None:
+    """
+    Read the routing session id from a process environment.
+
+    :param env: Environment to read; ``None`` uses :data:`os.environ`.
+    :returns: Session id, or ``None`` when unset.
+    """
+    source = os.environ if env is None else env
+    return (source.get(CODEX_ROUTER_SESSION_ID_ENV_VAR) or "").strip() or None
+
+
+def _our_router_hooks_from_list(listed: _JsonObject, cwd: str) -> list[_JsonObject]:
+    """
+    Extract the routing hooks for *cwd* from a ``hooks/list`` response.
+
+    Filtering by :data:`_CODEX_ROUTER_HOOK_MODULE` keeps the trust step from
+    ever touching a hook the user's own ``hooks.json`` contributed to the
+    merged file — the handshake trusts only what Omnigent generated.
+
+    :param listed: Parsed ``hooks/list`` response envelope, with
+        ``result.data`` a list of ``{cwd, hooks: [...]}`` entries.
+    :param cwd: The cwd whose hook set to read.
+    :returns: The matching hook metadata dicts (possibly empty), each with
+        ``key``, ``currentHash``, ``trustStatus``.
+    """
+    result = listed.get("result", listed)
+    data = result.get("data", []) if isinstance(result, dict) else []
+    if not isinstance(data, list):
+        return []
+    for entry in data:
+        if isinstance(entry, dict) and entry.get("cwd") == cwd:
+            hooks = entry.get("hooks", [])
+            if not isinstance(hooks, list):
+                return []
+            return [
+                h
+                for h in hooks
+                if isinstance(h, dict) and _CODEX_ROUTER_HOOK_MODULE in str(h.get("command", ""))
+            ]
+    return []
+
+
+async def _persist_router_hook_trust(
+    request: CodexRequestFn, untrusted: list[_JsonObject]
+) -> None:
+    """
+    Write ``hooks.state.<key>.trusted_hash`` for each untrusted routing hook.
+
+    Persisted trust is the *only* mechanism that makes a hook run under
+    ``codex app-server``: the ``--dangerously-bypass-hook-trust`` CLI flag is
+    honored by the interactive / ``exec`` paths only, so app-server threads
+    silently skip anything left ``untrusted``.
+
+    :param request: Bound app-server JSON-RPC request coroutine.
+    :param untrusted: Hook metadata dicts carrying ``key`` and
+        ``currentHash``.
+    :returns: None.
+    """
+    trust_value = {
+        str(h["key"]): {"trusted_hash": h["currentHash"]}
+        for h in untrusted
+        if h.get("key") and h.get("currentHash")
+    }
+    if not trust_value:
+        return
+    await request(
+        "config/batchWrite",
+        {
+            "edits": [
+                {
+                    "keyPath": "hooks.state",
+                    "mergeStrategy": "upsert",
+                    "value": trust_value,
+                }
+            ],
+            "reloadUserConfig": True,
+        },
+    )
+
+
+async def trust_codex_router_hooks(request: CodexRequestFn, *, cwd: str) -> list[str]:
+    """
+    Trust the generated subagent-routing hook so codex runs it.
+
+    0d (trust handshake): the handshake must complete AFTER the app-server
+    connects and BEFORE the first turn — codex resolves trust when it
+    dispatches a hook, so trust landing after the first spawn is too late.
+    Codex skips untrusted hooks without a word, which for the routing gate is
+    a fail-open, and app-server threads honor persisted trust only (the
+    ``--dangerously-bypass-hook-trust`` flag covers the interactive / ``exec``
+    paths, not this one), so this ``hooks/list`` → ``config/batchWrite`` →
+    re-``hooks/list`` handshake is the only way in.
+
+    Filters to hooks whose command runs :data:`_CODEX_ROUTER_HOOK_MODULE`, so
+    it never touches a user-contributed hook or (on the native path) the
+    separately-trusted policy hook. Best-effort: a routing-trust failure is
+    reported, never raised, so it never blocks session startup.
+
+    :param request: Bound app-server JSON-RPC request coroutine, e.g. the SDK
+        executor's ``_request`` or a native client's ``request``.
+    :param cwd: The session cwd the hooks are scoped to.
+    :returns: Keys of routing hooks still untrusted afterwards; empty when
+        every routing hook is trusted (or none are registered).
+    """
+    listed = await request("hooks/list", {"cwds": [cwd]})
+    ours = _our_router_hooks_from_list(listed, cwd)
+    if not ours:
+        logger.info("codex subagent-routing hooks: none discovered for cwd %s", cwd)
+        return []
+    untrusted = [h for h in ours if h.get("trustStatus") not in _TRUSTED_HOOK_STATUSES]
+    if not untrusted:
+        logger.info(
+            "codex subagent-routing hooks: all %d already trusted for cwd %s", len(ours), cwd
+        )
+        return []
+    await _persist_router_hook_trust(request, untrusted)
+    relisted = await request("hooks/list", {"cwds": [cwd]})
+    still_untrusted = [
+        h
+        for h in _our_router_hooks_from_list(relisted, cwd)
+        if h.get("trustStatus") not in _TRUSTED_HOOK_STATUSES
+    ]
+    if still_untrusted:
+        logger.warning(
+            "codex subagent-routing hooks still untrusted after config/batchWrite; "
+            "native subagent routing will NOT be enforced for this session: %s",
+            ", ".join(str(h.get("key")) for h in still_untrusted),
+        )
+        return [str(h.get("key")) for h in still_untrusted]
+    logger.info(
+        "codex subagent-routing hooks trusted (%d of %d newly) for cwd %s",
+        len(untrusted),
+        len(ours),
+        cwd,
+    )
+    return []
 
 
 def _databricks_codex_base_url(host: str) -> str:
@@ -1364,10 +1827,35 @@ class _CodexAppServerSession:
         # definitions) from ``$CODEX_HOME``; without this step a freshly-
         # created temp dir has neither, causing 401 Unauthorized errors
         # for subscription-authenticated users.
+        config_source = _codex_home_config_source_from_env()
+        # 0d (version probe): only when the runner advertises a route-subagent
+        # endpoint. Probe the codex version BEFORE populating the home — a
+        # codex too old for the hook-trust protocol silently discards the
+        # generated hooks.json, so on an unsupported build no hooks file is
+        # generated at all and the user's hooks.json is symlinked in untouched.
+        # An unparseable version counts as supported (never wedge a terminal on
+        # a spawn prompt no subagent can answer). No routing endpoint → no
+        # probe, so a plain session never pays for a ``codex --version`` spawn.
+        router_bridge_dir = codex_router_bridge_dir(self._env)
+        router_hooks_registered = False
+        if router_bridge_dir is not None:
+            codex_version = await _codex_cli_version(self._codex_path)
+            router_hooks_registered = _codex_router_hooks_supported(codex_version)
         _populate_codex_home_config(
             self._codex_home_dir,
-            _codex_home_config_source_from_env(),
+            config_source,
+            subagent_routing=router_hooks_registered,
         )
+        if router_hooks_registered and router_bridge_dir is not None:
+            # The generated hooks file owns hooks.json (the symlink was
+            # skipped above); merge the user's own hooks in rather than
+            # clobber them.
+            write_codex_router_hooks_file(
+                self._codex_home_dir,
+                router_bridge_dir,
+                session_id=codex_router_session_id(self._env),
+                user_hooks_source=config_source / _CODEX_HOOKS_FILENAME,
+            )
         # Override CODEX_HOME so Codex stores its data (including conversation
         # history) in a private temp directory rather than the user's ~/.codex/.
         # This prevents subagent sessions from polluting the user's Codex history.
@@ -1399,6 +1887,21 @@ class _CodexAppServerSession:
                     },
                 },
             )
+            if router_hooks_registered:
+                # 0d (trust handshake): AFTER the app-server connects
+                # (``initialize`` above) and BEFORE the first turn. App-server
+                # threads run persisted-trusted hooks only, so without this
+                # the routing gate is silently skipped. Best-effort — a trust
+                # failure degrades routing (a logged warning), it never blocks
+                # session startup.
+                try:
+                    await trust_codex_router_hooks(self._request, cwd=self._cwd or os.getcwd())
+                except Exception:  # noqa: BLE001 - never block session startup
+                    logger.warning(
+                        "codex subagent-routing hook trust failed; "
+                        "routing will not be enforced for this session",
+                        exc_info=True,
+                    )
             self._started = True
         except Exception:
             await self.close()
