@@ -4075,16 +4075,33 @@ def _empty_object_schema() -> _JsonObject:
 
 
 def _sandbox_spec_to_json(sandbox: OSEnvSandboxSpec) -> dict[str, object]:
-    """Serialise an ``OSEnvSandboxSpec`` to a plain JSON-safe dict."""
+    """Serialise an ``OSEnvSandboxSpec`` to a plain JSON-safe dict.
+
+    Covers all policy-controllable fields (``_SANDBOX_OVERRIDE_KEYS`` in
+    ``omnigent.policies.builtins.safety``) so the bridge MCP subprocess
+    is sandboxed identically to the Claude terminal it serves.
+    """
     out: dict[str, object] = {"type": sandbox.type}
     if sandbox.read_paths is not None:
         out["read_paths"] = sandbox.read_paths
     if sandbox.write_paths is not None:
         out["write_paths"] = sandbox.write_paths
+    if sandbox.write_files is not None:
+        out["write_files"] = sandbox.write_files
     if not sandbox.allow_network:
         out["allow_network"] = sandbox.allow_network
+    if sandbox.cwd_allow_hidden is not None:
+        out["cwd_allow_hidden"] = sandbox.cwd_allow_hidden
     if sandbox.env_passthrough is not None:
         out["env_passthrough"] = sandbox.env_passthrough
+    if sandbox.egress_rules is not None:
+        out["egress_rules"] = sandbox.egress_rules
+    if sandbox.egress_allow_private_destinations:
+        out["egress_allow_private_destinations"] = sandbox.egress_allow_private_destinations
+    if sandbox.cwd_hidden_scan_max_entries != 50000:
+        out["cwd_hidden_scan_max_entries"] = sandbox.cwd_hidden_scan_max_entries
+    if sandbox.cwd_hidden_scan_overflow != "warn":
+        out["cwd_hidden_scan_overflow"] = sandbox.cwd_hidden_scan_overflow
     return out
 
 
@@ -4092,12 +4109,30 @@ def _sandbox_spec_from_json(raw: object) -> OSEnvSandboxSpec:
     """Deserialise a ``bridge.json`` sandbox dict into an ``OSEnvSandboxSpec``."""
     if not isinstance(raw, dict):
         return OSEnvSandboxSpec(type="none")
+
+    def _str_list(val: object) -> list[str] | None:
+        if isinstance(val, list):
+            return [str(v) for v in val]
+        return None
+
     return OSEnvSandboxSpec(
-        type=raw.get("type", "none") or "none",
-        read_paths=raw.get("read_paths"),
-        write_paths=raw.get("write_paths"),
-        allow_network=bool(raw.get("allow_network", True)),
-        env_passthrough=raw.get("env_passthrough"),
+        type=raw.get("type", "none") if isinstance(raw.get("type"), str) else "none",
+        read_paths=_str_list(raw.get("read_paths")),
+        write_paths=_str_list(raw.get("write_paths")),
+        write_files=_str_list(raw.get("write_files")),
+        allow_network=bool(raw["allow_network"]) if "allow_network" in raw else True,
+        cwd_allow_hidden=_str_list(raw.get("cwd_allow_hidden")),
+        env_passthrough=_str_list(raw.get("env_passthrough")),
+        egress_rules=_str_list(raw.get("egress_rules")),
+        egress_allow_private_destinations=bool(raw["egress_allow_private_destinations"])
+        if "egress_allow_private_destinations" in raw
+        else False,
+        cwd_hidden_scan_max_entries=int(raw["cwd_hidden_scan_max_entries"])
+        if isinstance(raw.get("cwd_hidden_scan_max_entries"), int)
+        else 50000,
+        cwd_hidden_scan_overflow=str(raw["cwd_hidden_scan_overflow"])
+        if isinstance(raw.get("cwd_hidden_scan_overflow"), str)
+        else "warn",
     )
 
 

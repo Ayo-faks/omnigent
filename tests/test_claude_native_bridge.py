@@ -5933,3 +5933,186 @@ def test_hook_record_non_stop_event_has_zero_background_tasks() -> None:
         )
     )
     assert record.background_task_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Sandbox spec round-trip and _build_tools integration
+# ---------------------------------------------------------------------------
+
+
+def test_sandbox_spec_roundtrip_minimal() -> None:
+    """A minimal bwrap spec (type only) round-trips without loss."""
+    from omnigent.claude_native_bridge import _sandbox_spec_from_json, _sandbox_spec_to_json
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    spec = OSEnvSandboxSpec(type="linux_bwrap")
+    assert _sandbox_spec_from_json(_sandbox_spec_to_json(spec)) == spec
+
+
+def test_sandbox_spec_roundtrip_full() -> None:
+    """All policy-controllable fields survive a to_json/from_json round-trip."""
+    from omnigent.claude_native_bridge import _sandbox_spec_from_json, _sandbox_spec_to_json
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    spec = OSEnvSandboxSpec(
+        type="linux_bwrap",
+        read_paths=["/tmp", "~/projects"],
+        write_paths=["~/projects/out"],
+        write_files=["~/.claude.json"],
+        allow_network=False,
+        cwd_allow_hidden=[".venv", ".git"],
+        env_passthrough=["GITHUB_TOKEN"],
+        egress_rules=["GET api.github.com/**"],
+        egress_allow_private_destinations=True,
+        cwd_hidden_scan_max_entries=10000,
+        cwd_hidden_scan_overflow="error",
+    )
+    assert _sandbox_spec_from_json(_sandbox_spec_to_json(spec)) == spec
+
+
+def test_sandbox_spec_roundtrip_defaults_omitted() -> None:
+    """Default values are omitted from the JSON to keep bridge.json compact."""
+    from omnigent.claude_native_bridge import _sandbox_spec_to_json
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    spec = OSEnvSandboxSpec(type="linux_bwrap")
+    result = _sandbox_spec_to_json(spec)
+    assert result == {"type": "linux_bwrap"}
+    assert "allow_network" not in result
+    assert "egress_allow_private_destinations" not in result
+    assert "cwd_hidden_scan_max_entries" not in result
+    assert "cwd_hidden_scan_overflow" not in result
+
+
+def test_sandbox_spec_from_json_missing_key_returns_none_type() -> None:
+    """``_sandbox_spec_from_json`` on a missing/non-dict value returns ``type='none'``."""
+    from omnigent.claude_native_bridge import _sandbox_spec_from_json
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    assert _sandbox_spec_from_json(None) == OSEnvSandboxSpec(type="none")
+    assert _sandbox_spec_from_json("bad") == OSEnvSandboxSpec(type="none")
+    assert _sandbox_spec_from_json(42) == OSEnvSandboxSpec(type="none")
+
+
+def test_sandbox_spec_from_json_handles_unknown_type() -> None:
+    """An unrecognised or empty ``type`` string in raw JSON stays verbatim."""
+    from omnigent.claude_native_bridge import _sandbox_spec_from_json
+
+    spec = _sandbox_spec_from_json({"type": "darwin_seatbelt"})
+    assert spec.type == "darwin_seatbelt"
+
+
+def test_sandbox_spec_from_json_non_list_paths_ignored() -> None:
+    """Non-list ``read_paths`` / ``write_paths`` values are treated as ``None``."""
+    from omnigent.claude_native_bridge import _sandbox_spec_from_json
+
+    spec = _sandbox_spec_from_json({"type": "linux_bwrap", "read_paths": "not-a-list"})
+    assert spec.read_paths is None
+
+
+def test_prepare_bridge_dir_persists_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``prepare_bridge_dir`` writes the sandbox spec into bridge.json."""
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    root = tmp_path / "root"
+    monkeypatch.setattr("omnigent.claude_native_bridge._BRIDGE_ROOT", root)
+
+    sandbox = OSEnvSandboxSpec(
+        type="linux_bwrap",
+        write_paths=["~/out"],
+        egress_rules=["GET api.github.com/**"],
+    )
+    bridge_dir = prepare_bridge_dir("conv_sb", workspace=tmp_path, sandbox=sandbox)
+    config = json.loads((bridge_dir / "bridge.json").read_text(encoding="utf-8"))
+
+    assert "sandbox" in config
+    sb = config["sandbox"]
+    assert sb["type"] == "linux_bwrap"
+    assert sb["write_paths"] == ["~/out"]
+    assert sb["egress_rules"] == ["GET api.github.com/**"]
+
+
+def test_prepare_bridge_dir_omits_sandbox_when_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``sandbox`` key is absent from bridge.json when no sandbox is provided."""
+    root = tmp_path / "root"
+    monkeypatch.setattr("omnigent.claude_native_bridge._BRIDGE_ROOT", root)
+
+    bridge_dir = prepare_bridge_dir("conv_no_sb", workspace=tmp_path)
+    config = json.loads((bridge_dir / "bridge.json").read_text(encoding="utf-8"))
+    assert "sandbox" not in config
+
+
+def test_build_tools_uses_sandbox_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_build_tools`` passes the sandbox from config to ``create_os_environment``."""
+    from omnigent import claude_native_bridge
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    received: list[object] = []
+
+    class _FakeEnv:
+        def close(self) -> None:
+            pass
+
+    def _fake_create(spec: object) -> _FakeEnv:
+        received.append(spec)
+        return _FakeEnv()
+
+    monkeypatch.setattr(claude_native_bridge, "create_os_environment", _fake_create)
+    monkeypatch.setattr(claude_native_bridge, "build_os_env_tools", lambda _env: [])
+
+    config = {
+        "workspace": str(tmp_path),
+        "sandbox": {
+            "type": "linux_bwrap",
+            "write_paths": ["/tmp/work"],
+            "egress_rules": ["GET api.example.com/**"],
+        },
+    }
+    _tools, close = claude_native_bridge._build_tools(config)
+    close()
+
+    assert len(received) == 1
+    spec = received[0]
+    assert hasattr(spec, "sandbox")
+    sb: OSEnvSandboxSpec = spec.sandbox
+    assert sb.type == "linux_bwrap"
+    assert sb.write_paths == ["/tmp/work"]
+    assert sb.egress_rules == ["GET api.example.com/**"]
+
+
+def test_build_tools_defaults_to_none_sandbox_when_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a ``sandbox`` key in config, ``_build_tools`` uses ``type='none'``."""
+    from omnigent import claude_native_bridge
+    from omnigent.inner.datamodel import OSEnvSandboxSpec
+
+    received: list[object] = []
+
+    class _FakeEnv:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        claude_native_bridge,
+        "create_os_environment",
+        lambda s: (_FakeEnv(), received.append(s))[0],
+    )
+    monkeypatch.setattr(claude_native_bridge, "build_os_env_tools", lambda _env: [])
+
+    _tools, close = claude_native_bridge._build_tools({"workspace": str(tmp_path)})
+    close()
+
+    assert len(received) == 1
+    sb: OSEnvSandboxSpec = received[0].sandbox
+    assert sb.type == "none"
