@@ -92,6 +92,20 @@ function useHarnessCatalog<T>(select: (c: HarnessCatalog) => T, fallback: T): T 
 export const AUTO_HARNESS_ID = "auto";
 
 /**
+ * Client-only sentinel for the TOP-LEVEL "Smart Routing" harness pick (its own
+ * section above the Harnesses group, no bundle agent). Distinct from
+ * :data:`AUTO_HARNESS_ID` so the picker can track the selection locally; the
+ * create call still sends ``harness_override: AUTO_HARNESS_ID`` (the server
+ * routes both harness + model at create and rebinds to the wrapper it picks).
+ */
+export const AUTO_NATIVE_HARNESS_ID = "auto-native";
+
+/**
+ * Sub-description shown under the top-level Smart Routing row / on its chip.
+ */
+export const AUTO_HARNESS_DESCRIPTION = "Harness and model picked per task by smart routing";
+
+/**
  * User-facing name for the Smart Routing feature. Centralized so the toggle,
  * the model-dropdown option, and the "switched to <default>" notices in
  * :mod:`smartRoutingAvailability` can't drift on wording.

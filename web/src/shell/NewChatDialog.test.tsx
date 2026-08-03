@@ -1020,6 +1020,38 @@ describe("NewChatLandingScreen", () => {
     expect(screen.queryByTestId("new-chat-landing-config-smart-routing")).toBeNull();
   });
 
+  it("offers a top-level Smart Routing harness row when routing is available", () => {
+    // Default mocks register both native wrappers on an online host with no
+    // gateway_inference override (→ backed). With routing on, the top-level
+    // Smart Routing row appears above the Harnesses group.
+    renderLanding({ smart_routing_enabled: true });
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    expect(screen.getByTestId("new-chat-landing-harness-smart-routing")).toBeTruthy();
+  });
+
+  it("hides the top-level Smart Routing row when the server has routing disabled", () => {
+    renderLanding({ smart_routing_enabled: false });
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    expect(screen.queryByTestId("new-chat-landing-harness-smart-routing")).toBeNull();
+  });
+
+  it("selecting top-level Smart Routing binds a placeholder and shows it on the chip", async () => {
+    // Selecting the top-level row binds a placeholder native wrapper (so create
+    // has a concrete agent_id) and surfaces "Smart Routing" on the composer
+    // chip rather than the placeholder's name. The create-payload shape
+    // (harness_override:"auto" + smart_routing_message, no placeholder model)
+    // is covered server-side in tests/server/test_routing_create.py and proven
+    // end-to-end; here we assert the picker's client-side selection contract.
+    renderLanding({ smart_routing_enabled: true });
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-harness-smart-routing"));
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain(
+        "Smart Routing",
+      ),
+    );
+  });
+
   it("seeds the working directory from the host's most-recent path", async () => {
     renderLanding();
     // host_1's recent ("/Users/corey/repo") seeds the field; the chip shows
