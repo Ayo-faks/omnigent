@@ -26,18 +26,36 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from omnigent.model_fallbacks import TASK_V1_ARMS
+
 if TYPE_CHECKING:
     import httpx
 
 _logger = logging.getLogger(__name__)
+
+# The router keys candidates by the harness id it understands: the claude arms
+# under ``claude-sdk`` and the codex arms under ``codex`` (verified live via
+# scripts/probe_routing_api.sh). A create has no session catalog to discover
+# yet, so both create paths pass these frozen task_v1 arms as the candidate set.
+_CREATE_CANDIDATE_MODELS: dict[str, list[str]] = {
+    "claude-sdk": list(TASK_V1_ARMS["claude"].model_ids),
+    "codex": list(TASK_V1_ARMS["codex"].model_ids),
+}
+
+# The single-harness candidate slice for a fixed-native create, keyed by the
+# native harness spelling the create request pins.
+_FIXED_NATIVE_CANDIDATES: dict[str, dict[str, list[str]]] = {
+    "claude-native": {"claude-sdk": list(TASK_V1_ARMS["claude"].model_ids)},
+    "codex-native": {"codex": list(TASK_V1_ARMS["codex"].model_ids)},
+}
 
 
 async def resolve_smart_routing_create(
     smart_routing_message: str,
     *,
     session_id: str | None = None,
-    catalog_session_id: str | None = None,
-    runner_client: httpx.AsyncClient | None = None,
+    catalog_session_id: str | None = None,  # noqa: ARG001 — create has no catalog; kept for caller
+    runner_client: httpx.AsyncClient | None = None,  # noqa: ARG001 — create has no catalog
 ) -> tuple[str | None, str | None, dict[str, Any] | None, str | None]:
     """Route a create with ``harness_override == "auto"`` to select BOTH harness and model.
 
@@ -52,52 +70,55 @@ async def resolve_smart_routing_create(
     if not (smart_routing_message or "").strip():
         return None, None, None, None
 
+    # A session being created has no catalog yet, so route against the frozen
+    # task_v1 arms (both families) instead of a live-catalog discovery that
+    # would find nothing and decline.
     harness, model, verdict, error = await route_session_harness(
         smart_routing_message,
         session_id=session_id,
-        catalog_session_id=catalog_session_id,
-        runner_client=runner_client,
+        candidate_models=_CREATE_CANDIDATE_MODELS,
     )
 
     return harness, model, verdict, error
 
 
 async def resolve_fixed_native_model_routing(
-    harness: str,  # noqa: ARG001 — used by wave-1 models_in_family validation
+    harness: str,
     smart_routing_message: str,
     *,
     session_id: str | None = None,
-    runner_client: httpx.AsyncClient | None = None,
+    runner_client: httpx.AsyncClient | None = None,  # noqa: ARG001 — create has no catalog
 ) -> tuple[str | None, dict[str, Any] | None, str | None]:
     """Route the model for a create pinned to one native harness.
 
     Routes only the model for a create already pinned to ``harness``. The
     ``harness`` argument names the session's fixed harness (e.g.
-    ``"claude-native"`` or ``"codex-native"``); the pick is constrained to
-    that harness, so routing cannot change the harness. Fails open: an
-    unavailable router or a pick this harness cannot run yields no model and a
-    rationale for the routing card.
+    ``"claude-native"`` or ``"codex-native"``); the candidate set is that
+    harness's frozen task_v1 arms ONLY, so the router cannot change the
+    harness. This is the "native TUI" path where turns originate in the pane
+    and the per-turn gate can never reach. Fails open: an unavailable router
+    or an unknown harness yields no model and a rationale for the routing card.
 
     Returns ``(model, verdict, error)``; ``model`` and ``verdict`` are ``None``
     when nothing should be pinned, and ``error`` then explains why.
-
-    Shares ``_routing_host_for_create`` trap with ``resolve_smart_routing_create``
-    — authorize before lookup (plan 5b).
     """
     from omnigent.server.smart_routing import route_session_harness
 
     if not (smart_routing_message or "").strip():
         return None, None, None
 
-    # For a fixed harness, route over that single harness only.
-    # The candidate set is filtered to one harness, so the router cannot
-    # select a different harness. This is the "native TUI" path where turns
-    # originate in the pane and the turn gate can never reach.
+    candidates = _FIXED_NATIVE_CANDIDATES.get(harness)
+    if candidates is None:
+        return None, None, f"Smart Routing is not available for the {harness!r} harness."
+
+    # A session being created has no catalog yet, so route against this
+    # harness's frozen task_v1 arms rather than a live-catalog discovery that
+    # would find nothing and decline. Single-harness candidate set → the
+    # router cannot cross to another harness.
     _harness, model, verdict, error = await route_session_harness(
         smart_routing_message,
         session_id=session_id,
-        catalog_session_id=None,
-        runner_client=runner_client,
+        candidate_models=candidates,
     )
 
     if model is None or verdict is None:

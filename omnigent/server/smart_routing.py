@@ -832,12 +832,21 @@ async def route_session_harness(
     session_id: str | None = None,
     catalog_session_id: str | None = None,
     runner_client: httpx.AsyncClient | None = None,
+    candidate_models: dict[str, list[str]] | None = None,
 ) -> tuple[str | None, str | None, dict[str, Any] | None, str | None]:
     """Pick the best harness + model for a new session via the routing client.
 
     Builds a candidate set from the live runner catalog when *catalog_session_id*
     (defaulting to *session_id*) and *runner_client* are provided. Only harnesses
     in :data:`_AUTO_ROUTING_HARNESSES` are offered as candidates.
+
+    When *candidate_models* is given, it is used verbatim as the candidate set
+    and the live catalog is not consulted. This is the create-time path: a
+    session is being created and has no catalog to fetch yet, so the caller
+    supplies the static task_v1 arms (which the router requires as its full
+    menu anyway). ``harness_catalog`` stays empty, so the post-routing
+    ``_redirect_incompatible_pick`` (which needs per-model wire metadata) is a
+    no-op — the pins are the frozen arms, already known-compatible.
 
     :param user_message: The user's first message text, used to size the task.
     :param session_id: Session being routed (optional).
@@ -846,8 +855,12 @@ async def route_session_harness(
         catalog enumerates the spawnable workers (claude_code/codex/pi) with
         their full model lists, whereas the child's own leaf catalog only has a
         ``"self"`` row and would force the static fallback. Defaults to
-        *session_id* when unset.
-    :param runner_client: HTTP client pointed at the runner (optional).
+        *session_id* when unset. Ignored when *candidate_models* is given.
+    :param runner_client: HTTP client pointed at the runner (optional). Ignored
+        when *candidate_models* is given.
+    :param candidate_models: Explicit ``{harness: [model ids]}`` candidate set.
+        When provided, skips live-catalog discovery (used at session create,
+        before a catalog exists).
     :returns: ``(harness, model, verdict, error)`` — on success ``error`` is
         ``None``; on failure ``harness``, ``model``, and ``verdict`` are ``None``
         and ``error`` carries a human-readable reason shown in the UI.
@@ -867,11 +880,6 @@ async def route_session_harness(
     # against _AUTO_ROUTING_HARNESSES. Prefer catalog_session_id (the parent
     # for a sub-agent) so the candidate set is the full spawnable-worker map,
     # independent of whether the routed session is top-level or a sub-agent.
-    _catalog_sid = catalog_session_id or session_id
-    live_catalog: dict[str, list[_RunnerModel]] | None = None
-    if _catalog_sid and runner_client is not None:
-        live_catalog = await _fetch_runner_catalog(_catalog_sid, runner_client)
-
     # NOTE: we do NOT filter incompatible (harness, model) pairs out of the
     # candidate set here. The external router (task_v0) enforces a required
     # model set and 400s if any required model is missing, so dropping e.g.
@@ -880,15 +888,25 @@ async def route_session_harness(
     # _redirect_incompatible_pick.
     harness_models: dict[str, list[str]] = {}
     harness_catalog: dict[str, list[_RunnerModel]] = {}
-    if live_catalog:
-        for worker_name, worker_catalog in live_catalog.items():
-            harness = _WORKER_NAME_TO_HARNESS.get(worker_name)
-            if harness is None or harness not in _AUTO_ROUTING_HARNESSES:
-                continue
-            if worker_catalog:
-                # First worker wins for a given harness id (dedupe).
-                harness_catalog.setdefault(harness, worker_catalog)
-                harness_models.setdefault(harness, [entry.id for entry in worker_catalog])
+    if candidate_models is not None:
+        # Create-time: the caller supplies the candidate set (the static
+        # task_v1 arms). No live catalog, so harness_catalog stays empty and
+        # the post-routing wire-compat redirect is a no-op.
+        harness_models = {h: list(models) for h, models in candidate_models.items() if models}
+    else:
+        _catalog_sid = catalog_session_id or session_id
+        live_catalog: dict[str, list[_RunnerModel]] | None = None
+        if _catalog_sid and runner_client is not None:
+            live_catalog = await _fetch_runner_catalog(_catalog_sid, runner_client)
+        if live_catalog:
+            for worker_name, worker_catalog in live_catalog.items():
+                harness = _WORKER_NAME_TO_HARNESS.get(worker_name)
+                if harness is None or harness not in _AUTO_ROUTING_HARNESSES:
+                    continue
+                if worker_catalog:
+                    # First worker wins for a given harness id (dedupe).
+                    harness_catalog.setdefault(harness, worker_catalog)
+                    harness_models.setdefault(harness, [entry.id for entry in worker_catalog])
 
     if not harness_models:
         return None, None, None, "No discovered routable harnesses are available on this runner."
