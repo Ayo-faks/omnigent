@@ -77,7 +77,11 @@ if TYPE_CHECKING:
 
     from omnigent.install_ledger import InstallLedger
     from omnigent.onboarding.acp_auth import AcpAgentEntry
-    from omnigent.server.smart_routing import ExternalRoutingClient, LLMRoutingClient
+    from omnigent.server.smart_routing import (
+        ExternalRoutingClient,
+        LLMRoutingClient,
+        RoutingClient,
+    )
     from omnigent.spec.types import LLMConfig
     from omnigent.update_check import _InstalledWheelInfo
 
@@ -201,6 +205,25 @@ def _build_local_llm_routing_client(
     from omnigent.server.smart_routing import LLMRoutingClient
 
     return LLMRoutingClient(policy_client)
+
+
+def _routing_backend_predicate() -> bool:
+    """Per-request backend choice, read live off ``RuntimeCaps`` (plan 2f/7h).
+
+    The ``RoutingBackend`` calls this on every ``route()``. OSS leaves
+    ``RuntimeCaps.routing_backend_predicate`` unset (``None``) and this returns
+    ``True`` — which the backend reads as "prefer the external gateway client,
+    else the judge", i.e. main's behaviour. A managed deployment registers its
+    own predicate on that one caps field (mirroring
+    ``policy_llm_connection_factory``); reading it live here — rather than
+    capturing it at construction — is what lets the flag flip per request
+    without rebuilding the client. A predicate hiccup is swallowed by the
+    backend, so this stays a thin read.
+    """
+    from omnigent.runtime import get_caps
+
+    predicate = get_caps().routing_backend_predicate
+    return True if predicate is None else bool(predicate())
 
 
 def _server_uvicorn_log_config(
@@ -3575,20 +3598,34 @@ def server(
 
     server_llm = parse_server_llm(cfg.get("llm"))
 
-    # Build the routing client from configuration alone — no opt-in env needed.
-    # Two mutually-exclusive providers, chosen by ``routing.provider``:
-    #   - ``external``: call an external ``routes:select`` service (built when a
-    #     ``routing:`` block declares ``provider: external``).
-    #   - ``llm`` (default): the built-in judge using the ``llm:`` block (built
-    #     whenever a server ``llm:`` block is configured).
-    # Stays None when neither is configured. Managed deployments override
-    # RuntimeCaps.routing_client with their own implementation.
+    # Build the routing backend from configuration alone — no opt-in env needed.
+    # Both of main's clients are built when configured, and a per-request
+    # predicate chooses between them on every route() (plan 2f/7h):
+    #   - external: an external ``routes:select`` service (a ``routing:`` block
+    #     with ``provider: external``) — the AI Gateway path.
+    #   - judge: the built-in LLM judge over the server ``llm:`` block.
+    # The two are wrapped in a RoutingBackend so the predicate can flip between
+    # them per request; OSS leaves the predicate unset (prefer external, else
+    # judge — main's behaviour), and a managed deployment binds it to its flag.
+    # Stays None when neither backend is configured. Managed deployments may
+    # still override RuntimeCaps.routing_client wholesale.
     routing_cfg = cfg.get("routing")
-    routing_client: ExternalRoutingClient | LLMRoutingClient | None
+    external_client: ExternalRoutingClient | None = None
     if isinstance(routing_cfg, dict) and routing_cfg.get("provider") == "external":
-        routing_client = _build_external_routing_client(routing_cfg)
+        external_client = _build_external_routing_client(routing_cfg)
+    judge_client = _build_local_llm_routing_client(server_llm)
+
+    routing_client: RoutingClient | None
+    if external_client is None and judge_client is None:
+        routing_client = None
     else:
-        routing_client = _build_local_llm_routing_client(server_llm)
+        from omnigent.server.routing_backend import RoutingBackend
+
+        routing_client = RoutingBackend(
+            external=external_client,
+            judge=judge_client,
+            predicate=_routing_backend_predicate,
+        )
 
     caps = RuntimeCaps(
         execution_timeout=int(effective_timeout),
