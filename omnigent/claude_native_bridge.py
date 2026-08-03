@@ -4115,18 +4115,21 @@ def _sandbox_spec_from_json(raw: object) -> OSEnvSandboxSpec:
             return [str(v) for v in val]
         return None
 
+    def _bool(val: object, default: bool) -> bool:
+        return val if isinstance(val, bool) else default
+
     return OSEnvSandboxSpec(
         type=raw.get("type", "none") if isinstance(raw.get("type"), str) else "none",
         read_paths=_str_list(raw.get("read_paths")),
         write_paths=_str_list(raw.get("write_paths")),
         write_files=_str_list(raw.get("write_files")),
-        allow_network=bool(raw["allow_network"]) if "allow_network" in raw else True,
+        allow_network=_bool(raw.get("allow_network"), True),
         cwd_allow_hidden=_str_list(raw.get("cwd_allow_hidden")),
         env_passthrough=_str_list(raw.get("env_passthrough")),
         egress_rules=_str_list(raw.get("egress_rules")),
-        egress_allow_private_destinations=bool(raw["egress_allow_private_destinations"])
-        if "egress_allow_private_destinations" in raw
-        else False,
+        egress_allow_private_destinations=_bool(
+            raw.get("egress_allow_private_destinations"), False
+        ),
         cwd_hidden_scan_max_entries=int(raw["cwd_hidden_scan_max_entries"])
         if isinstance(raw.get("cwd_hidden_scan_max_entries"), int)
         else 50000,

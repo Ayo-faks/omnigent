@@ -6010,6 +6010,38 @@ def test_sandbox_spec_from_json_non_list_paths_ignored() -> None:
     assert spec.read_paths is None
 
 
+def test_sandbox_spec_from_json_non_bool_network_uses_default() -> None:
+    """String ``\"false\"`` for ``allow_network`` must not be treated as ``True``."""
+    from omnigent.claude_native_bridge import _sandbox_spec_from_json
+
+    # The real JSON boolean False disables network.
+    assert (
+        _sandbox_spec_from_json({"type": "linux_bwrap", "allow_network": False}).allow_network
+        is False
+    )
+    # A non-bool value falls back to the default (True) rather than coercing.
+    assert (
+        _sandbox_spec_from_json({"type": "linux_bwrap", "allow_network": "false"}).allow_network
+        is True
+    )
+    assert (
+        _sandbox_spec_from_json({"type": "linux_bwrap", "allow_network": 0}).allow_network is True
+    )
+    # egress_allow_private_destinations has default False.
+    assert (
+        _sandbox_spec_from_json(
+            {"type": "linux_bwrap", "egress_allow_private_destinations": True}
+        ).egress_allow_private_destinations
+        is True
+    )
+    assert (
+        _sandbox_spec_from_json(
+            {"type": "linux_bwrap", "egress_allow_private_destinations": "true"}
+        ).egress_allow_private_destinations
+        is False
+    )
+
+
 def test_prepare_bridge_dir_persists_sandbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
