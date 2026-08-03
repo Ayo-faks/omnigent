@@ -3053,6 +3053,16 @@ export function NewChatLandingScreen() {
       // straight to that dir, which also sidesteps the "branch already
       // exists" guard.
       const agent = agentList.find((a) => a.id === effectiveAgentId);
+      // Prepend each "@"-tagged path as an attachment marker on its own line —
+      // the same wording the native executors emit and that title-seeding
+      // strips. The runner, rooted at this workspace, reads the on-disk file
+      // from the marker; no upload happens. Folders carry a trailing "/".
+      // Computed up front because Smart Routing's `smart_routing_message` in
+      // the create body reads it — a later `const` would be in the temporal
+      // dead zone and throw when routing is on.
+      const initialPrompt =
+        buildMentionPreamble(mentionedItems, selectedAgent?.harness ?? null) +
+        sanitizeInitialPrompt(message);
       const nativeAgent = nativeCodingAgentForAvailableAgent(agent);
       const nativeLabels = nativeWrapperLabelsForAgent(agent);
       const agentSupportsPermissionMode = nativeAgentHasCapability(agent, "permissionMode");
@@ -3235,13 +3245,6 @@ export function NewChatLandingScreen() {
       // loads from the session id and never reads the sidebar cache.
       void queryClient.refetchQueries({ queryKey: ["conversations"] });
       void queryClient.invalidateQueries({ queryKey: ["directory-sessions"] });
-      // Prepend each "@"-tagged path as an attachment marker on its own line —
-      // the same wording the native executors emit and that title-seeding
-      // strips. The runner, rooted at this workspace, reads the on-disk file
-      // from the marker; no upload happens. Folders carry a trailing "/".
-      const initialPrompt =
-        buildMentionPreamble(mentionedItems, selectedAgent?.harness ?? null) +
-        sanitizeInitialPrompt(message);
       // A first message matching one of the agent's bundled skills is
       // handed off as a structured invocation so ChatPage auto-sends it
       // as a `slash_command` event (server resolves the skill) instead
