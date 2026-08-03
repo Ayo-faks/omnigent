@@ -642,6 +642,22 @@ _FAMILY_HARNESS: dict[str, str] = {
     "glm": "codex-native",
 }
 
+#: Harness id -> family the harness belongs to (reverse map for constraints).
+#: Supports all harness spellings (claude-sdk, claude_sdk, etc.).
+_HARNESS_FAMILY: dict[str, str] = {
+    "claude-sdk": "claude",
+    "claude_sdk": "claude",
+    "claude-native": "claude",
+    "native-claude": "claude",
+    "pi": "pi",
+    "codex": "gpt",
+    "codex-native": "gpt",
+    "native-codex": "gpt",
+    "openai-agents": "gpt",
+    "openai-agents-sdk": "gpt",
+    "agents_sdk": "gpt",
+}
+
 
 def _strip_catalog_prefix(model: str, prefixes: Sequence[str]) -> str:
     """Strip the first matching *prefixes* entry from a catalog model id.

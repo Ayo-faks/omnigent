@@ -1276,3 +1276,120 @@ def register_hooks_routes(
             content=json.dumps(result.model_dump(exclude_none=True)),
             media_type="application/json",
         )
+
+    # ── POST /sessions/{session_id}/hooks/route-subagent ─
+
+    @router.post(
+        "/sessions/{session_id}/hooks/route-subagent",
+        # Internal harness callback webhook — hidden from the public API reference.
+        include_in_schema=False,
+        response_model=None,
+        dependencies=[Depends(require_json_content_type)],
+    )
+    async def route_subagent_hook(
+        request: Request,
+        session_id: str,
+    ) -> Response:
+        """
+        Native-subagent routing policy endpoint.
+
+        Receives a subagent spawn request from a harness hook script,
+        applies family constraints and the subagent_routing_override toggle,
+        and returns a routing decision the hook enforces.
+
+        The decision action is:
+        - "allow": spawn proceeds unchanged (routing declined or disabled).
+        - "rewrite": spawn proceeds on a routed model (same harness).
+        - "redirect": spawn must move to a different harness (cross-family,
+          auto mode only).
+        - "deny": routing policy denial (harness cannot run the picked model).
+
+        Decision includes a rationale (one-line explanation) and decision_id
+        (join key for the transcript).
+
+        Auth: standard session ACL — the wrapper's outbound headers carry
+        the Bearer token used for all other Omnigent requests. For
+        local-server mode (no auth provider), unauth'd calls are allowed.
+
+        :param request: FastAPI request carrying the spawn request
+            (harness, task_name, prompt, fork, parent_model).
+        :param session_id: Omnigent conversation id from the URL path.
+        :returns: SubagentRouteDecision JSON
+            (action, rationale, model, harness, raw_model, decision_id).
+        :raises OmnigentError: 404 if the session doesn't exist, 400 if the
+            body fails JSON parse or is missing required fields.
+        """
+        import asyncio
+
+        from omnigent.runner.subagent_routing import (
+            SubagentRouteRequest,
+            auto_harness_session,
+        )
+        from omnigent.server.subagent_routing_policy import resolve_subagent_route
+
+        user_id = _get_user_id(request, auth_provider)
+        await _require_access(
+            user_id, session_id, LEVEL_READ, permission_store, conversation_store
+        )
+
+        # Parse the request body.
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise OmnigentError(
+                f"Invalid JSON in route-subagent body: {exc}",
+                code=ErrorCode.INVALID_INPUT,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise OmnigentError(
+                "route-subagent body must be a JSON object.",
+                code=ErrorCode.INVALID_INPUT,
+            )
+
+        # Parse the spawn request.
+        try:
+            req = SubagentRouteRequest.from_payload(payload)
+        except ValueError as exc:
+            raise OmnigentError(
+                str(exc),
+                code=ErrorCode.INVALID_INPUT,
+            ) from exc
+
+        # Load session context.
+        conv = await asyncio.to_thread(
+            conversation_store.get_or_create_conversation,
+            session_id,
+            if_missing_create=False,
+        )
+        if conv is None:
+            raise OmnigentError(
+                f"Session {session_id} not found.",
+                code=ErrorCode.NOT_FOUND,
+            )
+
+        # Determine if this session is in auto-harness mode (may cross families).
+        cross_harness = auto_harness_session(conv)
+
+        # Get session settings for routing gate.
+        cost_control_mode = None
+        subagent_routing_override = None
+        if hasattr(conv, "session_overrides") and conv.session_overrides:
+            overrides = conv.session_overrides
+            if isinstance(overrides, dict):
+                cost_control_mode = overrides.get("cost_control_mode_override")
+                subagent_routing_override = overrides.get("subagent_routing_override")
+
+        # Call the policy.
+        decision = resolve_subagent_route(
+            session_id,
+            req,
+            subagent_routing_override=subagent_routing_override,
+            cost_control_mode=cost_control_mode,
+            auto_harness=cross_harness,
+            caps=get_caps(),
+        )
+
+        return Response(
+            content=json.dumps(decision.to_payload()),
+            media_type="application/json",
+        )
