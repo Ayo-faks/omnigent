@@ -3727,6 +3727,8 @@ async def _forward_event_to_runner(
                     exc_info=True,
                 )
             # Defer card emission until after input.consumed (see below).
+            # Auto-harness is special: it routes harness + model at session-start time,
+            # so the card fields are set from route_session_harness output.
             if _auto_model is not None and _auto_verdict is not None:
                 _auto_card_model = _auto_model
                 _auto_card_verdict = _auto_verdict
@@ -3808,10 +3810,11 @@ async def _forward_event_to_runner(
                     )
             else:
                 # Top-level sessions: model-only routing (harness already fixed by spec).
-                from omnigent.server.smart_routing import route_turn
+                # Call the turn gate; it delegates to route_turn and handles discovery failures.
+                from omnigent.server.routing_turn_gate import route_turn_for_session
 
                 _harness = _resolve_harness(conv)
-                _routed_model, _verdict = await route_turn(
+                _routed_model, _verdict = await route_turn_for_session(
                     _harness,
                     _user_text,
                     session_id=session_id,
@@ -4072,13 +4075,14 @@ async def _dispatch_session_event_to_runner_impl(
         if _native_routing_enabled and (
             conv.model_override is None or conv.parent_conversation_id is not None
         ):
-            from omnigent.server.smart_routing import route_turn
+            # Call the turn gate; it delegates to route_turn and handles discovery failures.
+            from omnigent.server.routing_turn_gate import route_turn_for_session
 
             _harness = _resolve_harness(conv)
             _user_text = _extract_user_text_for_routing(body)
             if _user_text:
                 _native_runner_client = await _get_runner_client(session_id, runner_router)
-                _native_routed_model, _native_verdict = await route_turn(
+                _native_routed_model, _native_verdict = await route_turn_for_session(
                     _harness,
                     _user_text,
                     session_id=session_id,
