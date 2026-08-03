@@ -46,7 +46,6 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import {
   CLAUDE_NATIVE_EFFORTS,
   ConfigRow,
@@ -1372,6 +1371,11 @@ function HarnessConfigModal({
   // otherwise a stale costControlMode="on" (e.g. server later disabled the
   // flag) would select the __smart__ sentinel with no matching Select item.
   const smartRoutingOn = smartRoutingEligible && draftRouting === "on";
+  // Top-level Smart Routing (the placeholder-bound "auto" harness): the router
+  // owns harness + model + effort, so this modal hides Model and Effort and
+  // shows only Permissions (frozen to Default) — none of the per-model knobs
+  // apply to a pick the router makes per session.
+  const autoNativeSelected = draftHarness === AUTO_NATIVE_HARNESS_ID;
   const modelValue = smartRoutingOn ? MODEL_SELECT_SMART : draftModel || MODEL_SELECT_DEFAULT;
   const onModelChange = (value: string) => {
     if (value === MODEL_SELECT_SMART) {
@@ -1419,12 +1423,19 @@ function HarnessConfigModal({
       setCursorExecMode(draftCursor);
       if (entryHarness) writeHarnessOption(entryHarness, { mode: draftCursor });
     } else if (brainDefault) {
-      // Picking the spec default clears the override so the session tracks it.
-      setPickedHarness(draftHarness === brainDefault ? null : draftHarness, agent.id);
+      // Smart Routing is an option in the Agent Harness dropdown: when it's on,
+      // the router owns the harness, so clear any concrete override. Otherwise
+      // picking the spec default clears the override (session tracks it); a
+      // non-default pick persists.
+      if (smartRoutingOn) {
+        setPickedHarness(null, agent.id);
+      } else {
+        setPickedHarness(draftHarness === brainDefault ? null : draftHarness, agent.id);
+      }
     }
-    // Smart Routing is offered on Claude (Model dropdown) and other routable
-    // agents (standalone toggle), so commit it for every eligible agent — not
-    // just the Claude branch above.
+    // Smart Routing is offered on every routable agent (as the first Model
+    // option for the native harnesses, and as an Agent Harness option for
+    // bundle agents), so commit its on/off state for each eligible agent.
     if (smartRoutingEligible) setCostControlMode(draftRouting);
     onOpenChange(false);
   };
@@ -1449,102 +1460,106 @@ function HarnessConfigModal({
         </DialogHeader>
 
         <div className="flex flex-col gap-5 py-1">
-          {/* Smart Routing as a standalone toggle, first, for routable agents
-          that have no Model dropdown to fold it into (Codex, bundle agents, …).
-          Claude offers it as a Model option instead, so it's excluded here. */}
-          {smartRoutingEligible && !hasPermission && (
-            <ConfigRow
-              label="Smart Routing"
-              description="Auto-pick the model for this session by task"
-            >
-              <div className="flex h-8 items-center justify-end">
-                <Switch
-                  size="sm"
-                  checked={smartRoutingOn}
-                  data-testid="new-chat-landing-config-smart-routing"
-                  aria-label="Smart Routing"
-                  onCheckedChange={(next) => setDraftRouting(next ? "on" : "off")}
-                />
-              </div>
-            </ConfigRow>
-          )}
           {hasPermission && (
             <>
-              <ConfigRow label="Model" description="Underlying LLM">
-                <Select value={modelValue} onValueChange={onModelChange}>
-                  <SelectTrigger
-                    className="w-full"
-                    data-testid="new-chat-landing-config-model"
-                    aria-label="Model"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    align="start"
-                    className="[&_[data-slot=select-item]]:pl-2.5"
-                  >
-                    {smartRoutingEligible && (
-                      <SelectItem value={MODEL_SELECT_SMART}>Smart Routing</SelectItem>
-                    )}
-                    <SelectItem value={MODEL_SELECT_DEFAULT}>Default</SelectItem>
-                    {claudeModelOptions.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        {m.displayName}
-                      </SelectItem>
-                    ))}
-                    {claudeModelsLoading && (
-                      <div className="px-2.5 py-1 text-xs text-muted-foreground">
-                        Loading models…
-                      </div>
-                    )}
-                    {!claudeModelsLoading && claudeModelOptions.length === 0 && (
-                      <div className="px-2.5 py-1 text-xs text-muted-foreground">
-                        Models unavailable
-                      </div>
-                    )}
-                  </SelectContent>
-                </Select>
-              </ConfigRow>
+              {/* Model + Effort are hidden for top-level Smart Routing — the
+              router owns them per session, so there is nothing to configure. */}
+              {!autoNativeSelected && (
+                <ConfigRow label="Model" description="Underlying LLM">
+                  <Select value={modelValue} onValueChange={onModelChange}>
+                    <SelectTrigger
+                      className="w-full"
+                      data-testid="new-chat-landing-config-model"
+                      aria-label="Model"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent
+                      position="popper"
+                      align="start"
+                      className="[&_[data-slot=select-item]]:pl-2.5"
+                    >
+                      {smartRoutingEligible && (
+                        <SelectItem value={MODEL_SELECT_SMART}>Smart Routing</SelectItem>
+                      )}
+                      <SelectItem value={MODEL_SELECT_DEFAULT}>Default</SelectItem>
+                      {claudeModelOptions.map((m) => (
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.displayName}
+                        </SelectItem>
+                      ))}
+                      {claudeModelsLoading && (
+                        <div className="px-2.5 py-1 text-xs text-muted-foreground">
+                          Loading models…
+                        </div>
+                      )}
+                      {!claudeModelsLoading && claudeModelOptions.length === 0 && (
+                        <div className="px-2.5 py-1 text-xs text-muted-foreground">
+                          Models unavailable
+                        </div>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </ConfigRow>
+              )}
 
-              <ConfigRow label="Effort" description="Reasoning depth vs. speed">
-                <Select
-                  value={draftEffort || EFFORT_SELECT_NONE}
-                  onValueChange={(v) => setDraftEffort(v === EFFORT_SELECT_NONE ? "" : v)}
-                  // Smart Routing picks the model + effort per turn, so an
-                  // explicit effort can't apply — freeze it to Default.
-                  disabled={smartRoutingOn}
-                >
-                  <SelectTrigger
-                    className="w-full"
-                    data-testid="new-chat-landing-config-effort"
-                    aria-label="Reasoning effort"
+              {!autoNativeSelected && (
+                <ConfigRow label="Effort" description="Reasoning depth vs. speed">
+                  <Select
+                    value={draftEffort || EFFORT_SELECT_NONE}
+                    onValueChange={(v) => setDraftEffort(v === EFFORT_SELECT_NONE ? "" : v)}
+                    // Smart Routing picks the model + effort per turn, so an
+                    // explicit effort can't apply — freeze it to Default.
+                    disabled={smartRoutingOn}
                   >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    align="start"
-                    className="[&_[data-slot=select-item]]:pl-2.5"
-                  >
-                    <SelectItem value={EFFORT_SELECT_NONE}>Default</SelectItem>
-                    {CLAUDE_NATIVE_EFFORTS.map((e) => (
-                      <SelectItem key={e.value} value={e.value}>
-                        {e.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </ConfigRow>
+                    <SelectTrigger
+                      className="w-full"
+                      data-testid="new-chat-landing-config-effort"
+                      aria-label="Reasoning effort"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent
+                      position="popper"
+                      align="start"
+                      className="[&_[data-slot=select-item]]:pl-2.5"
+                    >
+                      <SelectItem value={EFFORT_SELECT_NONE}>Default</SelectItem>
+                      {CLAUDE_NATIVE_EFFORTS.map((e) => (
+                        <SelectItem key={e.value} value={e.value}>
+                          {e.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </ConfigRow>
+              )}
 
               <ConfigRow label="Permissions" description="What the agent can do without asking">
-                <DescribedSelect
-                  value={draftPermission}
-                  onValueChange={setDraftPermission}
-                  options={CLAUDE_NATIVE_PERMISSION_MODES}
-                  testId="new-chat-landing-config-permission"
-                  ariaLabel="Permissions"
-                />
+                {autoNativeSelected ? (
+                  // The routed harness's own permission default applies; the
+                  // placeholder's is meaningless. Show a grayed-out "Default".
+                  <Select value="default" disabled>
+                    <SelectTrigger
+                      className="w-full"
+                      data-testid="new-chat-landing-config-permission"
+                      aria-label="Permissions"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">Default</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <DescribedSelect
+                    value={draftPermission}
+                    onValueChange={setDraftPermission}
+                    options={CLAUDE_NATIVE_PERMISSION_MODES}
+                    testId="new-chat-landing-config-permission"
+                    ariaLabel="Permissions"
+                  />
+                )}
               </ConfigRow>
             </>
           )}
@@ -1564,6 +1579,11 @@ function HarnessConfigModal({
                   align="start"
                   className="[&_[data-slot=select-item]]:pl-2.5"
                 >
+                  {/* Smart Routing first, above Default — same layout as the
+                  Claude Code dropdown, so every routable harness reads alike. */}
+                  {smartRoutingEligible && (
+                    <SelectItem value={MODEL_SELECT_SMART}>Smart Routing</SelectItem>
+                  )}
                   <SelectItem value={MODEL_SELECT_DEFAULT}>
                     {defaultModelLabel(modelOptions, modelDisplay)}
                   </SelectItem>
@@ -1642,7 +1662,21 @@ function HarnessConfigModal({
 
           {!hasPermission && !hasApproval && !hasCursor && brainDefault && (
             <ConfigRow label="Agent Harness" description="Underlying coding harness">
-              <Select value={draftHarness ?? brainDefault} onValueChange={setDraftHarness}>
+              <Select
+                // Smart Routing is an Agent Harness option (not a separate
+                // toggle): selecting it turns routing on and the router owns
+                // the harness + model; any other value is a concrete brain
+                // harness with routing off.
+                value={smartRoutingOn ? MODEL_SELECT_SMART : (draftHarness ?? brainDefault)}
+                onValueChange={(value) => {
+                  if (value === MODEL_SELECT_SMART) {
+                    setDraftRouting("on");
+                  } else {
+                    setDraftRouting("off");
+                    setDraftHarness(value);
+                  }
+                }}
+              >
                 <SelectTrigger
                   className="w-full"
                   data-testid="new-chat-landing-config-harness"
@@ -1655,6 +1689,16 @@ function HarnessConfigModal({
                   align="start"
                   className="[&_[data-slot=select-item]]:pl-2.5"
                 >
+                  {/* Smart Routing first, above the concrete harnesses — same
+                  layout as the Claude Code / Codex Model dropdowns. */}
+                  {smartRoutingEligible && (
+                    <SelectItem
+                      value={MODEL_SELECT_SMART}
+                      data-testid="new-chat-landing-harness-smart-routing"
+                    >
+                      {SMART_ROUTING_LABEL}
+                    </SelectItem>
+                  )}
                   {brainEntries.map(([id, label]) => (
                     <SelectItem key={id} value={id} data-testid={`new-chat-landing-harness-${id}`}>
                       <span className="flex items-center gap-2">
@@ -1836,7 +1880,11 @@ export function NewChatLandingScreen() {
   // collapsed badge). OFF → the composer/picker fall back to the original
   // "run omni setup" guidance, so a disabled flag is a no-op on the UI.
   const harnessInstallEnabled = info !== "loading" && info.harness_install_enabled;
-  const brainHarnessLabels = useBrainHarnessLabels(smartRoutingEnabled);
+  // No "Auto" prepend: Smart Routing is offered as its own explicit option in
+  // each picker (the top-level harness section, the native Model dropdowns, and
+  // the bundle-agent Agent Harness dropdown), so the old "Auto" brain entry
+  // would be a redundant second way to say the same thing.
+  const brainHarnessLabels = useBrainHarnessLabels();
   // Provider-named label for the sandbox option (e.g. "Modal Sandbox"),
   // falling back to the generic "New Sandbox" when the server names no
   // provider.
@@ -2388,8 +2436,9 @@ export function NewChatLandingScreen() {
         { label: "Permissions", value: permissionValue },
       ];
     }
-    // Non-Claude routable agents surface Smart Routing as a standalone toggle,
-    // so reflect it here when on (Claude folds it into Model above).
+    // Bundle agents (polly / debby) surface Smart Routing as an Agent Harness
+    // option, so reflect it in the tooltip when on (the native harnesses fold
+    // it into their Model dropdown, handled above).
     const routingRow: { label: string; value: string }[] =
       smartRoutingEligible && routingOn ? [{ label: "Smart Routing", value: "On" }] : [];
     if (supportsApprovalMode) {
@@ -3123,32 +3172,29 @@ export function NewChatLandingScreen() {
               !smartRoutingHarnessSelected && agentSupportsPermissionMode && pickedEffort
                 ? pickedEffort
                 : undefined,
-            // Smart routing toggle — server-side. The "Auto" harness (bundle or
-            // top-level) always routes, so send "on" to keep the persisted
-            // state consistent with the lit routing icon. Otherwise only send
-            // it when routing is eligible for the effective harness, so a stale
-            // "on" can't ride along invisibly with no control to clear it.
-            cost_control_mode_override:
-              pickedHarness === AUTO_HARNESS_ID || smartRoutingHarnessSelected
-                ? "on"
-                : smartRoutingEligible
-                  ? (costControlMode ?? undefined)
-                  : undefined,
-            // Top-level Smart Routing sends the same "auto" sentinel the bundle
-            // path does; the server tells them apart by the bound agent being a
-            // native wrapper, and routes at create.
+            // Smart Routing (server-side) is on when the top-level Smart
+            // Routing harness is picked, or when routing is eligible + toggled
+            // on for the selected agent (a native harness's Smart Routing model
+            // pick, or a bundle agent's Smart Routing harness option — both set
+            // costControlMode="on"). Send "on" then; otherwise omit so a stale
+            // "on" can't ride along with no control to clear it.
+            cost_control_mode_override: smartRoutingHarnessSelected || routingOn ? "on" : undefined,
+            // Top-level Smart Routing sends the "auto" sentinel; the server
+            // tells it apart from a bundle-agent pick by the bound agent being
+            // a native wrapper, and routes both harness + model at create.
+            // A bundle agent with Smart Routing on (polly / debby, no explicit
+            // harness pick) must still name its own harness so the server's
+            // create-time routing fires — the router picks the model within
+            // that family, not a different harness.
             harness_override: smartRoutingHarnessSelected
               ? AUTO_HARNESS_ID
-              : (pickedHarness ?? undefined),
-            // Smart Routing message: top-level Smart Routing, the bundle "auto"
-            // harness, or a Smart Routing model pick on a fixed harness — all
-            // send the initial prompt so the router can analyze it.
+              : (pickedHarness ?? (routingOn ? (agent?.harness ?? undefined) : undefined)),
+            // Send the initial prompt whenever routing is on so the create-time
+            // router has the task to analyze — top-level Smart Routing, a
+            // native Smart Routing model pick, or a bundle agent's Smart
+            // Routing harness option all route at create.
             smart_routing_message:
-              smartRoutingHarnessSelected ||
-              pickedHarness === AUTO_HARNESS_ID ||
-              (smartRoutingEligible && pickedModel === MODEL_SELECT_SMART)
-                ? initialPrompt
-                : undefined,
+              smartRoutingHarnessSelected || routingOn ? initialPrompt : undefined,
           }),
         });
         if (!res.ok) {
