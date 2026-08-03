@@ -1321,11 +1321,11 @@ def register_hooks_routes(
         """
         import asyncio
 
-        from omnigent.runner.subagent_routing import (
+        from omnigent.server.subagent_routing_policy import resolve_subagent_route
+        from omnigent.server.subagent_routing_transport import (
             SubagentRouteRequest,
             auto_harness_session,
         )
-        from omnigent.server.subagent_routing_policy import resolve_subagent_route
 
         user_id = _get_user_id(request, auth_provider)
         await _require_access(

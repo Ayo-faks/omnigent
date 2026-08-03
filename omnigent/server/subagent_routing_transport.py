@@ -24,7 +24,7 @@ session bridge directory, following the same rendezvous pattern as
 1. Harness hook timeout — 40s (Claude native hook entry, codex spawn hook)
 2. Hook script HTTP request — 30s (defined in ``omnigent.inner.hook_scripts.subagent_router``)
 3. Runner loopback relay wait — 20s (this module's :data:`RELAY_TIMEOUT_S`)
-4. Server relay hop — 15s (defined in ``omnigent.runner.subagent_routing``)
+4. Server relay hop — 15s (the relay handler in ``routes/sessions/routes_hooks.py``)
 
 The loopback endpoint is fail-open: any transport failure, authentication error,
 timeout, or unparseable response allows the spawn unchanged (routing is an
@@ -36,6 +36,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,78 @@ from omnigent.server.routing_contract import (
 )
 
 _logger = logging.getLogger(__name__)
+
+#: Cap on the task-name field parsed off a spawn payload, so a pathological
+#: hook body can't balloon a decision row.
+_TASK_NAME_CAP = 200
+
+
+@dataclass(frozen=True)
+class SubagentRouteRequest:
+    """One native-subagent spawn awaiting a routing verdict.
+
+    The wire shape the hook subprocess POSTs to the loopback and the server
+    relay forwards to the policy. ``build_route_request`` in
+    :mod:`omnigent.inner.hook_scripts.subagent_router` produces the matching
+    JSON.
+
+    :param harness: Requesting harness id, e.g. ``"claude-native"``.
+    :param task_name: Subagent type / task name from the spawn payload.
+    :param prompt: Raw task text. ``None`` on codex (its spawn message is
+        encrypted in hook payloads).
+    :param fork: ``True`` when the spawn forks the parent session.
+    :param parent_model: Model the parent session runs on, when known.
+    """
+
+    harness: str
+    task_name: str = ""
+    prompt: str | None = None
+    fork: bool = False
+    parent_model: str | None = None
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> SubagentRouteRequest:
+        """Parse a loopback/relay request body.
+
+        :param payload: Decoded JSON object from the hook script.
+        :returns: Parsed request.
+        :raises ValueError: If ``harness`` is missing or not a string.
+        """
+        harness = payload.get("harness")
+        if not isinstance(harness, str) or not harness.strip():
+            raise ValueError("route-subagent body requires a non-empty 'harness' string")
+        task_name = payload.get("task_name")
+        prompt = payload.get("prompt")
+        parent_model = payload.get("parent_model")
+        return cls(
+            harness=harness.strip(),
+            task_name=task_name[:_TASK_NAME_CAP] if isinstance(task_name, str) else "",
+            prompt=prompt if isinstance(prompt, str) and prompt else None,
+            fork=bool(payload.get("fork")),
+            parent_model=(
+                parent_model if isinstance(parent_model, str) and parent_model else None
+            ),
+        )
+
+
+def auto_harness_session(conv: Any, parent: Any = None) -> bool:
+    """Report whether a session may cross harness families for a subagent spawn.
+
+    True only for a session in Smart Routing (auto) harness mode, or a child
+    of one: those are the sessions whose harness the router owns. Everyone
+    else is pinned to the family they started on, so a codex session never
+    gets Claude children and vice versa. In v2 the auto mode is carried by the
+    conversation's ``harness_override == "auto"`` sentinel (there is no label).
+
+    :param conv: Conversation row for the session, or ``None``.
+    :param parent: Conversation row for its parent, when known.
+    :returns: ``True`` when cross-family picks are allowed.
+    """
+    for row in (conv, parent):
+        if row is not None and getattr(row, "harness_override", None) == "auto":
+            return True
+    return False
+
 
 #: Seconds the loopback handler waits for the server relay response.
 #: Hop 3 of the timeout budget in the module docstring.

@@ -1,23 +1,12 @@
 """Unit tests for subagent routing policy."""
 
-import pytest
-from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from omnigent.server.routing_contract import SubagentRouteDecision
 from omnigent.server.subagent_routing_policy import resolve_subagent_route
-
-
-# Temporary definition (will be imported from omnigent.runner.subagent_routing in W2·3)
-@dataclass(frozen=True)
-class SubagentRouteRequest:
-    """One native-subagent spawn awaiting a routing verdict."""
-
-    harness: str
-    task_name: str = ""
-    prompt: str | None = None
-    fork: bool = False
-    parent_model: str | None = None
+from omnigent.server.subagent_routing_transport import SubagentRouteRequest
 
 
 @pytest.fixture
