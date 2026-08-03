@@ -820,6 +820,7 @@ def prepare_bridge_dir(
     bridge_id: str | None = None,
     workspace: Path,
     launch_model: str | None = None,
+    sandbox: OSEnvSandboxSpec | None = None,
 ) -> Path:
     """
     Create or refresh the bridge directory for a native Claude session.
@@ -834,6 +835,11 @@ def prepare_bridge_dir(
         forwarder can re-inject it when Claude Code's ``/model``
         normalizes the name to one the gateway rejects.  ``None`` when
         no ucode profile is active.
+    :param sandbox: Resolved sandbox spec from the agent's ``os_env``.
+        Persisted into ``bridge.json`` so the bridge MCP subprocess can
+        honour the same sandbox type (and path grants) as the Claude
+        terminal it serves.  ``None`` leaves the bridge at its default
+        ``type="none"``.
     :returns: Bridge directory path.
     """
     resolved_bridge_id = bridge_id or conversation_id
@@ -853,6 +859,8 @@ def prepare_bridge_dir(
     }
     if launch_model is not None:
         payload["launch_model"] = launch_model
+    if sandbox is not None:
+        payload["sandbox"] = _sandbox_spec_to_json(sandbox)
     _write_json_file(bridge_dir / _CONFIG_FILE, payload)
     # Keep ``_PERMISSION_HOOK_FILE`` — the PermissionRequest command hook
     # reads the Omnigent server URL from it at runtime, so wiping it on re-prep
@@ -4066,6 +4074,33 @@ def _empty_object_schema() -> _JsonObject:
     return {"type": "object", "properties": {}}
 
 
+def _sandbox_spec_to_json(sandbox: OSEnvSandboxSpec) -> dict[str, object]:
+    """Serialise an ``OSEnvSandboxSpec`` to a plain JSON-safe dict."""
+    out: dict[str, object] = {"type": sandbox.type}
+    if sandbox.read_paths is not None:
+        out["read_paths"] = sandbox.read_paths
+    if sandbox.write_paths is not None:
+        out["write_paths"] = sandbox.write_paths
+    if not sandbox.allow_network:
+        out["allow_network"] = sandbox.allow_network
+    if sandbox.env_passthrough is not None:
+        out["env_passthrough"] = sandbox.env_passthrough
+    return out
+
+
+def _sandbox_spec_from_json(raw: object) -> OSEnvSandboxSpec:
+    """Deserialise a ``bridge.json`` sandbox dict into an ``OSEnvSandboxSpec``."""
+    if not isinstance(raw, dict):
+        return OSEnvSandboxSpec(type="none")
+    return OSEnvSandboxSpec(
+        type=raw.get("type", "none") or "none",
+        read_paths=raw.get("read_paths"),
+        write_paths=raw.get("write_paths"),
+        allow_network=bool(raw.get("allow_network", True)),
+        env_passthrough=raw.get("env_passthrough"),
+    )
+
+
 def _build_tools(config: _JsonObject) -> tuple[dict[str, Tool], Callable[[], None]]:
     """
     Build Omnigent MCP tools served by the bridge.
@@ -4078,10 +4113,11 @@ def _build_tools(config: _JsonObject) -> tuple[dict[str, Tool], Callable[[], Non
     workspace = Path(workspace_raw) if isinstance(workspace_raw, str) and workspace_raw else None
     os_env: OSEnvironment | None = None
     if workspace is not None:
+        sandbox = _sandbox_spec_from_json(config.get("sandbox"))
         spec = OSEnvSpec(
             type="caller_process",
             cwd=str(workspace),
-            sandbox=OSEnvSandboxSpec(type="none"),
+            sandbox=sandbox,
             fork=False,
         )
         os_env = create_os_environment(spec)
