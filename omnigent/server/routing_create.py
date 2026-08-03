@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from omnigent.model_fallbacks import TASK_V1_ARMS
+from omnigent.model_fallbacks import SERVABLE_ALIASES, TASK_V1_ARMS
 
 if TYPE_CHECKING:
     import httpx
@@ -58,6 +58,19 @@ _ROUTER_HARNESS_TO_NATIVE: dict[str, str] = {
     "codex": "codex-native",
 }
 
+# The servable catalog for the frozen task_v1 arms. The router returns a BARE
+# arm id (``gpt-5-6-luna``), but the harness endpoints serve the prefixed
+# spelling: ``databricks-<arm>`` for every arm except glm, which serves only
+# under its ``system.ai.`` route (SERVABLE_ALIASES). A create has no live
+# catalog, so resolve_route() is run against this static servable set to
+# translate the pick — verified live: the bare ids 404 on /codex/v1/responses
+# while the prefixed ids return 200.
+_CREATE_SERVABLE_CATALOG: tuple[str, ...] = tuple(
+    SERVABLE_ALIASES.get(arm, f"databricks-{arm}")
+    for rec in TASK_V1_ARMS.values()
+    for arm in rec.model_ids
+)
+
 
 async def resolve_smart_routing_create(
     smart_routing_message: str,
@@ -74,7 +87,7 @@ async def resolve_smart_routing_create(
     Returns ``(harness, model, verdict, error)`` — the shape of
     ``smart_routing.route_session_harness``, which it delegates to.
     """
-    from omnigent.server.smart_routing import route_session_harness
+    from omnigent.server.smart_routing import resolve_route, route_session_harness
 
     if not (smart_routing_message or "").strip():
         return None, None, None, None
@@ -93,6 +106,16 @@ async def resolve_smart_routing_create(
     # claude-sdk / codex candidate key.
     if harness is not None:
         harness = _ROUTER_HARNESS_TO_NATIVE.get(harness, harness)
+
+    # Translate the bare router pick into the servable spelling the harness
+    # endpoint actually accepts (databricks-<arm>, or system.ai.glm-5-2). Without
+    # this the bare id 404s on the harness's Responses/gateway surface.
+    if model is not None:
+        resolved = resolve_route(model, servable=_CREATE_SERVABLE_CATALOG)
+        if resolved is not None:
+            model = resolved.model
+            if verdict is not None:
+                verdict = {**verdict, "raw_model": resolved.raw_model}
 
     return harness, model, verdict, error
 
@@ -117,7 +140,7 @@ async def resolve_fixed_native_model_routing(
     Returns ``(model, verdict, error)``; ``model`` and ``verdict`` are ``None``
     when nothing should be pinned, and ``error`` then explains why.
     """
-    from omnigent.server.smart_routing import route_session_harness
+    from omnigent.server.smart_routing import resolve_route, route_session_harness
 
     if not (smart_routing_message or "").strip():
         return None, None, None
@@ -138,5 +161,12 @@ async def resolve_fixed_native_model_routing(
 
     if model is None or verdict is None:
         return None, None, error or "Routing unavailable; using the harness default model."
+
+    # Translate the bare router pick into the servable spelling the harness
+    # endpoint accepts (databricks-<arm> / system.ai.glm-5-2); the bare id 404s.
+    resolved = resolve_route(model, servable=_CREATE_SERVABLE_CATALOG)
+    if resolved is not None:
+        model = resolved.model
+        verdict = {**verdict, "raw_model": resolved.raw_model}
 
     return model, verdict, None

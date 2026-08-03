@@ -26,28 +26,31 @@ class TestResolveSmartRoutingCreate:
         assert result == (None, None, None, None)
 
     async def test_delegates_to_route_session_harness(self) -> None:
-        """Should delegate to route_session_harness when message is present."""
+        """Delegates to route_session_harness, then maps harness + resolves model.
+
+        The router returns a bare arm id under its own harness spelling
+        (``codex`` / ``claude-sdk``). The resolver maps the harness to native
+        and translates the pick to the servable spelling via resolve_route.
+        """
         with patch("omnigent.server.smart_routing.route_session_harness") as mock_route:
             mock_route.return_value = (
-                "claude-native",
-                "databricks-claude-opus-4-8",
-                {"model": "databricks-claude-opus-4-8", "rationale": "test"},
+                "claude-sdk",  # the router's own harness spelling
+                "claude-opus-4-8",  # the router's bare pick
+                {"model": "claude-opus-4-8", "rationale": "test"},
                 None,
             )
 
-            result = await resolve_smart_routing_create(
+            harness, model, verdict, error = await resolve_smart_routing_create(
                 "hello world",
                 session_id="sess-123",
                 catalog_session_id="cat-456",
                 runner_client=MagicMock(),
             )
 
-            assert result == (
-                "claude-native",
-                "databricks-claude-opus-4-8",
-                {"model": "databricks-claude-opus-4-8", "rationale": "test"},
-                None,
-            )
+            assert harness == "claude-native"  # mapped to native spelling
+            assert model == "databricks-claude-opus-4-8"  # resolved to servable
+            assert verdict is not None and verdict["raw_model"] == "claude-opus-4-8"
+            assert error is None
             mock_route.assert_called_once()
 
     async def test_router_error_returns_error_string(self) -> None:
