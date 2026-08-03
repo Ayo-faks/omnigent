@@ -111,8 +111,13 @@ import { readLastHarness, writeLastHarness } from "@/lib/harnessPreferences";
 import { readHideUnconfiguredHarnesses } from "@/lib/harnessVisibilityPreferences";
 import { readDefaultBaseBranch } from "@/lib/baseBranchPreferences";
 import { readHarnessOptions, writeHarnessOption } from "@/lib/modePreferences";
-import { AUTO_HARNESS_ID, useBrainHarnessLabels } from "@/lib/agentLabels";
+import { AUTO_HARNESS_ID, SMART_ROUTING_LABEL, useBrainHarnessLabels } from "@/lib/agentLabels";
 import { CLAUDE_NATIVE_MODELS } from "@/lib/claudeNativeModels";
+import {
+  SMART_ROUTING_ARMS,
+  hostBacksHarnessWithGateway,
+  smartRoutingUnavailableReason,
+} from "@/lib/smartRoutingAvailability";
 import { partitionAgentsByKind, sortAgentsForDisplay } from "@/lib/agentGrouping";
 import { cn } from "@/lib/utils";
 import {
@@ -3025,6 +3030,14 @@ export function NewChatLandingScreen() {
                   ? (costControlMode ?? undefined)
                   : undefined,
             harness_override: pickedHarness ?? undefined,
+            // Smart Routing message: when Smart Routing harness is selected or
+            // when Smart Routing model is selected for a fixed harness, include
+            // the user's initial prompt so the router can analyze it.
+            smart_routing_message:
+              pickedHarness === AUTO_HARNESS_ID ||
+              (smartRoutingEligible && pickedModel === MODEL_SELECT_SMART)
+                ? initialPrompt
+                : undefined,
           }),
         });
         if (!res.ok) {

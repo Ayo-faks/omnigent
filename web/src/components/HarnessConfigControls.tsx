@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import {
   Select,
@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 
 // Sentinel Select values for the Model row. Radix requires a non-empty value,
 // so the two "no explicit model" choices ride on reserved tokens rather than
@@ -131,4 +132,55 @@ export function DescribedSelect({
       </SelectContent>
     </Select>
   );
+}
+
+/**
+ * Model select for a harness, with Smart Routing support.
+ *
+ * Renders options for model selection, including the Smart Routing
+ * model-per-turn option when enabled. When Smart Routing is not available
+ * for the harness, shows only DEFAULT and specific model options.
+ *
+ * @param value Selected model value (DEFAULT, SMART, or a model id).
+ * @param onValueChange Selection callback.
+ * @param models Available model options.
+ * @param harness The harness being configured (for smart routing gating).
+ * @param smartRoutingAvailable Whether Smart Routing is available for this harness.
+ * @param testId Trigger test id.
+ * @param ariaLabel Accessible name for the trigger.
+ */
+export function RoutingModelSelect({
+  value,
+  onValueChange,
+  models,
+  harness,
+  smartRoutingAvailable,
+  testId,
+  ariaLabel,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  models: readonly { value: string; label: string; description?: string }[];
+  harness?: string;
+  smartRoutingAvailable?: boolean;
+  testId: string;
+  ariaLabel: string;
+}): JSX.Element {
+  const items = useMemo(() => {
+    const baseItems: typeof models = [
+      { value: MODEL_SELECT_DEFAULT, label: "Default", description: "Use the harness's configured model" },
+    ];
+
+    if (smartRoutingAvailable) {
+      baseItems.push({
+        value: MODEL_SELECT_SMART,
+        label: "Smart Routing",
+        description: "Let the router pick the best model per turn",
+      });
+    }
+
+    return [...baseItems, ...models];
+  }, [models, smartRoutingAvailable]);
+
+  return <DescribedSelect value={value} onValueChange={onValueChange} options={items} testId={testId} ariaLabel={ariaLabel} />;
 }
