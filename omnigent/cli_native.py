@@ -155,6 +155,22 @@ def register_native_commands(cli: click.Group) -> None:
             "flag will be removed in a future release."
         ),
     )
+    @click.option(
+        "-p",
+        "--prompt",
+        default=None,
+        help="Send this as the first message after the Claude TUI starts.",
+    )
+    @click.option(
+        "--smart-routing",
+        is_flag=True,
+        default=False,
+        help=(
+            "Ask the server to pick the model before launching the TUI. "
+            "Requires -p/--prompt. Uses Smart Routing if available on the target host; "
+            "otherwise falls back to a normal launch. See also the web UI's Smart Routing setting."
+        ),
+    )
     @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
     def claude(
         server: str | None,
@@ -164,6 +180,8 @@ def register_native_commands(cli: click.Group) -> None:
         use_claude_config: bool,
         profile_startup: bool,
         claude_command: str | None,
+        prompt: str | None,
+        smart_routing: bool,
         claude_args: tuple[str, ...],
     ) -> None:
         # Param docs live in comments — Click uses the docstring for --help.
@@ -173,6 +191,8 @@ def register_native_commands(cli: click.Group) -> None:
         # :param use_claude_config: When True, skip ucode/Databricks auth and use
         #     existing Claude config.
         # :param profile_startup: When True, print startup timing marks.
+        # :param prompt: Optional first prompt, routed if --smart-routing.
+        # :param smart_routing: When True, route the model via Smart Routing.
         # :param claude_args: Pass-through args for ``claude``.
         """Launch Claude Code with Omnigent.
 
@@ -182,6 +202,7 @@ def register_native_commands(cli: click.Group) -> None:
           omnigent claude --resume conv_abc123
           omnigent claude --resume                  # interactive picker
           omnigent claude --server https://<app>.databricksapps.com
+          omnigent claude --smart-routing -p "..."  # route the model
         """
         _reject_native_on_windows("claude")
         startup_profiler = StartupProfiler.from_env(
@@ -211,6 +232,16 @@ def register_native_commands(cli: click.Group) -> None:
                 "--session and --resume are mutually exclusive; "
                 "prefer --resume (--session is deprecated).",
             )
+        if smart_routing and not prompt:
+            raise click.UsageError(
+                "--smart-routing requires -p/--prompt. The prompt is routed to pick a model. "
+                "Alternatively, use the web UI's Smart Routing setting to route without a prompt."
+            )
+        if smart_routing and (choice.picker or choice.conversation_id is not None or resume):
+            raise click.ClickException(
+                "Smart Routing creates a new session; it cannot be combined with "
+                "--resume or --continue. Drop the resume flag, or launch without --smart-routing."
+            )
         startup_profiler.mark("arguments validated")
 
         # Ensure the host daemon (local when ``--server`` is omitted/empty,
@@ -230,6 +261,54 @@ def register_native_commands(cli: click.Group) -> None:
 
         startup_profiler.mark("native module imported")
 
+        routed_model: str | None = None
+        if smart_routing:
+            from omnigent.smart_routing_cli import (
+                check_smart_routing_available,
+                create_smart_routing_session,
+                known_host_id,
+                smart_routing_families,
+            )
+
+            startup_profiler.mark("smart routing helper imported")
+
+            # Preflight: check that routing is available and host supports it.
+            try:
+                check_smart_routing_available(
+                    base_url=server,
+                    harnesses=smart_routing_families("claude-native"),
+                    host_id=None,  # Host ID is resolved inside check.
+                )
+            except click.ClickException:
+                raise
+
+            # Route the session at create time (tier 2: fixed harness, routed model).
+            from omnigent.runtime.host_id_resolver import get_host_id_sync
+
+            host_id = get_host_id_sync()
+            known_id = known_host_id(base_url=server, host_id=host_id)
+            startup_profiler.mark("host id resolved")
+
+            routing_decision = create_smart_routing_session(
+                base_url=server,
+                prompt=prompt,
+                harness="claude-native",
+                host_id=known_id,
+                workspace=os.getcwd(),
+            )
+            startup_profiler.mark("smart routing session created")
+
+            if routing_decision.notice:
+                click.echo(f"omnigent: {routing_decision.notice}", err=True)
+            if routing_decision.session_id:
+                resolved_session_id = routing_decision.session_id
+                routed_model = routing_decision.model
+                if routed_model:
+                    click.echo(f"omnigent: Smart Routing picked claude-native on {routed_model}.")
+            else:
+                # Fail open: routing unavailable, launch normally.
+                pass
+
         if claude_command:
             click.echo(
                 "omnigent: `claude --command` is deprecated; set OMNIGENT_CLAUDE_PATH "
@@ -243,11 +322,21 @@ def register_native_commands(cli: click.Group) -> None:
             explicit=claude_command,
             cfg=cfg,
         )
+
+        # Build extra args, possibly with the routed model and prompt.
+        extra_args = list(_resolve_harness_startup_args(cfg, "claude-native", claude_args))
+        if routed_model and not any(arg.startswith("--model") for arg in extra_args):
+            # Append the routed model only if the user didn't explicitly pass --model.
+            extra_args.extend(["--model", routed_model])
+        if prompt and smart_routing:
+            # Append the prompt as the final argv argument for the native TUI.
+            extra_args.append(prompt)
+
         run_claude_native(
             server=server,
             session_id=resolved_session_id,
             resume_picker=choice.picker,
-            extra_args=_resolve_harness_startup_args(cfg, "claude-native", claude_args),
+            extra_args=tuple(extra_args),
             use_claude_config=use_claude_config,
             auto_open_conversation=auto_open_conversation,
             startup_profiler=startup_profiler,
@@ -298,6 +387,16 @@ def register_native_commands(cli: click.Group) -> None:
         default=None,
         help="Send this as the first message after the Codex TUI starts.",
     )
+    @click.option(
+        "--smart-routing",
+        is_flag=True,
+        default=False,
+        help=(
+            "Ask the server to pick the model before launching the TUI. "
+            "Requires -p/--prompt. Uses Smart Routing if available on the target host; "
+            "otherwise falls back to a normal launch. See also the web UI's Smart Routing setting."
+        ),
+    )
     @click.argument("codex_args", nargs=-1, type=click.UNPROCESSED)
     def codex(
         server: str | None,
@@ -305,6 +404,7 @@ def register_native_commands(cli: click.Group) -> None:
         session_id: str | None,
         model: str | None,
         prompt: str | None,
+        smart_routing: bool,
         codex_args: tuple[str, ...],
     ) -> None:
         # Param docs live in comments — Click uses the docstring for --help.
@@ -313,6 +413,7 @@ def register_native_commands(cli: click.Group) -> None:
         # :param session_id: Legacy ``--session`` id; mutually exclusive with ``--resume``.
         # :param model: Codex model id.
         # :param prompt: Optional first prompt.
+        # :param smart_routing: When True, route the model via Smart Routing.
         # :param codex_args: Pass-through args for ``codex`` before ``resume``.
         """Launch Codex with Omnigent.
 
@@ -322,6 +423,7 @@ def register_native_commands(cli: click.Group) -> None:
           omnigent codex --resume conv_abc123
           omnigent codex --resume                  # interactive picker
           omnigent codex --server https://<app>.databricksapps.com
+          omnigent codex --smart-routing -p "..."  # route the model
         """
         _reject_native_on_windows("codex")
         choice = _split_resume_value(resume)
@@ -329,6 +431,16 @@ def register_native_commands(cli: click.Group) -> None:
             raise click.UsageError(
                 "--session and --resume are mutually exclusive; "
                 "prefer --resume (--session is deprecated).",
+            )
+        if smart_routing and not prompt:
+            raise click.UsageError(
+                "--smart-routing requires -p/--prompt. The prompt is routed to pick a model. "
+                "Alternatively, use the web UI's Smart Routing setting to route without a prompt."
+            )
+        if smart_routing and (choice.picker or choice.conversation_id is not None or resume):
+            raise click.ClickException(
+                "Smart Routing creates a new session; it cannot be combined with "
+                "--resume or --continue. Drop the resume flag, or launch without --smart-routing."
             )
 
         from omnigent.codex_native import run_codex_native
@@ -351,6 +463,53 @@ def register_native_commands(cli: click.Group) -> None:
             choice.conversation_id if choice.conversation_id is not None else session_id
         )
 
+        routed_model: str | None = None
+        if smart_routing:
+            from omnigent.smart_routing_cli import (
+                check_smart_routing_available,
+                create_smart_routing_session,
+                known_host_id,
+                smart_routing_families,
+            )
+
+            # Preflight: check that routing is available and host supports it.
+            try:
+                check_smart_routing_available(
+                    base_url=server,
+                    harnesses=smart_routing_families("codex-native"),
+                    host_id=None,  # Host ID is resolved inside check.
+                )
+            except click.ClickException:
+                raise
+
+            # Route the session at create time (tier 2: fixed harness, routed model).
+            from omnigent.runtime.host_id_resolver import get_host_id_sync
+
+            host_id = get_host_id_sync()
+            known_id = known_host_id(base_url=server, host_id=host_id)
+
+            routing_decision = create_smart_routing_session(
+                base_url=server,
+                prompt=prompt,
+                harness="codex-native",
+                host_id=known_id,
+                workspace=os.getcwd(),
+            )
+
+            if routing_decision.notice:
+                click.echo(f"omnigent: {routing_decision.notice}", err=True)
+            if routing_decision.session_id:
+                resolved_session_id = routing_decision.session_id
+                routed_model = routing_decision.model
+                if routed_model:
+                    click.echo(f"omnigent: Smart Routing picked codex-native on {routed_model}.")
+            else:
+                # Fail open: routing unavailable, launch normally.
+                pass
+
+        # Use routed model if available, otherwise fall back to config or explicit --model.
+        final_model = routed_model or model
+
         resolved_command = resolve_harness_command(
             "codex-native",
             default="codex",
@@ -362,7 +521,7 @@ def register_native_commands(cli: click.Group) -> None:
             session_id=resolved_session_id,
             resume_picker=choice.picker,
             extra_args=_resolve_harness_startup_args(cfg, "codex-native", codex_args),
-            model=model,
+            model=final_model,
             prompt=prompt,
             auto_open_conversation=auto_open_conversation,
             command=resolved_command,
