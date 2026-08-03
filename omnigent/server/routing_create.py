@@ -42,11 +42,15 @@ _CREATE_CANDIDATE_MODELS: dict[str, list[str]] = {
     "codex": list(TASK_V1_ARMS["codex"].model_ids),
 }
 
-# The single-harness candidate slice for a fixed-native create, keyed by the
-# native harness spelling the create request pins.
+# The single-harness candidate slice for a fixed-harness create, keyed by the
+# harness the create request pins. The value's key is the harness spelling the
+# router understands (claude-sdk / codex). claude-sdk is the in-process Claude
+# harness (polly / debby); it routes at create like the native TUIs, and the
+# harness itself does not change — only the model is pinned.
 _FIXED_NATIVE_CANDIDATES: dict[str, dict[str, list[str]]] = {
     "claude-native": {"claude-sdk": list(TASK_V1_ARMS["claude"].model_ids)},
     "codex-native": {"codex": list(TASK_V1_ARMS["codex"].model_ids)},
+    "claude-sdk": {"claude-sdk": list(TASK_V1_ARMS["claude"].model_ids)},
 }
 
 # The router picks among the harness spellings it understands (``claude-sdk`` /

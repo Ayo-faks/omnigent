@@ -1002,6 +1002,24 @@ describe("NewChatLandingScreen", () => {
     expect(screen.queryByTestId("new-chat-landing-harness-copilot")).toBeNull();
   });
 
+  it("offers the Smart Routing toggle for a claude-sdk agent when routing is enabled", () => {
+    // polly (claude-sdk, an overridable brain harness, not a native wrapper)
+    // is create-time routable: the config modal shows the Smart Routing toggle
+    // when the server has smart_routing_enabled on.
+    mockPollyWithBrainReadiness();
+    renderLanding({ smart_routing_enabled: true });
+    openAgentConfig("a_polly");
+    expect(screen.getByTestId("new-chat-landing-config-smart-routing")).toBeTruthy();
+  });
+
+  it("hides the Smart Routing toggle when the server has routing disabled", () => {
+    // Same agent, but smart_routing_enabled off → no toggle.
+    mockPollyWithBrainReadiness();
+    renderLanding({ smart_routing_enabled: false });
+    openAgentConfig("a_polly");
+    expect(screen.queryByTestId("new-chat-landing-config-smart-routing")).toBeNull();
+  });
+
   it("seeds the working directory from the host's most-recent path", async () => {
     renderLanding();
     // host_1's recent ("/Users/corey/repo") seeds the field; the chip shows

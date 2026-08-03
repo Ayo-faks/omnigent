@@ -1417,7 +1417,7 @@ function HarnessConfigModal({
           that have no Model dropdown to fold it into (Codex, bundle agents, …).
           Claude offers it as a Model option instead, so it's excluded here. */}
           {smartRoutingEligible && !hasPermission && (
-            <ConfigRow label="Smart Routing" description="Auto-pick the model per turn by task">
+            <ConfigRow label="Smart Routing" description="Auto-pick the model for this session by task">
               <div className="flex h-8 items-center justify-end">
                 <Switch
                   size="sm"
@@ -2245,9 +2245,16 @@ export function NewChatLandingScreen() {
   const supportsApprovalMode = nativeAgentHasCapability(selectedAgent, "approvalMode");
   const supportsCursorMode = nativeAgentHasCapability(selectedAgent, "cursorMode");
   const hideUnconfiguredHarnesses = useMemo(() => readHideUnconfiguredHarnesses(), []);
-  // Smart Routing (per-session model selection) is superseded by the Auto
-  // harness which handles both harness + model. Hide it entirely for now.
-  const smartRoutingEligible = false;
+  // Smart Routing at create for a fixed in-process agent (e.g. polly / debby,
+  // harness claude-sdk): offered when the server has routing on and the agent
+  // has an overridable brain harness. Native-terminal wrapper agents route via
+  // their own create path (and the Auto harness handles cross-family), so they
+  // are excluded here. Routing is decided once at create — never per turn.
+  const smartRoutingEligible =
+    smartRoutingEnabled &&
+    selectedAgent?.harness != null &&
+    selectedAgent.harness in brainHarnessLabels &&
+    nativeCodingAgentForAvailableAgent(selectedAgent) == null;
   // Whether the gear config modal has anything to show for the selected agent
   // (drives the gear icon's visibility). Bundle agents with an overridable
   // brain harness qualify, as does any routing-eligible agent — Smart Routing

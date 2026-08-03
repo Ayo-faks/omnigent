@@ -251,8 +251,21 @@ def register_core_routes(
             # Get a runner client for the routing call (may be None if routing unavailable).
             runner_client = await _get_runner_client(None, runner_router)
 
+            # A sub-agent spawned under a routing-on parent is forced to the
+            # "auto" harness server-side (see _create_session_from_existing_agent);
+            # the request itself carries no harness_override. Detect that here so
+            # the child routes harness + model at create like an explicit "auto".
+            _route_as_auto = body.harness_override == "auto"
+            if not _route_as_auto and body.parent_session_id is not None:
+                _parent = await asyncio.to_thread(
+                    conversation_store.get_conversation, body.parent_session_id
+                )
+                _route_as_auto = (
+                    _parent is not None and _parent.cost_control_mode_override == "on"
+                )
+
             # Smart Routing path: auto-harness picks both harness and model.
-            if body.harness_override == "auto":
+            if _route_as_auto:
                 harness, model, verdict, error = await resolve_smart_routing_create(
                     body.smart_routing_message,
                     session_id=None,  # Session doesn't exist yet
@@ -284,8 +297,11 @@ def register_core_routes(
                             "Smart routing declined or unavailable for auto-harness create: %s",
                             error,
                         )
-            # Fixed-harness path: pinned native harness, route model only.
-            elif body.harness_override in ("claude-native", "codex-native"):
+            # Fixed-harness path: a harness pinned at create routes only its
+            # model (never the harness). Covers the native TUIs and the
+            # in-process claude-sdk harness (polly / debby); all route once at
+            # create, the only routing entry point.
+            elif body.harness_override in ("claude-native", "codex-native", "claude-sdk"):
                 model, verdict, error = await resolve_fixed_native_model_routing(
                     body.harness_override,
                     body.smart_routing_message,

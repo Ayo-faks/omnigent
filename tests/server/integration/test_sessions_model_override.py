@@ -688,26 +688,29 @@ async def test_smart_routing_overrides_orchestrator_model_for_child_session(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Smart routing wins over the orchestrator's model choice for child sessions.
+    """Smart routing wins over the orchestrator's model choice for a child, AT CREATE.
 
     When the parent session has the routing toggle on, a sub-agent created via
-    sys_session_send is forced to ``harness_override="auto"`` at create time
-    (ignoring the orchestrator's harness/model). The first-message auto-harness
-    path then routes both harness and model via ``route_session_harness`` and
-    the verdict replaces the orchestrator's choice in the runner body.
+    sys_session_send is forced to ``harness_override="auto"``. Routing happens
+    once at CREATE (there is no per-turn routing): the spawn's task text is
+    carried as ``smart_routing_message`` and the create-time router picks both
+    harness and model, which the create response reflects — replacing the
+    orchestrator's choice.
     """
-    captured = _stub_runner_client(monkeypatch)
+    _stub_runner_client(monkeypatch)
 
     # Stub route_session_harness to return a deterministic (harness, model)
-    # verdict, bypassing the real LLM. Forced-auto children route through this.
-    routed_model = "databricks-claude-haiku-4-5"
-    routed_harness = "claude-sdk"
+    # verdict, bypassing the real LLM. Forced-auto children route through this
+    # at create. The router returns its own harness spelling (claude-sdk);
+    # resolve_smart_routing_create maps it to the native spelling.
+    routed_model = "claude-sonnet-5"
+    served_model = "databricks-claude-sonnet-5"
 
     async def _fake_route_session_harness(
         *_: Any, **__: Any
     ) -> tuple[str, str, dict[str, Any], None]:
         return (
-            routed_harness,
+            "claude-sdk",
             routed_model,
             {"model": routed_model, "rationale": "trivial task — cheap model suffices"},
             None,
@@ -724,42 +727,28 @@ async def test_smart_routing_overrides_orchestrator_model_for_child_session(
         assert parent_resp.status_code == 201, parent_resp.text
         parent_id = parent_resp.json()["id"]
 
-        # Child session with a model the orchestrator chose (simulates
-        # sys_session_send with model="databricks-claude-opus-4-8"). The server
-        # forces harness_override="auto" for a routing-on parent's child.
+        # Child create simulates sys_session_send: the orchestrator's model is
+        # ignored (server forces auto), and the spawn's task text rides as
+        # smart_routing_message so the child routes AT CREATE.
         child_resp = await client.post(
             "/v1/sessions",
             json={
                 "agent_id": agent["id"],
                 "parent_session_id": parent_id,
                 "model_override": "databricks-claude-opus-4-8",
+                "smart_routing_message": "what is 2+2?",
             },
         )
         assert child_resp.status_code == 201, child_resp.text
-        child_id = child_resp.json()["id"]
+        child = child_resp.json()
 
-        # First message to the child — auto-harness routing should fire.
-        event_resp = await client.post(
-            f"/v1/sessions/{child_id}/events",
-            json={
-                "type": "message",
-                "data": {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "what is 2+2?"}],
-                },
-            },
-        )
-        assert event_resp.status_code == 202, event_resp.text
-
-    assert captured.get("body") is not None, (
-        "Runner client was never POSTed to — _forward_event_to_runner did not run."
+    # The create-time router replaced the orchestrator's model with the routed,
+    # servable pick and set the native harness — no first message required.
+    assert child.get("model_override") == served_model, (
+        f"Create-time smart routing should have replaced the orchestrator's model "
+        f"with {served_model!r}; create response had {child.get('model_override')!r}."
     )
-    assert captured["body"].get("model_override") == routed_model, (
-        f"Smart routing should have replaced the orchestrator's model with "
-        f"{routed_model!r}; runner body had "
-        f"{captured['body'].get('model_override')!r}."
-    )
-    assert captured["body"].get("harness_override") == routed_harness, (
-        f"Smart routing should have set the harness to {routed_harness!r}; "
-        f"runner body had {captured['body'].get('harness_override')!r}."
+    assert child.get("harness") == "claude-native", (
+        f"Create-time smart routing should have set the harness to 'claude-native'; "
+        f"create response had {child.get('harness')!r}."
     )

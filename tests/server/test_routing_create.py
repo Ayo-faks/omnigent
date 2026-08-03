@@ -121,6 +121,40 @@ class TestResolveFixedNativeModelRouting:
             assert result[1] is not None  # verdict
             assert result[2] is None  # no error
 
+    async def test_claude_sdk_routes_to_servable_claude_arm(self) -> None:
+        """The in-process claude-sdk harness (polly / debby) routes at create.
+
+        It routes over the claude family arms and resolves the bare router pick
+        to its servable databricks- spelling, exactly like the native path.
+        """
+        with patch("omnigent.server.smart_routing.route_session_harness") as mock_route:
+            mock_route.return_value = (
+                "claude-sdk",
+                "claude-sonnet-5",  # bare router pick
+                {"model": "claude-sonnet-5", "rationale": "trivial"},
+                None,
+            )
+
+            model, verdict, error = await resolve_fixed_native_model_routing(
+                "claude-sdk",
+                "what testing framework does this project use?",
+                session_id="sess-sdk",
+            )
+
+            assert model == "databricks-claude-sonnet-5"  # servable spelling
+            assert verdict is not None and verdict["raw_model"] == "claude-sonnet-5"
+            assert error is None
+
+    async def test_unknown_harness_declines(self) -> None:
+        """A harness with no candidate arms declines with an error, never crashes."""
+        model, verdict, error = await resolve_fixed_native_model_routing(
+            "pi-native",
+            "route me",
+        )
+        assert model is None
+        assert verdict is None
+        assert error is not None and "pi-native" in error
+
     async def test_router_unavailable_fails_open(self) -> None:
         """Router unavailable should fail open with error string."""
         with patch("omnigent.server.smart_routing.route_session_harness") as mock_route:

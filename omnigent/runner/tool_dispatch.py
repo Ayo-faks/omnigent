@@ -1848,6 +1848,12 @@ async def _execute_subagent_tool(
             "title": f"{sub_agent_name}:{session_name}",
             "sub_agent_name": sub_agent_name,
         }
+        # Carry the spawn's task text as the child's smart-routing message.
+        # Smart Routing is decided once at create; a routing-on parent's child
+        # is forced to harness_override="auto" server-side, and this lets the
+        # create-time router pick the child's harness + model from its task
+        # (there is no per-turn routing to resolve it later).
+        create_body["smart_routing_message"] = message
         if harness_override_canonical is not None:
             create_body["harness_override"] = harness_override_canonical
         if model is not None:
