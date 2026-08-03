@@ -91,6 +91,13 @@ function useHarnessCatalog<T>(select: (c: HarnessCatalog) => T, fallback: T): T 
  */
 export const AUTO_HARNESS_ID = "auto";
 
+/**
+ * User-facing name for the Smart Routing feature. Centralized so the toggle,
+ * the model-dropdown option, and the "switched to <default>" notices in
+ * :mod:`smartRoutingAvailability` can't drift on wording.
+ */
+export const SMART_ROUTING_LABEL = "Smart Routing";
+
 export function useBrainHarnessLabels(smartRoutingEnabled = false): Record<string, string> {
   const base = useHarnessCatalog((c) => c.labels, BRAIN_HARNESS_LABELS);
   if (!smartRoutingEnabled) return base;
