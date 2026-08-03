@@ -23,10 +23,13 @@ Wave 0 declares the seam; the bodies are wave-2 stream 2's.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import httpx
+
+_logger = logging.getLogger(__name__)
 
 
 async def resolve_smart_routing_create(
@@ -36,25 +39,68 @@ async def resolve_smart_routing_create(
     catalog_session_id: str | None = None,
     runner_client: httpx.AsyncClient | None = None,
 ) -> tuple[str | None, str | None, dict[str, Any] | None, str | None]:
-    """Wave-2 stream 2 fills this (Smart Routing harness create path).
+    """Route a create with ``harness_override == "auto"`` to select BOTH harness and model.
+
+    Delegates to :func:`omnigent.server.smart_routing.route_session_harness`,
+    which selects from the ``both`` five-arm menu over all native harnesses.
 
     Returns ``(harness, model, verdict, error)`` — the shape of
     ``smart_routing.route_session_harness``, which it delegates to.
     """
-    raise NotImplementedError("wave-2 stream 2")
+    from omnigent.server.smart_routing import route_session_harness
+
+    if not (smart_routing_message or "").strip():
+        return None, None, None, None
+
+    harness, model, verdict, error = await route_session_harness(
+        smart_routing_message,
+        session_id=session_id,
+        catalog_session_id=catalog_session_id,
+        runner_client=runner_client,
+    )
+
+    return harness, model, verdict, error
 
 
 async def resolve_fixed_native_model_routing(
-    harness: str,
+    harness: str,  # noqa: ARG001 — used by wave-1 models_in_family validation
     smart_routing_message: str,
     *,
     session_id: str | None = None,
     runner_client: httpx.AsyncClient | None = None,
 ) -> tuple[str | None, dict[str, Any] | None, str | None]:
-    """Wave-2 stream 2 fills this (fixed-harness model routing at create).
+    """Route the model for a create pinned to one native harness.
 
-    Routes only the model for a create pinned to ``harness``. Returns
-    ``(model, verdict, error)``. Shares ``_routing_host_for_create`` with the
-    path above — authorize before lookup (plan 5b).
+    Routes only the model for a create already pinned to ``harness``. The
+    ``harness`` argument names the session's fixed harness (e.g.
+    ``"claude-native"`` or ``"codex-native"``); the pick is constrained to
+    that harness, so routing cannot change the harness. Fails open: an
+    unavailable router or a pick this harness cannot run yields no model and a
+    rationale for the routing card.
+
+    Returns ``(model, verdict, error)``; ``model`` and ``verdict`` are ``None``
+    when nothing should be pinned, and ``error`` then explains why.
+
+    Shares ``_routing_host_for_create`` trap with ``resolve_smart_routing_create``
+    — authorize before lookup (plan 5b).
     """
-    raise NotImplementedError("wave-2 stream 2")
+    from omnigent.server.smart_routing import route_session_harness
+
+    if not (smart_routing_message or "").strip():
+        return None, None, None
+
+    # For a fixed harness, route over that single harness only.
+    # The candidate set is filtered to one harness, so the router cannot
+    # select a different harness. This is the "native TUI" path where turns
+    # originate in the pane and the turn gate can never reach.
+    _harness, model, verdict, error = await route_session_harness(
+        smart_routing_message,
+        session_id=session_id,
+        catalog_session_id=None,
+        runner_client=runner_client,
+    )
+
+    if model is None or verdict is None:
+        return None, None, error or "Routing unavailable; using the harness default model."
+
+    return model, verdict, None
