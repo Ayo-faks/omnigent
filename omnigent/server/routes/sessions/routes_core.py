@@ -103,6 +103,14 @@ from omnigent.server.routes._sessions.common import (
 )
 from omnigent.server.routes._sessions.helpers import *
 from omnigent.server.routes._sessions.orchestration import *
+from omnigent.server.routing_create import (
+    resolve_fixed_native_model_routing,
+    resolve_smart_routing_create,
+)
+from omnigent.server.routing_decision_store import (
+    build_decision,
+    persist_decision,
+)
 from omnigent.server.schemas import (
     AutomaticSessionRenameRequest,
     AutomaticSessionRenameResponse,
@@ -233,6 +241,81 @@ def register_core_routes(
             # message survives in each entry's `msg`.
             raise HTTPException(status_code=422, detail=exc.errors(include_context=False)) from exc
 
+        # Smart routing: consume body.smart_routing_message to route harness and/or model
+        # at create time (wave-2 stream 2, plan 2e/2f). On resolver failure, create still
+        # succeeds with defaults (fail-open philosophy). Routing decisions are persisted
+        # after the session is created (see below, after resp.id is available).
+        routing_decisions_to_persist: list[tuple[str, Any]] = []
+
+        if body.smart_routing_message and (body.smart_routing_message or "").strip():
+            # Get a runner client for the routing call (may be None if routing unavailable).
+            runner_client = await _get_runner_client(None, runner_router)
+
+            # Smart Routing path: auto-harness picks both harness and model.
+            if body.harness_override == "auto":
+                harness, model, verdict, error = await resolve_smart_routing_create(
+                    body.smart_routing_message,
+                    session_id=None,  # Session doesn't exist yet
+                    catalog_session_id=None,
+                    runner_client=runner_client,
+                )
+                if harness is not None and model is not None:
+                    # Router accepted the routing; apply it and record the decision.
+                    body.harness_override = harness
+                    body.model_override = model
+                    if verdict is not None:
+                        routing_decisions_to_persist.append(
+                            (
+                                "create_smart_routing",
+                                build_decision(
+                                    model=model,
+                                    rationale=verdict.get("rationale", ""),
+                                    harness=harness,
+                                    scope="session",
+                                    applied=True,
+                                ),
+                            )
+                        )
+                else:
+                    # Router declined or errored; keep "auto" sentinel (don't clear it).
+                    # The per-turn routing path will handle it on the first message.
+                    if error:
+                        _logger.debug(
+                            "Smart routing declined or unavailable for auto-harness create: %s",
+                            error,
+                        )
+            # Fixed-harness path: pinned native harness, route model only.
+            elif body.harness_override in ("claude-native", "codex-native"):
+                model, verdict, error = await resolve_fixed_native_model_routing(
+                    body.harness_override,
+                    body.smart_routing_message,
+                    session_id=None,  # Session doesn't exist yet
+                    runner_client=runner_client,
+                )
+                if model is not None:
+                    # Router accepted the model; apply it and record the decision.
+                    body.model_override = model
+                    if verdict is not None:
+                        routing_decisions_to_persist.append(
+                            (
+                                "create_fixed_native_routing",
+                                build_decision(
+                                    model=model,
+                                    rationale=verdict.get("rationale", ""),
+                                    harness=body.harness_override,
+                                    scope="session",
+                                    applied=True,
+                                ),
+                            )
+                        )
+                else:
+                    # Router declined or errored; keep the harness default model.
+                    if error:
+                        _logger.debug(
+                            "Fixed-harness model routing declined or unavailable: %s",
+                            error,
+                        )
+
         resp = await _create_session_from_existing_agent(
             conversation_store,
             agent_store,
@@ -252,6 +335,14 @@ def register_core_routes(
         # Without this, the runner doesn't know this session exists
         # until the first forwarded event.
         conv = conversation_store.get_conversation(resp.id)
+
+        # Persist create-time routing decisions (wave-2 stream 2, plan 2e/2f).
+        # Best-effort: failures are logged but never fatal. The routing_decision_store
+        # publishes live events even if the persist fails, so the web still renders
+        # the routing chip.
+        for _decision_type, decision_record in routing_decisions_to_persist:
+            await persist_decision(resp.id, conversation_store, decision_record)
+
         # Mark the terminal spin-up flag at creation — the earliest
         # possible point — for a host-launched terminal-first session
         # (claude-native / codex-native). The runner's own pending emit
