@@ -463,6 +463,17 @@ export interface ElicitationBlock {
    * Absent/null for all other elicitations.
    */
   rememberScope?: RememberScope | null;
+  /**
+   * Native stuck-prompt supervisor: the frozen tmux pane tail shown in the
+   * inline answer card (``phase === "native_terminal_input"``). Absent/null for
+   * all other elicitations.
+   */
+  terminalTail?: string | null;
+  /**
+   * Native stuck-prompt supervisor: the terminal resource id keystrokes route
+   * to when answering. ``null`` when unknown (card shows an open-terminal hint).
+   */
+  terminalId?: string | null;
 }
 
 /** Union of all block types. */

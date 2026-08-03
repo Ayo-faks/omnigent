@@ -313,6 +313,12 @@ _CURSOR_NATIVE_PERMISSION_HOOK_TIMEOUT_S = 86400.0
 _NATIVE_PERMISSION_HOOK_TIMEOUT_S = 86400.0
 
 
+# Generic native-harness elicitation hook (e.g. the stuck-on-unknown-prompt
+# terminal card). A day-long park so the human can answer at leisure; the
+# detector re-POSTs across severed long-polls to keep the same card alive.
+_NATIVE_ELICITATION_HOOK_TIMEOUT_S = 86400.0
+
+
 _HARNESS_PRE_RESOLVED_ELICITATION_TTL_S = 300.0
 
 
@@ -756,6 +762,7 @@ __all__ = [
     "_MODEL_OPTIONS_ENDPOINT_BY_WRAPPER",
     "_MODEL_OPTIONS_RETRY_DELAYS_S",
     "_MODEL_TOKEN_KEYS",
+    "_NATIVE_ELICITATION_HOOK_TIMEOUT_S",
     "_NATIVE_PERMISSION_HOOK_TIMEOUT_S",
     "_NATIVE_POLICY_NOT_ENFORCED_CODE",
     "_NATIVE_TERMINAL_ENSURE_FAILED_CODE",

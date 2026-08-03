@@ -260,6 +260,18 @@ export interface ElicitationRequest {
    * where the allow rule is meaningful.
    */
   rememberScope?: RememberScope | null;
+  /**
+   * Native stuck-prompt supervisor extra (``phase === "native_terminal_input"``
+   * only): the frozen tmux pane tail shown in the inline answer card so the user
+   * can see what the CLI is asking. Absent/null for every other elicitation.
+   */
+  terminalTail?: string | null;
+  /**
+   * Native stuck-prompt supervisor extra: the terminal resource id keystrokes
+   * route to when answering. ``null`` when unknown — the card then falls back to
+   * a "open the terminal to answer" hint instead of an inline input.
+   */
+  terminalId?: string | null;
 }
 
 /**

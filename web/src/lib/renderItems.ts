@@ -114,6 +114,8 @@ export type RenderItem =
       } | null;
       allowAllEdits?: boolean;
       rememberScope?: RememberScope | null;
+      terminalTail?: string | null;
+      terminalId?: string | null;
     };
 
 /** A bubble cluster. The page maps over these. */
@@ -730,6 +732,8 @@ function buildAssistantItems(
         codexCommand: b.codexCommand,
         allowAllEdits: b.allowAllEdits,
         rememberScope: b.rememberScope,
+        terminalTail: b.terminalTail,
+        terminalId: b.terminalId,
       });
       i += 1;
       continue;

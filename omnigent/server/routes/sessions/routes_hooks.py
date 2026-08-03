@@ -911,6 +911,108 @@ def register_hooks_routes(
             media_type="application/json",
         )
 
+    # ── POST /sessions/{session_id}/hooks/native-elicitation-request ──
+
+    @router.post(
+        "/sessions/{session_id}/hooks/native-elicitation-request",
+        # Internal harness callback webhook — hidden from the public API reference.
+        include_in_schema=False,
+        response_model=None,
+        # CSRF hardening: body is parsed via request.json(); require a JSON
+        # Content-Type so a cross-site text/plain request can't reach it.
+        dependencies=[Depends(require_json_content_type)],
+    )
+    async def native_elicitation_request_hook(
+        request: Request,
+        session_id: str,
+    ) -> Response:
+        """
+        Generic native-harness elicitation endpoint (harness-agnostic).
+
+        Receives ``{"elicitation_id": <str>, "params": <ElicitationRequestParams>}``
+        from any native forwarder/supervisor that needs to surface a prompt the
+        web UI should answer — today the stuck-on-unknown-prompt terminal card
+        raised by :mod:`omnigent.native_startup_supervisor` when a TUI freezes on
+        a first-run wizard we did not anticipate. Parks on the shared harness
+        elicitation registry, emits the standard ``response.elicitation_request``
+        SSE event, waits for the session ``approval`` verdict, and returns the raw
+        :class:`~omnigent.server.schemas.ElicitationResult`.
+
+        Mirrors the antigravity hook's minimal body contract but is deliberately
+        harness-neutral: the caller owns building the params (via
+        ``native_terminal_input_params``) and interpreting the verdict (typing the
+        answer into the pane over the terminal WS), so this endpoint only parks,
+        publishes, and returns.
+
+        :param request: FastAPI request carrying the elicitation body.
+        :param session_id: Omnigent conversation id from the URL path.
+        :returns: ``ElicitationResult`` JSON on user verdict; ``200`` with empty
+            body on timeout/disconnect (caller interprets as ``None``).
+        :raises OmnigentError: 404 if the session does not exist, 400 if the body
+            is malformed.
+        """
+        user_id = _get_user_id(request, auth_provider)
+        await _require_access(
+            user_id, session_id, LEVEL_READ, permission_store, conversation_store
+        )
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise OmnigentError(
+                f"Invalid JSON in native elicitation hook body: {exc}",
+                code=ErrorCode.INVALID_INPUT,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise OmnigentError(
+                "Native elicitation hook body must be a JSON object.",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        elicitation_id = payload.get("elicitation_id")
+        if not isinstance(elicitation_id, str) or not elicitation_id:
+            raise OmnigentError(
+                "Native elicitation hook body must include a non-empty"
+                " 'elicitation_id' string.",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        raw_params = payload.get("params")
+        if not isinstance(raw_params, dict):
+            raise OmnigentError(
+                "Native elicitation hook body must include a 'params' object.",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        try:
+            params = ElicitationRequestParams.model_validate(raw_params)
+        except Exception as exc:
+            raise OmnigentError(
+                f"Invalid 'params' in native elicitation hook body: {exc}",
+                code=ErrorCode.INVALID_INPUT,
+            ) from exc
+        from omnigent.server.routes import sessions as _sf
+
+        result = await _publish_and_wait_for_harness_elicitation(
+            request,
+            session_id=session_id,
+            params=params,
+            timeout_s=_sf._NATIVE_ELICITATION_HOOK_TIMEOUT_S,
+            conversation_store=conversation_store,
+            elicitation_id=elicitation_id,
+        )
+        if result is None:
+            return Response(status_code=status.HTTP_200_OK)
+        if result.action == "decline":
+            # Explicit user decline: interrupt the native harness before returning
+            # the decline so the abort signal arrives first (same as the agy/codex
+            # elicitation hooks).
+            await _forward_session_change_to_runner(
+                session_id,
+                get_server_runner_router(),
+                {"type": "interrupt"},
+            )
+        return Response(
+            content=result.model_dump_json(),
+            media_type="application/json",
+        )
+
     # ── POST /sessions/{session_id}/hooks/cursor-permission-request ─
 
     @router.post(

@@ -41,8 +41,10 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
+import { useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   type AskUserQuestionPayload,
   castAskUserQuestionPayload,
@@ -54,6 +56,7 @@ import type { RememberScope } from "@/lib/types";
 import { useChatStore } from "@/store/chatStore";
 import { AskUserQuestionForm, type AskUserQuestionAnswers } from "./AskUserQuestionForm";
 import { ExitPlanModeReview } from "./ExitPlanModeReview";
+import { answerToTmuxKeys } from "./terminalKeys";
 
 /**
  * Extract the answer-option labels from an AskUserQuestion-shaped
@@ -150,6 +153,19 @@ interface ApprovalCardProps {
    */
   rememberScope?: RememberScope | null;
   /**
+   * Native stuck-prompt supervisor only (``phase === "native_terminal_input"``):
+   * the frozen tmux pane tail the CLI is waiting on. The card renders it and an
+   * input row that posts the typed answer as ``content.keys`` (tmux key names),
+   * which the supervisor types into the pane. Absent/null for other elicitations.
+   */
+  terminalTail?: string | null;
+  /**
+   * Native stuck-prompt supervisor only: the terminal resource id the answer
+   * keystrokes route to. ``null`` when unknown — the card then shows an
+   * open-terminal hint instead of an inline input.
+   */
+  terminalId?: string | null;
+  /**
    * Verdict submitter override. Defaults to `chatStore.submitApproval`
    * (the in-chat path: optimistic block flip + resolve POST + rollback).
    * The Inbox page passes its own handler because its cards belong to
@@ -173,6 +189,8 @@ export function ApprovalCard({
   codexCommand,
   allowAllEdits,
   rememberScope,
+  terminalTail,
+  terminalId,
   onSubmit,
 }: ApprovalCardProps) {
   const submit: SubmitApprovalFn =
@@ -222,6 +240,12 @@ export function ApprovalCard({
     const trimmed = feedback.trim();
     submit(elicitationId, "decline", trimmed ? { feedback: trimmed } : undefined);
   };
+  const submitTerminalKeys = (keys: string[]) => {
+    // The stuck-prompt supervisor reads ``content.keys`` (an ordered list of
+    // tmux key names) and types them into the frozen pane. An empty list would
+    // type nothing, so callers only submit a non-empty sequence.
+    submit(elicitationId, "accept", { keys });
+  };
 
   // Mode detection. Prefer the server-stamped structured payload
   // (full, non-truncated); fall back to parsing the content_preview
@@ -241,6 +265,9 @@ export function ApprovalCard({
   const isAskUserQuestion = askPayload !== null;
   const isMultiChoice = optionLabels.length > 0;
   const isCodexCommandApproval = codexCommand !== null && codexCommand !== undefined;
+  // Native stuck-prompt card: the CLI froze on an unknown prompt; show the
+  // frozen pane tail and collect a free-form answer typed into the pane.
+  const isTerminalInput = phase === "native_terminal_input";
   // External URL: the elicitation points to a third-party page (OAuth,
   // external MCP server, etc.) — show a link. Our own /approve/...
   // paths are handled inline with approve/reject buttons.
@@ -483,7 +510,15 @@ export function ApprovalCard({
         )}
       </AlertTitle>
       <AlertDescription className="flex flex-col gap-2">
-        {isExitPlanMode ? (
+        {isTerminalInput ? (
+          <TerminalInputForm
+            message={message}
+            terminalTail={terminalTail ?? null}
+            hasTerminal={typeof terminalId === "string" && terminalId.length > 0}
+            onSubmit={submitTerminalKeys}
+            onDismiss={() => submitBinary("decline")}
+          />
+        ) : isExitPlanMode ? (
           <>
             <span>Claude finished planning and wants to proceed.</span>
             <ExitPlanModeReview
@@ -584,7 +619,109 @@ export function ElicitationCard({
       codexCommand={item.codexCommand}
       allowAllEdits={item.allowAllEdits}
       rememberScope={item.rememberScope}
+      terminalTail={item.terminalTail}
+      terminalId={item.terminalId}
       onSubmit={onSubmit}
     />
+  );
+}
+
+/** Quick keys for arrow-driven prompts, sent as a single named key (no Enter). */
+const TERMINAL_QUICK_KEYS: { label: string; key: string }[] = [
+  { label: "↑", key: "Up" },
+  { label: "↓", key: "Down" },
+  { label: "Enter", key: "Enter" },
+  { label: "Esc", key: "Escape" },
+];
+
+/**
+ * Inline answer form for a native stuck-on-unknown-prompt elicitation.
+ *
+ * Shows the frozen tmux pane tail (so the user sees exactly what the CLI is
+ * asking) and collects an answer two ways, both typed into the pane by the
+ * supervisor:
+ *
+ * * a text field — the typed answer becomes one tmux key per character plus a
+ *   trailing Enter (a menu digit "1", a "y"/"n", or a short word); and
+ * * quick keys — a single named key (↑ ↓ Enter Esc) for arrow-driven pickers
+ *   that don't take typed text.
+ *
+ * "Dismiss" declines the elicitation (the user can still answer in the embedded
+ * terminal directly). When the session has no known terminal id, the form still
+ * submits keys — the supervisor resolves the pane from the session — but this is
+ * the branch a future "open terminal" affordance would hook onto.
+ */
+function TerminalInputForm({
+  message,
+  terminalTail,
+  hasTerminal,
+  onSubmit,
+  onDismiss,
+}: {
+  message: string;
+  terminalTail: string | null;
+  hasTerminal: boolean;
+  onSubmit: (keys: string[]) => void;
+  onDismiss: () => void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const trimmed = answer.trim();
+
+  const submitTyped = () => {
+    const keys = answerToTmuxKeys(answer);
+    if (keys.length === 0) return;
+    onSubmit(keys);
+    setAnswer("");
+  };
+
+  return (
+    <div className="flex flex-col gap-2" data-testid="terminal-input-form">
+      <span>{message}</span>
+      {terminalTail && (
+        <pre className="max-h-64 overflow-y-auto rounded bg-muted px-2 py-1 font-mono text-xs whitespace-pre-wrap break-words">
+          {terminalTail}
+        </pre>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={answer}
+          onChange={(e) => setAnswer(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitTyped();
+            }
+          }}
+          placeholder="Type your answer (e.g. 1, y, dark)…"
+          className="max-w-xs font-mono"
+          aria-label="Answer the terminal prompt"
+          data-testid="terminal-input-field"
+        />
+        <Button size="sm" onClick={submitTyped} disabled={trimmed.length === 0}>
+          Send
+        </Button>
+      </div>
+      <div className="flex flex-wrap gap-2" data-testid="terminal-input-quick-keys">
+        {TERMINAL_QUICK_KEYS.map(({ label, key }) => (
+          <Button
+            key={key}
+            size="sm"
+            variant="outline"
+            onClick={() => onSubmit([key])}
+            aria-label={`Send ${key}`}
+          >
+            {label}
+          </Button>
+        ))}
+        <Button size="sm" variant="ghost" onClick={onDismiss}>
+          Dismiss
+        </Button>
+      </div>
+      {!hasTerminal && (
+        <span className="text-muted-foreground text-xs">
+          If the answer doesn&apos;t take effect, open the terminal to respond directly.
+        </span>
+      )}
+    </div>
   );
 }

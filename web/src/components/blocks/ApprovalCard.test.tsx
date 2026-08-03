@@ -1191,3 +1191,53 @@ describe("ApprovalCard — ExitPlanMode plan review", () => {
     );
   });
 });
+
+describe("ApprovalCard — native terminal-input (stuck prompt)", () => {
+  const baseProps = {
+    elicitationId: "elicit_stuck_x",
+    message: "The CLI is waiting for input it asked for on screen.",
+    phase: "native_terminal_input",
+    policyName: "native_startup_supervisor",
+    contentPreview: "",
+    requestedSchema: {},
+    status: "pending" as const,
+    response: null,
+  };
+
+  it("renders the frozen pane tail and a typed-answer input", () => {
+    render(
+      <ApprovalCard
+        {...baseProps}
+        terminalTail={"Choose a theme:\n(1) dark  (2) light"}
+        terminalId="term_1"
+      />,
+    );
+    expect(screen.getByTestId("terminal-input-form")).toBeDefined();
+    expect(screen.getByText(/Choose a theme/)).toBeDefined();
+    expect(screen.getByTestId("terminal-input-field")).toBeDefined();
+  });
+
+  it("submits a typed answer as content.keys (chars + Enter)", () => {
+    const onSubmit = vi.fn();
+    render(
+      <ApprovalCard {...baseProps} terminalTail="Pick:" terminalId="term_1" onSubmit={onSubmit} />,
+    );
+    fireEvent.change(screen.getByTestId("terminal-input-field"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    expect(onSubmit).toHaveBeenCalledWith("elicit_stuck_x", "accept", { keys: ["1", "Enter"] });
+  });
+
+  it("sends a single named key for quick-key buttons (no trailing Enter)", () => {
+    const onSubmit = vi.fn();
+    render(
+      <ApprovalCard {...baseProps} terminalTail="Pick:" terminalId="term_1" onSubmit={onSubmit} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /send Up/i }));
+    expect(onSubmit).toHaveBeenCalledWith("elicit_stuck_x", "accept", { keys: ["Up"] });
+  });
+
+  it("shows an open-terminal hint when the terminal id is unknown", () => {
+    render(<ApprovalCard {...baseProps} terminalTail="Pick:" terminalId={null} />);
+    expect(screen.getByText(/open the terminal to respond/i)).toBeDefined();
+  });
+});

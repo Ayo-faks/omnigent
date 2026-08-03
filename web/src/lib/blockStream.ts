@@ -862,6 +862,8 @@ function* processEvent(state: ReducerState, event: StreamEvent): Generator<AnyBl
         codexCommand: event.codexCommand,
         allowAllEdits: event.allowAllEdits,
         rememberScope: event.rememberScope,
+        terminalTail: event.terminalTail,
+        terminalId: event.terminalId,
       } satisfies ElicitationBlock;
       return;
     }

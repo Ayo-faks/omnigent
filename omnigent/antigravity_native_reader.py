@@ -1016,6 +1016,22 @@ async def supervise_reader(
         name="antigravity-rotation-detector",
     )
 
+    # Stuck-on-unknown-prompt supervisor: watch the tmux pane for a first-run
+    # wizard (theme picker, telemetry consent, …) that pre-empts agy's composer
+    # and would otherwise leave the session spinning. Runs as a sibling task and
+    # ends on the same ``_body_should_stop`` the reader body uses. ``None`` when
+    # ``tmux.json`` is not advertised yet (nothing to watch); the next reader run
+    # rebinds it. Lazy-imported to keep the reader importable from the light CLI.
+    from omnigent.antigravity_native_stuck import start_agy_stuck_supervisor
+
+    stuck_task = start_agy_stuck_supervisor(
+        bridge_dir=bridge_dir,
+        session_id=session_id,
+        client=client,
+        epoch=cascade_id,
+        stop=_body_should_stop,
+    )
+
     try:
         await body_task
     except asyncio.CancelledError:
@@ -1034,6 +1050,13 @@ async def supervise_reader(
         rotation_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await rotation_task
+        # Stop the stuck-prompt supervisor too (it may be mid-poll or awaiting a
+        # day-long verdict). Best-effort like the detector — never let its teardown
+        # abort the reader's own cleanup.
+        if stuck_task is not None:
+            stuck_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stuck_task
         # Ensure the body task is finalized on EVERY exit path (notably an external
         # cancel, where ``await body_task`` re-raised above before it could be
         # awaited to completion) so no task leaks. A rotation/normal exit leaves it

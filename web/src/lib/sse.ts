@@ -856,6 +856,11 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
     const cwd = p.cwd;
     const reason = p.reason;
     const execPolicyAmendment = p.execpolicy_amendment;
+    // The native stuck-prompt supervisor stamps these when a TUI froze on an
+    // unknown first-run prompt: `terminal_tail` is the frozen pane text the card
+    // shows, `terminal_id` names the terminal-attach socket keystrokes route to.
+    const terminalTail = p.terminal_tail;
+    const terminalId = p.terminal_id;
     // claude-native edit-tool prompts stamp this so the ApprovalCard
     // offers the "Accept & allow all edits" button (switches the
     // session to acceptEdits mode on accept).
@@ -919,6 +924,12 @@ export function parseEvent(rawType: string, data: Record<string, unknown>): Stre
           : null,
       allowAllEdits,
       rememberScope,
+      terminalTail:
+        phase === "native_terminal_input" && typeof terminalTail === "string" ? terminalTail : null,
+      terminalId:
+        phase === "native_terminal_input" && typeof terminalId === "string" && terminalId
+          ? terminalId
+          : null,
     } satisfies ElicitationRequest;
   }
 
