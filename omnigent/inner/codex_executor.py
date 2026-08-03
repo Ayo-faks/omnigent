@@ -1306,6 +1306,7 @@ class _CodexAppServerSession:
         self._stderr_task: asyncio.Task[None] | None = None
         self._pending_requests: dict[int, asyncio.Future[CodexMessage]] = {}
         self._events: asyncio.Queue[CodexMessage] = asyncio.Queue()
+        self._reader_error: Exception | None = None
         self._next_id = 1
         self._started = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -1385,6 +1386,8 @@ class _CodexAppServerSession:
                 **_proc.spawn_kwargs(),
                 cwd=self._cwd or os.getcwd(),
             )
+            self._reader_error = None
+            self._events = asyncio.Queue()
             self._reader_task = asyncio.create_task(self._reader_loop())
             self._stderr_task = asyncio.create_task(self._stderr_loop())
             await self._request(
@@ -2039,6 +2042,8 @@ class _CodexAppServerSession:
             return {"error": str(exc)}
 
     async def _request(self, method: str, params: CodexParams) -> CodexMessage:
+        if self._reader_error is not None:
+            raise self._reader_error
         request_id = self._next_id
         self._next_id += 1
         loop = asyncio.get_running_loop()
@@ -2113,8 +2118,17 @@ class _CodexAppServerSession:
                 await self._events.put(message)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — reader loop logs and exits on any unexpected error  # pragma: no cover - defensive
-            logger.debug("Codex App Server reader loop ended: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — transport failures wake all consumers
+            failure: Exception = RuntimeError(f"Codex App Server reader failed: {exc}")
+        else:
+            failure = EOFError("Codex App Server closed stdout")
+        self._reader_error = failure
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(failure)
+        self._pending_requests.clear()
+        await self._events.put({"method": "error", "params": {"message": str(failure)}})
+        logger.debug("Codex App Server reader loop ended: %s", failure)
 
     async def _stderr_loop(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None

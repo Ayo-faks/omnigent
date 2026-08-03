@@ -388,7 +388,8 @@ class CodexAppServerClient:
         self._ws: ClientConnection | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._pending_requests: dict[int, asyncio.Future[CodexMessage]] = {}
-        self._events: asyncio.Queue[CodexMessage] = asyncio.Queue()
+        self._events: asyncio.Queue[CodexMessage | None] = asyncio.Queue()
+        self._reader_error: Exception | None = None
         self._next_id = 1
 
     async def connect(self) -> None:
@@ -397,6 +398,8 @@ class CodexAppServerClient:
 
         :returns: None.
         """
+        self._reader_error = None
+        self._events = asyncio.Queue()
         if self._ws_url is not None:
             self._ws = await websockets.connect(
                 self._ws_url,
@@ -458,6 +461,8 @@ class CodexAppServerClient:
         """
         if self._ws is None:
             raise RuntimeError("Codex app-server client is not connected")
+        if self._reader_error is not None:
+            raise self._reader_error
         request_id = self._next_id
         self._next_id += 1
         loop = asyncio.get_running_loop()
@@ -522,7 +527,13 @@ class CodexAppServerClient:
         :returns: Async iterator of notification envelopes.
         """
         while True:
-            yield await self._events.get()
+            if self._reader_error is not None and self._events.empty():
+                raise self._reader_error
+            event = await self._events.get()
+            if event is None:
+                assert self._reader_error is not None
+                raise self._reader_error
+            yield event
 
     async def _reader_loop(self) -> None:
         """
@@ -531,35 +542,48 @@ class CodexAppServerClient:
         :returns: None.
         """
         assert self._ws is not None
-        async for raw in self._ws:
-            if not isinstance(raw, str):
-                continue
-            decoded: object = json.loads(raw)
-            message = _string_object_dict(decoded)
-            if message is None:
-                _logger.warning("Ignoring non-object Codex app-server message")
-                continue
-            if (
-                "id" in message
-                and "method" not in message
-                and ("result" in message or "error" in message)
-            ):
-                raw_id = message["id"]
-                request_id: int | None = None
-                if isinstance(raw_id, int):
-                    request_id = raw_id
-                elif isinstance(raw_id, str):
-                    with contextlib.suppress(ValueError):
-                        request_id = int(raw_id)
-                future = (
-                    self._pending_requests.pop(request_id, None)
-                    if request_id is not None
-                    else None
-                )
-                if future is not None and not future.done():
-                    future.set_result(message)
-                continue
-            await self._events.put(message)
+        try:
+            async for raw in self._ws:
+                if not isinstance(raw, str):
+                    continue
+                decoded: object = json.loads(raw)
+                message = _string_object_dict(decoded)
+                if message is None:
+                    _logger.warning("Ignoring non-object Codex app-server message")
+                    continue
+                if (
+                    "id" in message
+                    and "method" not in message
+                    and ("result" in message or "error" in message)
+                ):
+                    raw_id = message["id"]
+                    request_id: int | None = None
+                    if isinstance(raw_id, int):
+                        request_id = raw_id
+                    elif isinstance(raw_id, str):
+                        with contextlib.suppress(ValueError):
+                            request_id = int(raw_id)
+                    future = (
+                        self._pending_requests.pop(request_id, None)
+                        if request_id is not None
+                        else None
+                    )
+                    if future is not None and not future.done():
+                        future.set_result(message)
+                    continue
+                await self._events.put(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — transport failures wake all consumers
+            failure: Exception = RuntimeError(f"Codex app-server reader failed: {exc}")
+        else:
+            failure = EOFError("Codex app-server connection closed")
+        self._reader_error = failure
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(failure)
+        self._pending_requests.clear()
+        await self._events.put(None)
 
 
 async def list_codex_model_options(client: CodexAppServerClient) -> list[_JsonObject]:

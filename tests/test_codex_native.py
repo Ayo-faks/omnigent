@@ -1212,6 +1212,56 @@ def test_codex_app_server_client_responds_to_server_requests(
     assert fake_websocket.closed
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame", "error_type"),
+    [("{", RuntimeError), (None, EOFError)],
+)
+async def test_codex_app_server_reader_death_wakes_requests_and_events(
+    tmp_path: Path,
+    frame: str | None,
+    error_type: type[Exception],
+) -> None:
+    class _DyingWebSocket:
+        def __init__(self) -> None:
+            self.frames: asyncio.Queue[str | None] = asyncio.Queue()
+            self.request_sent = asyncio.Event()
+
+        async def send(self, payload: str) -> None:
+            if json.loads(payload).get("method") == "turn/start":
+                self.request_sent.set()
+
+        def __aiter__(self) -> _DyingWebSocket:
+            return self
+
+        async def __anext__(self) -> str:
+            value = await self.frames.get()
+            if value is None:
+                raise StopAsyncIteration
+            return value
+
+        async def close(self) -> None:
+            return None
+
+    websocket = _DyingWebSocket()
+    client = codex_native_app_server.CodexAppServerClient(tmp_path / "app-server.sock")
+    client._ws = websocket  # type: ignore[assignment]
+    client._reader_task = asyncio.create_task(client._reader_loop())
+    request = asyncio.create_task(client.request("turn/start", {}))
+    event = asyncio.create_task(anext(client.iter_events()))
+    await asyncio.wait_for(websocket.request_sent.wait(), timeout=1)
+    await websocket.frames.put(frame)
+
+    with pytest.raises(error_type):
+        await asyncio.wait_for(request, timeout=1)
+    with pytest.raises(error_type):
+        await asyncio.wait_for(event, timeout=1)
+    assert client._pending_requests == {}
+    with pytest.raises(error_type):
+        await client.request("turn/start", {})
+    await client.close()
+
+
 def test_thread_id_from_started_event_ignores_unrelated_events() -> None:
     """
     Thread discovery only accepts well-formed Codex ``thread/started``

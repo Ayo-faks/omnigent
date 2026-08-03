@@ -1784,6 +1784,43 @@ class TestCodexExecutor(unittest.TestCase):
         _run(_t())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chunks", "error_type"),
+    [([b"{\n"], RuntimeError), ([], EOFError)],
+)
+async def test_reader_death_wakes_requests_and_turns(
+    chunks: list[bytes],
+    error_type: type[Exception],
+) -> None:
+    session = _CodexAppServerSession(
+        codex_path="/bin/echo",
+        cwd="/tmp/workspace",
+        env={},
+        tool_executor=None,
+    )
+    proc = _FakeProcess()
+    proc.stdout = _ChunkedPipe(chunks)
+    session._proc = proc
+    request = asyncio.create_task(session._request("turn/start", {}))
+    event_waiter = asyncio.create_task(session._events.get())
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(session._reader_loop(), timeout=1)
+
+    with pytest.raises(error_type):
+        await asyncio.wait_for(request, timeout=1)
+    assert session._pending_requests == {}
+    event = await asyncio.wait_for(event_waiter, timeout=1)
+    assert event["method"] == "error"
+    assert (
+        "reader failed" in event["params"]["message"]
+        or "closed stdout" in event["params"]["message"]
+    )
+    with pytest.raises(error_type):
+        await session._request("turn/start", {})
+
+
 # ── Retryable ExecutorError emission ──────────────────────────
 #
 # Function-based pytest tests for the retryable-flag behavior on the
