@@ -49,6 +49,15 @@ _FIXED_NATIVE_CANDIDATES: dict[str, dict[str, list[str]]] = {
     "codex-native": {"codex": list(TASK_V1_ARMS["codex"].model_ids)},
 }
 
+# The router picks among the harness spellings it understands (``claude-sdk`` /
+# ``codex``); a Smart Routing session launches the NATIVE TUI wrapper, so map
+# the router's pick to its native spelling before persisting it as the session's
+# harness. Mirrors the reference's AUTO_NATIVE_ROUTING_HARNESSES narrowing.
+_ROUTER_HARNESS_TO_NATIVE: dict[str, str] = {
+    "claude-sdk": "claude-native",
+    "codex": "codex-native",
+}
+
 
 async def resolve_smart_routing_create(
     smart_routing_message: str,
@@ -78,6 +87,12 @@ async def resolve_smart_routing_create(
         session_id=session_id,
         candidate_models=_CREATE_CANDIDATE_MODELS,
     )
+
+    # A Smart Routing session runs the native TUI wrapper, so surface the native
+    # harness spelling (claude-native / codex-native), not the router's own
+    # claude-sdk / codex candidate key.
+    if harness is not None:
+        harness = _ROUTER_HARNESS_TO_NATIVE.get(harness, harness)
 
     return harness, model, verdict, error
 

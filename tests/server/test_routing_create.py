@@ -63,6 +63,31 @@ class TestResolveSmartRoutingCreate:
             result = await resolve_smart_routing_create("test message")
             assert result[3] == "Router unavailable"
 
+    async def test_router_harness_mapped_to_native_spelling(self) -> None:
+        """The router's claude-sdk / codex pick becomes the native TUI spelling.
+
+        route_session_harness returns the harness spelling the router keys on
+        (claude-sdk / codex); a Smart Routing session launches the native
+        wrapper, so the resolver must surface claude-native / codex-native.
+        """
+        for router_harness, expected_native, model in (
+            ("claude-sdk", "claude-native", "databricks-claude-opus-4-8"),
+            ("codex", "codex-native", "databricks-gpt-5-6-sol"),
+        ):
+            with patch("omnigent.server.smart_routing.route_session_harness") as mock_route:
+                mock_route.return_value = (
+                    router_harness,
+                    model,
+                    {"model": model, "rationale": "test"},
+                    None,
+                )
+                harness, got_model, _verdict, error = await resolve_smart_routing_create(
+                    "route me"
+                )
+                assert harness == expected_native, (router_harness, harness)
+                assert got_model == model
+                assert error is None
+
 
 class TestResolveFixedNativeModelRouting:
     """Tests for fixed-harness model routing resolver."""
