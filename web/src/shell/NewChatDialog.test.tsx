@@ -1057,6 +1057,51 @@ describe("NewChatLandingScreen", () => {
     );
   });
 
+  it("switches off Smart Routing when Claude Code is picked next", async () => {
+    // Top-level Smart Routing binds the claude-native wrapper (a1) as a
+    // placeholder, so the "Claude Code" harness row is the SAME agent id.
+    // Picking it must reset to that agent's own harness — the chip flips to
+    // "Claude Code" instead of staying stuck on "Smart Routing" (routing
+    // silently riding along). Regression: the switch previously only reset the
+    // harness when the agent id changed, which it doesn't here.
+    renderLanding({ smart_routing_enabled: true });
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-harness-smart-routing"));
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain(
+        "Smart Routing",
+      ),
+    );
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-a1"));
+    await waitFor(() => {
+      const chip = screen.getByTestId("new-chat-landing-agent-select").textContent ?? "";
+      expect(chip).toContain("Claude Code");
+      expect(chip).not.toContain("Smart Routing");
+    });
+  });
+
+  it("switches off Smart Routing when Codex is picked next", async () => {
+    // Codex (a2) is a different agent id than the claude placeholder, but the
+    // switch must still clear the AUTO_NATIVE sentinel — the chip reads "Codex",
+    // never "Smart Routing".
+    renderLanding({ smart_routing_enabled: true });
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-harness-smart-routing"));
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain(
+        "Smart Routing",
+      ),
+    );
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-a2"));
+    await waitFor(() => {
+      const chip = screen.getByTestId("new-chat-landing-agent-select").textContent ?? "";
+      expect(chip).toContain("Codex");
+      expect(chip).not.toContain("Smart Routing");
+    });
+  });
+
   it("seeds the working directory from the host's most-recent path", async () => {
     renderLanding();
     // host_1's recent ("/Users/corey/repo") seeds the field; the chip shows

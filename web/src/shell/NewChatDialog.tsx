@@ -2976,7 +2976,16 @@ export function NewChatLandingScreen() {
   // returning user lands on the harness they used last); explicit picks
   // persist via localStorage.
   const handleSelectAgent = (agent: AvailableAgent) => {
-    if (agent.id !== effectiveAgentId) setPickedHarness(readLastHarness(agent.id));
+    if (pickedHarness === AUTO_NATIVE_HARNESS_ID) {
+      // Leaving top-level Smart Routing: it binds the claude-native placeholder,
+      // so picking the "Claude Code" harness entry is the SAME agent id — reset
+      // to the agent's own harness (null) AND turn routing off (via
+      // handleSetPickedHarness, which clears cost-control). Without this the
+      // chip stays stuck on Smart Routing and routing rides along invisibly.
+      handleSetPickedHarness(null, agent.id);
+    } else if (agent.id !== effectiveAgentId) {
+      setPickedHarness(readLastHarness(agent.id));
+    }
     setPickedAgentId(agent.id);
     writeLastAgentId(agent.id);
   };
