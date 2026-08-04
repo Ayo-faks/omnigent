@@ -24,7 +24,7 @@ import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeAlias, cast, overload
 
 if TYPE_CHECKING:
     # Type-only import: the runner keeps codex deps out of its runtime import
@@ -59,7 +59,13 @@ from omnigent.harness_aliases import (
     native_terminal_name,
 )
 from omnigent.harness_availability import CODEX_CANONICAL_HARNESSES
-from omnigent.harness_plugins import load_object, model_env_keys, spawn_env_builders
+from omnigent.harness_capabilities import InstructionDelivery
+from omnigent.harness_plugins import (
+    harness_capabilities,
+    load_object,
+    model_env_keys,
+    spawn_env_builders,
+)
 from omnigent.inner.native_attachments import has_unresolved_file_id, resolve_file_id_block
 from omnigent.json_types import JsonObject as _JsonObject
 from omnigent.llms.summarize import (
@@ -186,6 +192,47 @@ _CLAUDE_MODEL_CONFIRM_POLL_S = 0.25
 # cheap (one tmux capture per poll) and never types blind.
 _CLAUDE_MODEL_LATE_DIALOG_BUDGET_S = 1200.0
 _CLAUDE_MODEL_LATE_DIALOG_POLL_S = 2.0
+
+
+
+
+class _SubAgentProvenance(enum.Enum):
+    """How a cached session spec relates to the session's ``sub_agent_name``.
+
+    Three states, because the fact has three: the entry IS the requested
+    child (or the session names no sub-agent), the entry is the PARENT kept
+    after a miss, or nobody has decided yet. The third is carried by
+    :data:`UNDETERMINED`; the second by the plain ``str`` name that failed to
+    resolve, so the reader that reports it has the name to report.
+
+    A two-state encoding folds "not decided" into "resolved", and a reader
+    then treats an entry published mid-resolution — or one published after a
+    session-snapshot fetch failed, where the name was never recoverable — as
+    an authoritative child. Both used to happen.
+    """
+
+    RESOLVED = "resolved"
+    UNDETERMINED = "undetermined"
+
+
+# What a cache entry records about its sub-agent: the name that failed to
+# resolve, or one of the two states above.
+_SubAgentProvenanceValue: TypeAlias = "str | _SubAgentProvenance"
+
+
+
+
+class _SubAgentRecovery(NamedTuple):
+    """The outcome of recovering a session's ``sub_agent_name``.
+
+    ``known`` is what separates "this session names no sub-agent" from "the
+    lookup failed and the answer is still unknown" — two facts a bare
+    ``str | None`` return cannot tell apart, and conflating them publishes a
+    cache entry claiming a resolution nobody performed.
+    """
+
+    name: str | None
+    known: bool
 
 
 def _warn_unresolved_sub_agent(session_id: str | None, sub_agent_name: str) -> None:
@@ -1002,6 +1049,50 @@ class _CommentRelayBinding:
     bridge_dir: Path
 
 
+
+
+def _cache_get_for_agent(
+    cache: dict[str, tuple[str | None, Any]], conv_id: str, agent_id: str | None
+) -> Any | None:
+    """Read an agent-tagged per-session cache entry.
+
+    Every entry is a ``(tagged_agent_id, value)`` pair written by
+    :func:`_cache_set_for_agent` — provenance travels with the value
+    itself instead of a parallel marker dict that a write could touch
+    without the paired cache write (or vice versa). A read only returns
+    *value* when the stored tag is ``None`` (agent-independent — e.g. no
+    spec resolver is configured, so the entry is valid regardless of who
+    this turn is for) or matches *agent_id* exactly.
+
+    A concretely-tagged entry left over from a DIFFERENT agent is always
+    a miss — including when *agent_id* is ``None``, i.e. this turn's
+    agent is not positively known. "Unknown" must never be treated as
+    "no conflict" with a previously-cached agent's data; that conflation
+    is exactly the leak this accessor closes.
+    """
+    entry = cache.get(conv_id)
+    if entry is None:
+        return None
+    tagged_agent_id, value = entry
+    if tagged_agent_id is not None and tagged_agent_id != agent_id:
+        return None
+    return value
+
+
+
+
+def _cache_set_for_agent(
+    cache: dict[str, tuple[str | None, Any]],
+    conv_id: str,
+    agent_id: str | None,
+    value: Any,
+) -> None:
+    """Write *value* into *cache*, tagged with *agent_id* for
+    :func:`_cache_get_for_agent` to verify on later reads.
+    """
+    cache[conv_id] = (agent_id, value)
+
+
 @dataclasses.dataclass(frozen=True)
 class _SessionInitContext:
     """Metadata source selected before shared session initialization runs."""
@@ -1121,6 +1212,39 @@ class TurnDispatch:
     agent_version: int | None = None
     spawn_env: dict[str, str] | None = None
     client_side_tool_names: frozenset[str] = frozenset()
+
+
+
+
+@dataclasses.dataclass
+class InstructionComposition:
+    """Runner-local, never-serialized view of this turn's instruction state.
+
+    Computed once inside ``_stream_message_to_harness`` (the point where the
+    background and direct-stream dispatch paths converge) and consumed
+    in-process by the single delivery-gap warn check and by delivery
+    channels (opencode-native, hermes) that must not leak the fabricated
+    ``"You are a helpful assistant."`` fallback. Never attached to
+    ``TurnDispatch``, ``MessageEvent``, ``CreateResponseRequest``, or
+    ``ExecutorConfig`` — the wire shape is unchanged from today.
+
+    :param authored_present: Whether ``AgentSpec.instructions`` is
+        non-empty/non-whitespace, resolved pre-composition.
+    :param composed: The meaningful composed text (author + applicable
+        framework instructions), or ``None`` if there is truly nothing.
+    """
+
+    authored_present: bool
+    composed: str | None
+
+
+# Harnesses whose executor reads the wire ``instructions`` field itself and
+# needs the gated ``InstructionComposition.composed`` value there instead of
+# the default fallback-including composed-per-turn string — opencode-native
+# via its NativePrompt.system_prompt; hermes via HermesExecutor.run_turn's
+# system_prompt param. See the harness-conditional swap in
+# _stream_message_to_harness.
+_GATED_COMPOSED_INSTRUCTION_HARNESSES = frozenset({"opencode-native", "hermes"})
 
 
 def _wrap_as_message_event(body: _JsonObject) -> _JsonObject:
@@ -10476,6 +10600,116 @@ def create_runner_app_from_env() -> FastAPI:
         trust_env=not is_loopback_url(server_url),
     )
     return create_runner_app(server_client=server_client)
+
+
+
+
+async def _resolve_effective_turn(
+    *,
+    agent_id: str | None,
+    spec_resolver: SpecResolver | None,
+    session_id: str | None = None,
+    model_override: str | None = None,
+    harness_override: str | None = None,
+    sub_agent_name: str | None = None,
+    cwd: Path | None = None,
+) -> tuple[str, dict[str, str] | None, Any, Path | None]:
+    """Resolve harness, spawn-env, effective ``AgentSpec``, and workdir together.
+
+    Despite the name, this is NOT the single resolution path every turn goes
+    through — three genuinely different code paths compute the effective
+    spec/harness for a turn, and only ONE of them calls this function:
+
+    - The direct ``?stream=true`` bypass, when no harness is already known
+      (``_stream_message_to_harness``'s ``if not harness_name:`` branch) —
+      calls this function directly.
+    - The direct ``?stream=true`` bypass, when a harness IS already known
+      (dispatch from the background path, or caller-supplied in the body) —
+      does its OWN inline cache read + resolver call + sub-agent swap,
+      entirely separate from this function (see the ``else:`` branch
+      immediately below the branch above).
+    - The background-turn path (``_run_turn_bg_setup_and_stream``) — also
+      does its OWN inline cache read + resolver call + sub-agent swap,
+      structurally similar to but independent from both of the above.
+
+    All three converge only on the OUTPUT contract (a harness name, a
+    spawn_env, and — separately, in the caller-known-harness branch and the
+    background path — an effective spec used for
+    ``InstructionComposition``), not on a single resolution call. They are not
+    unified because they differ in what's already known at entry: no harness
+    at all here, a known harness/dispatch elsewhere, and a persistent
+    ``_session_spec_cache`` with its own agent-switch/provenance
+    invalidation rules in the other two.
+
+    The differing FAILURE behaviour is deliberate, not drift. This path
+    answers synchronously, so a resolver EXCEPTION becomes an HTTP 503 here,
+    where the other two cannot report that way.
+
+    A missing requested child is not one of those differences: every path
+    warns and continues on the parent spec, so this one derives harness and
+    spawn_env from the parent and returns them as the turn's effective
+    result. It used to raise, which the route answered with that same 503.
+    Unlike the other two, this path holds no session spec cache and resolves
+    afresh every turn, so its warning repeats without needing a record of
+    the earlier miss.
+
+    :func:`_resolve_harness_config` wraps this for callers that only need the
+    2-tuple.
+
+    :param agent_id: Agent id to resolve the spec for.
+    :param spec_resolver: Resolver that returns the spec for *agent_id*.
+    :param session_id: Session/conversation id, threaded to the resolver.
+    :param model_override: Per-session ``/model`` override, applied to the
+        spawn-env model so it takes effect on the SDK harnesses.
+    :param harness_override: Per-session brain-harness override (validated
+        at session create, forwarded by the server in the message body),
+        e.g. ``"pi"``. Replaces the spec's ``executor.config.harness``.
+    :param sub_agent_name: For a sub-agent session, the dispatched
+        sub-agent's name (e.g. ``"claude_code"``). The bound *agent_id*
+        resolves to the PARENT spec, so without this swap a child's turn
+        resolves the parent's harness (``claude-sdk``) and the process
+        manager respawns — tearing down the child's live ``claude-native``
+        terminal ("Bridge closed: terminal resource not found"). When set,
+        the parent spec is swapped to the matching sub-spec via
+        :func:`_find_spec_by_name` before harness derivation. ``None`` for
+        top-level sessions.
+    :param cwd: Runtime working directory for harnesses that need it.
+    :returns: ``(harness, spawn_env, spec, workdir)``; ``spec``/``workdir``
+        are ``None`` for unresolved specs (matches the harness/spawn_env
+        default-for-unresolved-specs fallback).
+    """
+    if agent_id and spec_resolver:
+        spec_entry = await spec_resolver(agent_id, session_id)
+        spec = _unwrap_resolved_spec(spec_entry)
+        workdir = _resolved_spec_workdir(spec_entry)
+        if spec is not None:
+            # Swap to the sub-agent's own spec so its harness (not the
+            # parent's) drives the turn. Mirrors the POST /v1/sessions and
+            # _run_turn_bg swaps; applied here so the harness-HTTP path is
+            # sub-agent-aware too, even after a reconnect drops the
+            # in-memory _session_sub_agent_names map.
+            if sub_agent_name:
+                from omnigent.runtime.workflow import _find_spec_by_name
+
+                sub_spec = _find_spec_by_name(spec, sub_agent_name)
+                if sub_spec is None:
+                    # The swap is skipped, so harness and spawn_env below are
+                    # derived from the PARENT spec and returned as this turn's
+                    # effective result. This used to raise RuntimeError, which
+                    # the direct-stream no-harness path answered with a 503
+                    # spec_resolver_failed. The warning is the only trace.
+                    _warn_unresolved_sub_agent(session_id, sub_agent_name)
+                else:
+                    spec = sub_spec
+            harness = harness_override or spec.executor.config.get("harness") or spec.executor.type
+            harness = canonicalize_harness(harness) or harness
+            spawn_env = _build_spawn_env_from_spec(
+                spec, harness, cwd=cwd, workdir=workdir, model_override=model_override
+            )
+            return harness, spawn_env, spec, workdir
+
+    # Fallback for tests that register a custom harness in _HARNESS_MODULES.
+    return "runner-test-default", None, None, None
 
 
 async def _resolve_harness_config(

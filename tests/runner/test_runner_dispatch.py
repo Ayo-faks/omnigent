@@ -1855,6 +1855,238 @@ async def test_runner_stream_emits_failed_when_tool_spec_resolver_fails() -> Non
     assert "stream spec resolver unavailable for ag_stream" not in response.text
 
 
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> None:
+    """
+    Both the direct-stream and background-dispatch agent-switch/
+    provenance-reject sites in ``_stream_message_to_harness`` and
+    ``_run_turn_bg_setup_and_stream`` must call the SAME shared
+    invalidation routine (``_invalidate_session_agent_state``) — not two
+    independently-maintained inline cache-pop lists.
+
+    Regression: the direct-stream site used to inline its own narrower
+    list (spec + snapshot only), while the background site inlined a
+    different, wider list (spec + skills + claude-launch-config + tool
+    schemas + snapshot, but still missing the MCP spec hash that
+    ``_clear_session_agent_caches`` — used elsewhere, e.g. the explicit
+    ``/agent-cache/reset`` route). Three independently
+    maintained enumerations of "the agent-derived cache set" is how a gap
+    like this recurs: a cache added to one list silently isn't added to
+    the others. The check here is structural/source-level rather than
+    runtime behavioural because the caches in question — skills, tool
+    schemas, MCP spec hash, claude launch config — are all closures local
+    to ``create_runner_app``, with no attribute or endpoint exposing them
+    for a test to poke or observe directly; asserting the single shared
+    call site is what actually guards against the divergence: both
+    dispatch paths must route through the one shared invalidation routine
+    rather than each maintaining its own eviction list.
+    """
+    import inspect
+
+    import omnigent.runner.app as runner_app_mod
+
+    source = inspect.getsource(runner_app_mod)
+    direct_stream_start = source.index("async def _stream_message_to_harness(")
+    direct_stream_body = source[direct_stream_start : direct_stream_start + 4000]
+    background_start = source.index("async def _run_turn_bg_setup_and_stream(")
+    background_body = source[background_start : background_start + 4000]
+
+    assert "_invalidate_session_agent_state(" in direct_stream_body, (
+        "_stream_message_to_harness must call the shared "
+        "_invalidate_session_agent_state helper on its switch/provenance-"
+        "reject branch, not an inline cache-pop list of its own."
+    )
+    assert "_invalidate_session_agent_state(" in background_body, (
+        "_run_turn_bg_setup_and_stream must call the shared "
+        "_invalidate_session_agent_state helper on its switch/provenance-"
+        "reject branch, not an inline cache-pop list of its own."
+    )
+
+
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+def test_agent_cache_reset_clears_the_agent_id_marker_too() -> None:
+    """
+    ``_clear_session_agent_caches`` (shared by the ``/reset-state`` and
+    ``/agent-cache/reset`` routes, and by ``_invalidate_session_agent_state``
+    on an in-conversation switch) must pop ``_session_agent_ids`` along
+    with the tagged caches it already pops.
+
+    Source-level guard, matching the established pattern for this
+    closure-local, HTTP-unobservable state (see
+    ``test_direct_and_background_switch_sites_share_one_invalidation_routine``
+    above): every tagged cache entry carries its own provenance now, so a
+    stale ``_session_agent_ids`` value can no longer cause a WRONG spec to
+    be trusted — but it can still cause an informational reader (MCP
+    execute, background-title, ``_session_harness_name``, ...) to look up
+    the wrong agent's tag right after a reset. Leaving the reset routes'
+    shared cache-clearing helper without this pop would silently
+    reintroduce that staleness.
+    """
+    import inspect
+
+    import omnigent.runner.app as runner_app_mod
+
+    source = inspect.getsource(runner_app_mod)
+    start = source.index("def _clear_session_agent_caches(")
+    end = source.index("\n    async def _invalidate_session_agent_state(", start)
+    body = source[start:end]
+
+    assert "_session_agent_ids.pop(" in body, (
+        "_clear_session_agent_caches must pop _session_agent_ids(session_id) "
+        "so it doesn't outlive the caches it's supposed to describe."
+    )
+
+
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+class _RecordingHarnessClient:
+    """Fake harness client that records the event body posted to it."""
+
+    def __init__(self, chunks: list[str]) -> None:
+        self._chunks = chunks
+        self.posted_bodies: list[dict[str, Any]] = []
+
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict[str, object],
+        timeout: float | None,
+    ) -> _FakeHarnessStream:
+        del method, url, timeout
+        self.posted_bodies.append(json)  # type: ignore[arg-type]
+        return _FakeHarnessStream(self._chunks)
+
+
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+async def _post_stream_message(http: httpx.AsyncClient, conv: str, **body: Any) -> httpx.Response:
+    """POST a minimal ``?stream=true`` message body for the warn-site tests.
+
+    :param http: Test HTTP client bound to the runner app.
+    :param conv: Conversation id.
+    :param body: Extra fields merged into the message body (``harness``,
+        ``harness_override``, ``agent_id``, ...).
+    :returns: The runner's HTTP response.
+    """
+    payload: dict[str, Any] = {
+        "type": "message",
+        "role": "user",
+        "model": "x",
+        "content": [],
+        **body,
+    }
+    return await http.post(f"/v1/sessions/{conv}/events?stream=true", json=payload)
+
+
 def test_build_spawn_env_applies_model_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1935,6 +2167,12 @@ def test_build_spawn_env_routes_hermes(tmp_path: Path, monkeypatch: pytest.Monke
     assert overridden["HARNESS_HERMES_MODEL"] == "hermes-4-70b"
 
 
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_resolve_harness_config_applies_harness_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -8259,6 +8497,24 @@ async def test_create_session_reinit_preserves_existing_inbox() -> None:
 # ── approval-event flattening (elicitation-approval hang regression) ──────
 
 
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("second_turn", ["background", "known_harness"])
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_approval_event_flattened_for_harness_scaffold() -> None:
     """A nested approval envelope is flattened to the scaffold's ApprovalEvent.
@@ -10579,3 +10835,377 @@ async def test_factor3_new_message_lands_in_real_buffer(
     assert buffered
     assert buffered[-1]["content"] == "second message"
     assert buffered[-1]["conversation_id"] == conv
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
+    """Build the scenario's ``spec_resolver``.
+
+    :param scenario: Contract scenario key.
+    :param calls: Mutable list each invocation appends to, so a scenario can
+        assert how many resolutions a path actually performed.
+    :returns: An async resolver matching that scenario's failure mode.
+    """
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec | None:
+        del session_id
+        calls.append(agent_id)
+        if scenario == "resolver_raises":
+            raise RuntimeError("contract: resolver unavailable")
+        if scenario == "resolver_none":
+            return None
+        return _contract_root_spec(with_child=(scenario != "child_missing"))
+
+    return _resolver
+
+
+@pytest.mark.parametrize(
+    "scenario, path, expected",
+    [
+        # ── Child present: the one scenario where all three genuinely agree.
+        # Each selects the SAME child identity, to the extent its transport
+        # lets us observe it (the two direct paths reach the harness and can be
+        # read off the wire; background does too).
+        pytest.param(
+            "child_present",
+            "no_harness",
+            {"status": 200, "instructions": "Worker instructions."},
+            id="child_present-no_harness",
+        ),
+        pytest.param(
+            "child_present",
+            "known_harness",
+            # Same child selected; the trailing caller text is this adapter's
+            # own per-request instructions composing additively on top (only
+            # the known-harness adapter sends any, because its degradation
+            # rows need something to preserve). The CHILD half is the shared
+            # assertion — the suffix is adapter asymmetry, not divergence.
+            {
+                "status": 200,
+                "instructions": (f"Worker instructions.\n\n{_CONTRACT_CALLER_INSTRUCTIONS}"),
+            },
+            id="child_present-known_harness",
+        ),
+        pytest.param(
+            "child_present",
+            "background",
+            {"terminal_status": "idle", "instructions": "Worker instructions."},
+            id="child_present-background",
+        ),
+        # ── Missing child: all three paths AGREE, and the agreement is the
+        # point. A ``sub_agent_name`` that no longer resolves is one question,
+        # and the answer does not depend on which transport asked it: warn,
+        # then run the PARENT's spec. The rows below pin the parent's authored
+        # text on every path, so a path that reverted to erroring — or to
+        # dropping the spec — fails here rather than drifting quietly.
+        # These paths used to answer 503, degrade to no spec, and fail the
+        # turn respectively.
+        pytest.param(
+            "child_missing",
+            "no_harness",
+            {"status": 200, "error": None, "instructions": "Root instructions."},
+            id="child_missing-no_harness-parent",
+        ),
+        pytest.param(
+            "child_missing",
+            "known_harness",
+            # The caller's own per-request text still composes additively on
+            # top of the parent's authored instructions rather than being
+            # replaced by them — the same shape as the child_present row.
+            {
+                "status": 200,
+                "instructions": (f"Root instructions.\n\n{_CONTRACT_CALLER_INSTRUCTIONS}"),
+            },
+            id="child_missing-known_harness-parent",
+        ),
+        pytest.param(
+            "child_missing",
+            "background",
+            {"status": 202, "terminal_status": "idle", "instructions": "Root instructions."},
+            id="child_missing-background-parent",
+        ),
+        # ── Resolver raises: same three-way split, different trigger.
+        pytest.param(
+            "resolver_raises",
+            "no_harness",
+            {"status": 503, "error": "spec_resolver_failed"},
+            id="resolver_raises-no_harness-503",
+        ),
+        pytest.param(
+            "resolver_raises",
+            "known_harness",
+            {"status": 200, "instructions": _CONTRACT_CALLER_INSTRUCTIONS},
+            id="resolver_raises-known_harness-degrades",
+        ),
+        pytest.param(
+            "resolver_raises",
+            "background",
+            {"status": 202, "terminal_status": "failed"},
+            id="resolver_raises-background-async-failure",
+        ),
+        # ── Resolver returns None: a legitimate "no such agent" answer rather
+        # than a transport failure, so the split is NOT the same as above.
+        pytest.param(
+            "resolver_none",
+            "no_harness",
+            # NOT a 503, unlike this path's other two failure rows. A resolver
+            # returning None is a legitimate "no spec" answer rather than a
+            # transport failure, so this path falls back and dispatches with no
+            # composed instructions instead of erroring. This asymmetry within
+            # a single path is exactly the kind of thing that used to be
+            # invisible.
+            {"status": 200, "error": None, "instructions": None},
+            id="resolver_none-no_harness-falls-back",
+        ),
+        pytest.param(
+            "resolver_none",
+            "known_harness",
+            {"status": 200, "instructions": _CONTRACT_CALLER_INSTRUCTIONS},
+            id="resolver_none-known_harness-continues-unknown-spec",
+        ),
+        pytest.param(
+            "resolver_none",
+            "background",
+            # ``status`` alone asserts nothing here: the adapter hard-asserts
+            # 202 before it waits and always reports it, so a row expecting
+            # only that would pass whether the turn finished, failed async, or
+            # never reached a harness at all. The discriminating keys are the
+            # terminal status and the absence of composed instructions.
+            #
+            # ``resolver_calls == 2`` is pinned deliberately. A None result
+            # is NOT cached — a cached None would serve a stale negative to
+            # later reads — so each consumer re-asks: once in background
+            # setup, once again for composition.
+            # The count documents that consequence; it is not a claim that
+            # resolving twice is desirable.
+            {
+                "status": 202,
+                "terminal_status": "idle",
+                "instructions": None,
+                "resolver_calls": 2,
+            },
+            id="resolver_none-background",
+        ),
+        # ── Cache already holds the effective child. Session-create resolved
+        # and cached "worker" itself; the dispatch must reuse that entry.
+        # ``resolver_calls == 1`` is the load-bearing assertion — it is the
+        # create's own resolution and nothing more, so a second resolve would
+        # mean the shortcut was lost.
+        pytest.param(
+            "cache_holds_child",
+            "background",
+            {
+                "terminal_status": "idle",
+                "instructions": "Worker instructions.",
+                "resolver_calls": 1,
+            },
+            id="cache_holds_child-background-shortcut",
+        ),
+        pytest.param(
+            "cache_holds_child",
+            "known_harness",
+            {
+                "status": 200,
+                "instructions": (f"Worker instructions.\n\n{_CONTRACT_CALLER_INSTRUCTIONS}"),
+                "resolver_calls": 1,
+            },
+            id="cache_holds_child-known_harness-shortcut",
+        ),
+        # Pinned SEPARATELY, and it genuinely differs: this path does
+        # NOT take the cached-child shortcut. It resolves a second time
+        # (``resolver_calls == 2``) and arrives at the same child, so the
+        # observable instructions match while the work done does not. Recorded
+        # as-is rather than "corrected" — whether the extra resolve is worth
+        # removing is a separate question from pinning today's behaviour.
+        pytest.param(
+            "cache_holds_child",
+            "no_harness",
+            {"status": 200, "instructions": "Worker instructions.", "resolver_calls": 2},
+            id="cache_holds_child-no_harness-resolves-again",
+        ),
+    ],
+)
+
+
+async def _contract_run_background(
+    http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
+) -> dict[str, Any]:
+    """Adapter 3: background non-stream dispatch, observed via terminal status.
+
+    The POST is answered 202 before resolution runs, so a failure can only be
+    reported asynchronously — this adapter therefore reports the terminal
+    ``session.status`` rather than an HTTP code.
+    """
+    resp = await http.post(
+        f"/v1/sessions/{conv}/events",
+        json={
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "model": "x",
+            "content": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    await _await_bg_turn_task(conv)
+    statuses = await _drain_published_statuses(conv, until="failed", timeout=1.0)
+    return {
+        "status": resp.status_code,
+        "terminal_status": statuses[-1] if statuses else None,
+        "instructions": (
+            recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
+        ),
+    }
+
+
+_CONTRACT_ADAPTERS = {
+    "no_harness": _contract_run_no_harness,
+    "known_harness": _contract_run_known_harness,
+    "background": _contract_run_background,
+}
+
+
+
+
+async def _contract_run_known_harness(
+    http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
+) -> dict[str, Any]:
+    """Adapter 2: direct ``?stream=true`` with the harness already known."""
+    resp = await http.post(
+        f"/v1/sessions/{conv}/events?stream=true",
+        json={
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "harness": "hermes",
+            "model": "x",
+            "content": [],
+            "instructions": _CONTRACT_CALLER_INSTRUCTIONS,
+        },
+    )
+    return {
+        "status": resp.status_code,
+        "error": (resp.json().get("error") if resp.status_code >= 400 else None),
+        "instructions": (
+            recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
+        ),
+    }
+
+
+
+
+async def _contract_run_no_harness(
+    http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
+) -> dict[str, Any]:
+    """Adapter 1: direct ``?stream=true`` with no harness in the body."""
+    resp = await http.post(
+        f"/v1/sessions/{conv}/events?stream=true",
+        json={
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "model": "x",
+            "content": [],
+        },
+    )
+    return {
+        "status": resp.status_code,
+        "error": (resp.json().get("error") if resp.status_code >= 400 else None),
+        "instructions": (
+            recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
+        ),
+    }
+
+
+
+
+class _ContractSnapshotClient(NullServerClient):
+    """Session snapshot naming the requested sub-agent.
+
+    All three paths recover the sub-agent name from the snapshot
+    (``_recover_sub_agent_name``), so one client drives every adapter and the
+    scenario — not the fixture — is what differs between them.
+    """
+
+    def __init__(self, conv: str) -> None:
+        super().__init__()
+        self._conv = conv
+
+    async def get(self, url: str, **kwargs: object) -> NullServerClient._Response:
+        del kwargs
+        _conv = self._conv
+
+        class _Resp(NullServerClient._Response):
+            status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return {"agent_id": "ag_contract_root", "sub_agent_name": "worker"}
+
+        if url.endswith(f"/v1/sessions/{_conv}"):
+            return _Resp()
+        return await super().get(url)
+
+
+_CONTRACT_CALLER_INSTRUCTIONS = "Caller-supplied instructions."
+
+
+
+
+def _contract_root_spec(*, with_child: bool) -> AgentSpec:
+    """Build the contract test's parent spec, with or without the child.
+
+    :param with_child: Whether ``worker`` exists in the sub-agent tree.
+    :returns: The root ``AgentSpec``.
+    """
+    return AgentSpec(
+        spec_version=1,
+        name=_CONTRACT_PARENT_WITH_CHILD["name"],
+        instructions=_CONTRACT_PARENT_WITH_CHILD["instructions"],
+        executor=ExecutorSpec(type="omnigent", config={"harness": "hermes"}),
+        sub_agents=(
+            [
+                AgentSpec(
+                    spec_version=1,
+                    name=_CONTRACT_PARENT_WITH_CHILD["child"],
+                    instructions=_CONTRACT_PARENT_WITH_CHILD["child_instructions"],
+                    executor=ExecutorSpec(type="omnigent", config={"harness": "hermes"}),
+                )
+            ]
+            if with_child
+            else []
+        ),
+    )
+
+
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
