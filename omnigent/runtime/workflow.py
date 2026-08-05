@@ -2125,6 +2125,14 @@ def _build_copilot_spawn_env(
                 if os.environ.get(_env_var):
                     env["HARNESS_COPILOT_GITHUB_TOKEN"] = os.environ[_env_var]
                     break
+    # A configured GitHub Enterprise host applies regardless of the token
+    # source (spec api-key or stored/ambient token), so resolve it outside the
+    # no-spec-auth branch. Unset for a stock github.com install.
+    from omnigent.onboarding.copilot_auth import resolve_copilot_github_host
+
+    github_host = resolve_copilot_github_host()
+    if github_host is not None:
+        env["HARNESS_COPILOT_GITHUB_HOST"] = github_host
     # Always set so the wrap doesn't fall back to ``"all"`` and override an
     # explicit ``skills: none`` from the spec (parity with the peer builders).
     env["HARNESS_COPILOT_SKILLS_FILTER"] = json.dumps(spec.skills_filter)

@@ -2699,11 +2699,11 @@ def _manage_copilot_harness() -> None:
     """
     from omnigent.onboarding import secrets as secret_store
     from omnigent.onboarding.copilot_auth import (
-        COPILOT_CONFIG_KEY,
         COPILOT_SECRET_NAME,
         copilot_github_token_configured,
         copilot_github_token_ref,
         copilot_sdk_installed,
+        resolve_copilot_github_host,
     )
     from omnigent.onboarding.interactive import select
 
@@ -2718,6 +2718,7 @@ def _manage_copilot_harness() -> None:
     while True:
         config = _load_global_config()
         token_set = copilot_github_token_configured(config)
+        host = resolve_copilot_github_host(config)
 
         rows: list[_HarnessMenuRow] = [
             _HarnessMenuRow(
@@ -2727,11 +2728,22 @@ def _manage_copilot_harness() -> None:
         ]
         if token_set:
             rows.append(_HarnessMenuRow("Remove GitHub token", action="remove_key"))
+        rows.append(
+            _HarnessMenuRow(
+                "Change GitHub Enterprise host" if host else "Set GitHub Enterprise host",
+                action="set_host",
+            )
+        )
+        if host:
+            rows.append(_HarnessMenuRow("Clear GitHub Enterprise host", action="remove_host"))
         rows.append(_HarnessMenuRow("← Back", action="back"))
 
-        header = (
-            "Copilot — GitHub token configured" if token_set else "Copilot — no GitHub token yet"
-        )
+        if token_set:
+            header = "Copilot — GitHub token configured"
+        else:
+            header = "Copilot — no GitHub token yet"
+        if host:
+            header += f" (host: {host})"
         idx = select(header, [r.label for r in rows], clear_on_exit=True, status=status)
         if idx < 0:  # Esc / q
             return
@@ -2745,11 +2757,17 @@ def _manage_copilot_harness() -> None:
             # Only the secret we own (``keychain:copilot``) is ours to delete: a
             # hand-edited block may point at a shared ``keychain:<other>`` secret,
             # and an ``env:`` ref names the user's own environment. In both of
-            # those cases just drop the config block and leave the secret.
+            # those cases just drop the reference and leave the secret.
             if ref == f"keychain:{COPILOT_SECRET_NAME}":
                 secret_store.delete_secret(COPILOT_SECRET_NAME)
-            _save_global_config({}, unset_keys=(COPILOT_CONFIG_KEY,))
+            # Preserve any configured host — remove only the token fields.
+            _remove_copilot_block_fields(config, ("github_token_ref", "github_token"))
             status = "✓ Removed Copilot GitHub token"
+        elif action == "set_host":
+            status = _set_copilot_github_host()
+        elif action == "remove_host":
+            _remove_copilot_block_fields(config, ("github_host",))
+            status = "✓ Cleared Copilot GitHub Enterprise host"
 
 
 def _set_copilot_github_token() -> str | None:
@@ -2784,7 +2802,10 @@ def _set_copilot_github_token() -> str | None:
             default=False,
         ):
             return None
-        _save_global_config(copilot_github_token_settings(f"env:{detected_var}"))
+        _save_global_config(
+            copilot_github_token_settings(f"env:{detected_var}"),
+            deep_merge_keys=("copilot",),
+        )
         return f"✓ Copilot GitHub token set (from ${detected_var})"
 
     pasted = prompt_text("GitHub token with Copilot access", hide_input=True).strip()
@@ -2797,8 +2818,60 @@ def _set_copilot_github_token() -> str | None:
     ):
         return None
     secret_store.store_secret(COPILOT_SECRET_NAME, pasted)
-    _save_global_config(copilot_github_token_settings(f"keychain:{COPILOT_SECRET_NAME}"))
+    _save_global_config(
+        copilot_github_token_settings(f"keychain:{COPILOT_SECRET_NAME}"),
+        deep_merge_keys=("copilot",),
+    )
     return "✓ Copilot GitHub token stored"
+
+
+def _remove_copilot_block_fields(
+    config: dict[str, Any],  # type: ignore[explicit-any]
+    fields: tuple[str, ...],
+) -> None:
+    """Drop *fields* from the ``copilot:`` config block, preserving siblings.
+
+    ``_save_global_config`` can only unset whole top-level keys, so removing one
+    field of a block is a read-modify-write: rebuild the block without *fields*
+    and either replace it (still non-empty) or unset the whole ``copilot:`` key
+    (now empty).
+
+    :param config: The already-loaded global config mapping.
+    :param fields: Field names to remove from the ``copilot:`` block.
+    """
+    from omnigent.onboarding.copilot_auth import COPILOT_CONFIG_KEY
+
+    block = config.get(COPILOT_CONFIG_KEY)
+    remaining = (
+        {k: v for k, v in block.items() if k not in fields} if isinstance(block, dict) else {}
+    )
+    if remaining:
+        _save_global_config({COPILOT_CONFIG_KEY: remaining})
+    else:
+        _save_global_config({}, unset_keys=(COPILOT_CONFIG_KEY,))
+
+
+def _set_copilot_github_host() -> str | None:
+    """Prompt for and store a Copilot GitHub Enterprise hostname.
+
+    Deep-merges a ``github_host`` into the ``copilot:`` block so it coexists with
+    any configured token reference. An entered value is normalized to a bare
+    hostname (scheme/path stripped). An empty entry aborts.
+
+    :returns: A status string for the menu, or ``None`` if the user aborted.
+    """
+    from omnigent.onboarding.copilot_auth import copilot_github_host_settings
+    from omnigent.onboarding.interactive import prompt_text
+
+    entered = prompt_text("GitHub Enterprise hostname (e.g. shs.ghe.com; blank to cancel)").strip()
+    if not entered:
+        return None
+    # Accept a pasted URL by keeping only the host component.
+    host = entered.removeprefix("https://").removeprefix("http://").split("/", 1)[0].strip()
+    if not host:
+        return None
+    _save_global_config(copilot_github_host_settings(host), deep_merge_keys=("copilot",))
+    return f"✓ Copilot GitHub Enterprise host set ({host})"
 
 
 def _manage_credential(provider: str, family: str) -> str | None:

@@ -31,6 +31,7 @@ accepted by Copilot.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 
 from omnigent.errors import OmnigentError
@@ -45,9 +46,16 @@ COPILOT_SECRET_NAME = "copilot"
 COPILOT_CONFIG_KEY = "copilot"
 _TOKEN_REF_FIELD = "github_token_ref"
 _TOKEN_FIELD = "github_token"
+# Field naming the GitHub Enterprise Server hostname Copilot auth routes to.
+_HOST_FIELD = "github_host"
 
 # Ambient GitHub-token env vars, in the precedence the Copilot CLI/SDK honors.
 COPILOT_TOKEN_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+
+# Ambient env var the GitHub CLI/Copilot honor to target a GHE instance; used as
+# a fallback when no ``copilot.github_host`` is configured, mirroring the token
+# env-var fallback.
+COPILOT_HOST_ENV_VAR = "GH_HOST"
 
 # Token-shape prefixes Copilot accepts. The check is deliberately *soft* — a
 # user may force a non-matching value through — so a future prefix change can
@@ -200,3 +208,40 @@ def copilot_github_token_settings(ref: str) -> dict[str, object]:
     :returns: ``{"copilot": {"github_token_ref": ref}}``.
     """
     return {COPILOT_CONFIG_KEY: {_TOKEN_REF_FIELD: ref}}
+
+
+def resolve_copilot_github_host(config: dict[str, object] | None = None) -> str | None:
+    """Resolve the configured GitHub Enterprise host for Copilot auth, softly.
+
+    Reads the ``github_host`` field of the dedicated ``copilot:`` block; when
+    unset it falls back to an ambient ``GH_HOST`` (the same var the GitHub CLI
+    honors) so an org that already exports it need not re-configure. Returns
+    ``None`` for a stock ``github.com`` install, in which case the harness lets
+    the SDK use its default host.
+
+    :param config: A pre-loaded config mapping; ``None`` loads
+        ``~/.omnigent/config.yaml`` via :func:`load_config`.
+    :returns: The GHE hostname, e.g. ``"shs.ghe.com"``, or ``None`` when none is
+        configured.
+    """
+    cfg = load_config() if config is None else config
+    block = cfg.get(COPILOT_CONFIG_KEY)
+    if isinstance(block, dict):
+        host = block.get(_HOST_FIELD)
+        if isinstance(host, str) and host.strip():
+            return host.strip()
+    env_host = os.environ.get(COPILOT_HOST_ENV_VAR)
+    return env_host.strip() if env_host and env_host.strip() else None
+
+
+def copilot_github_host_settings(host: str) -> dict[str, object]:
+    """Build the ``{"copilot": {"github_host": host}}`` settings dict.
+
+    Handed to :func:`omnigent.cli._save_global_config` with the ``copilot`` key
+    in ``deep_merge_keys`` so it layers onto (rather than replaces) an existing
+    ``github_token_ref`` in the same block.
+
+    :param host: The GHE hostname to record, e.g. ``"shs.ghe.com"``.
+    :returns: ``{"copilot": {"github_host": host}}``.
+    """
+    return {COPILOT_CONFIG_KEY: {_HOST_FIELD: host}}

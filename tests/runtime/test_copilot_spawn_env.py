@@ -107,3 +107,28 @@ def test_no_auth_prefers_stored_block_over_ambient(
 def test_bundle_dir_threaded(tmp_path: Path) -> None:
     env = _build_copilot_spawn_env(_make_spec(), workdir=tmp_path)
     assert env["HARNESS_COPILOT_BUNDLE_DIR"] == str(tmp_path)
+
+
+def test_github_host_forwarded_from_config(tmp_path: Path) -> None:
+    """A configured ``copilot.github_host`` reaches HARNESS_COPILOT_GITHUB_HOST."""
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"copilot": {"github_host": "shs.ghe.com"}})
+    )
+    env = _build_copilot_spawn_env(_make_spec())
+    assert env["HARNESS_COPILOT_GITHUB_HOST"] == "shs.ghe.com"
+
+
+def test_github_host_forwarded_with_api_key_auth(tmp_path: Path) -> None:
+    """The GHE host applies even when the token comes from an api-key auth."""
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"copilot": {"github_host": "shs.ghe.com"}})
+    )
+    env = _build_copilot_spawn_env(_make_spec(auth=ApiKeyAuth(api_key="gho_abc")))
+    assert env["HARNESS_COPILOT_GITHUB_TOKEN"] == "gho_abc"
+    assert env["HARNESS_COPILOT_GITHUB_HOST"] == "shs.ghe.com"
+
+
+def test_github_host_absent_when_unconfigured() -> None:
+    """A stock github.com install sets no host env var."""
+    env = _build_copilot_spawn_env(_make_spec())
+    assert "HARNESS_COPILOT_GITHUB_HOST" not in env

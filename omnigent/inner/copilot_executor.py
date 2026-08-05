@@ -45,7 +45,12 @@ Auth: a **GitHub token** that carries Copilot access — a fine-grained PAT with
 the "Copilot Requests" permission, or an OAuth token from the GitHub CLI (``gh``)
 / Copilot CLI app. Resolved from a spec ``api_key`` or the ambient
 ``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN`` (the same precedence
-the bundled CLI uses). Classic ``ghp_`` tokens are not accepted by Copilot.
+the bundled CLI uses). Classic ``ghp_`` tokens are not accepted by Copilot. When
+*no* token resolves, the SDK is asked to reuse the ``gh`` CLI's logged-in user
+(``use_logged_in_user``) so a plain ``gh auth login`` authenticates the harness
+without an exported token. A GitHub Enterprise Server instance is targeted by a
+configured ``copilot.github_host`` (or an ambient ``GH_HOST``), forwarded to the
+SDK subprocess as ``GH_HOST``.
 
 Requirements:
     The ``github-copilot-sdk`` package must be installed (it bundles the
@@ -300,6 +305,7 @@ class CopilotExecutor(Executor):
         os_env: OSEnvSpec | None = None,
         model: str | None = None,
         github_token: str | None = None,
+        github_host: str | None = None,
         bundle_dir: Path | None = None,
         agent_name: str | None = None,
         skills_filter: str | list[str] = "all",
@@ -314,7 +320,11 @@ class CopilotExecutor(Executor):
             gateway-routed id or ``None`` falls back to Copilot's auto-select.
         :param github_token: GitHub token carrying Copilot access. ``None``
             falls back to ``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` /
-            ``GITHUB_TOKEN`` in the environment.
+            ``GITHUB_TOKEN`` in the environment; when no token resolves the SDK
+            is asked to reuse the ``gh`` CLI's logged-in user instead.
+        :param github_host: GitHub Enterprise hostname (e.g. ``"shs.ghe.com"``)
+            to route Copilot auth to. ``None`` uses the stock ``github.com``
+            backend (the SDK default).
         :param bundle_dir: Reserved for future skill wiring; unused in v1.
         :param agent_name: Optional agent name (reserved for parity).
         :param skills_filter: Accepted for parity; copilot has no skill
@@ -324,6 +334,7 @@ class CopilotExecutor(Executor):
         self._os_env_spec = os_env
         self._model_override = model
         self._github_token = github_token or _ambient_github_token()
+        self._github_host = github_host or _resolve_github_host()
         self._bundle_dir = bundle_dir
         self._agent_name = agent_name
         self._skills_filter = skills_filter
@@ -519,10 +530,20 @@ class CopilotExecutor(Executor):
         # must be absolute"), and a spec / os_env can hand us a relative cwd
         # (e.g. ``.``), so always resolve to an absolute path.
         cwd = os.path.abspath(self._cwd or os.getcwd())
+        # With no explicit/ambient token, opt into the SDK reusing the ``gh``
+        # CLI's logged-in user — otherwise ``github_token=None`` is sent as an
+        # empty credential and the backend answers 401 (Bad credentials).
+        use_logged_in_user = True if not self._github_token else None
+        # A GHE host is forwarded via the SDK subprocess env (``GH_HOST``), the
+        # same var the bundled Copilot CLI honors; the SDK has no dedicated
+        # host kwarg. ``None`` leaves the SDK on its default github.com backend.
+        client_env = {"GH_HOST": self._github_host} if self._github_host else None
         client = CopilotClient(
             github_token=self._github_token,
             working_directory=cwd,
             log_level="error",
+            use_logged_in_user=use_logged_in_user,
+            env=client_env,
         )
         try:
             # ``start()`` is inside the try: it spawns the bundled Copilot CLI
@@ -853,6 +874,23 @@ def _ambient_github_token() -> str | None:
         if value:
             return value
     return None
+
+
+def _resolve_github_host() -> str | None:
+    """Return the configured GitHub Enterprise host for Copilot, softly.
+
+    Delegates to :func:`omnigent.onboarding.copilot_auth.resolve_copilot_github_host`
+    (the ``copilot.github_host`` config field, else an ambient ``GH_HOST``),
+    imported lazily so the hot executor path doesn't pull the onboarding layer
+    at module load. Any resolution failure yields ``None`` — a bad host must
+    never sink session bring-up; the SDK then uses its default github.com host.
+    """
+    try:
+        from omnigent.onboarding import copilot_auth
+
+        return copilot_auth.resolve_copilot_github_host()
+    except Exception:  # noqa: BLE001 — host resolution is best-effort
+        return None
 
 
 def _coerce_args(raw: Any) -> dict[str, Any]:  # type: ignore[explicit-any]

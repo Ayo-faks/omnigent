@@ -351,6 +351,65 @@ def test_capabilities() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session bring-up auth wiring (issue #1936)
+# ---------------------------------------------------------------------------
+
+
+def _ensure_session_kwargs(
+    monkeypatch: pytest.MonkeyPatch, executor: CopilotExecutor
+) -> dict[str, Any]:
+    """Drive ``_ensure_session`` against the fake SDK; return CopilotClient kwargs."""
+    from omnigent.inner.copilot_executor import _CopilotSessionState
+
+    state_capture = _install_fake_copilot(monkeypatch)
+    session_state = _CopilotSessionState()
+    asyncio.run(executor._ensure_session(session_state, model=None, tools=[], system_prompt=""))
+    return state_capture["client_kwargs"][-1]
+
+
+def test_ensure_session_opts_into_logged_in_user_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Facet 1: no token -> use_logged_in_user=True so the gh-CLI login is honored."""
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("omnigent.inner.copilot_executor._resolve_github_host", lambda: None)
+    kwargs = _ensure_session_kwargs(monkeypatch, CopilotExecutor())
+    assert kwargs["github_token"] is None
+    assert kwargs["use_logged_in_user"] is True
+
+
+def test_ensure_session_prefers_explicit_token_over_logged_in_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit token is used directly; the logged-in-user opt-in stays off."""
+    monkeypatch.setattr("omnigent.inner.copilot_executor._resolve_github_host", lambda: None)
+    kwargs = _ensure_session_kwargs(monkeypatch, CopilotExecutor(github_token="gho_explicit"))
+    assert kwargs["github_token"] == "gho_explicit"
+    assert kwargs["use_logged_in_user"] is None
+
+
+def test_ensure_session_forwards_github_enterprise_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Facet 2: a configured GHE host reaches the SDK as env['GH_HOST']."""
+    monkeypatch.setattr(
+        "omnigent.inner.copilot_executor._resolve_github_host", lambda: "shs.ghe.com"
+    )
+    kwargs = _ensure_session_kwargs(monkeypatch, CopilotExecutor(github_token="gho_x"))
+    assert kwargs["env"] == {"GH_HOST": "shs.ghe.com"}
+
+
+def test_ensure_session_no_env_for_stock_github(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stock github.com install forwards no env override (env=None)."""
+    monkeypatch.setattr("omnigent.inner.copilot_executor._resolve_github_host", lambda: None)
+    kwargs = _ensure_session_kwargs(monkeypatch, CopilotExecutor(github_token="gho_x"))
+    assert kwargs["env"] is None
+
+
+# ---------------------------------------------------------------------------
 # Tool-result encoding + bridge (needs the fake ToolResult)
 # ---------------------------------------------------------------------------
 

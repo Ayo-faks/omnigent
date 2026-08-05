@@ -21,6 +21,7 @@ from omnigent.onboarding import copilot_auth, extra_install
 from omnigent.onboarding import secrets as secret_store
 from omnigent.onboarding.copilot_auth import (
     COPILOT_SECRET_NAME,
+    copilot_github_host_settings,
     copilot_github_token_configured,
     copilot_github_token_ref,
     copilot_github_token_settings,
@@ -28,6 +29,7 @@ from omnigent.onboarding.copilot_auth import (
     copilot_sdk_installed,
     install_copilot_sdk,
     looks_like_github_copilot_token,
+    resolve_copilot_github_host,
     resolve_copilot_github_token,
 )
 
@@ -254,3 +256,43 @@ def test_install_copilot_sdk_false_on_spawn_failure(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(extra_install.shutil, "which", lambda name: None)
     monkeypatch.setattr(copilot_auth.subprocess, "run", _boom)
     assert install_copilot_sdk() is False
+
+
+# ---------------------------------------------------------------------------
+# GitHub Enterprise host (issue #1936, Facet 2)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_github_host_none_when_unconfigured(tmp_path: Path) -> None:
+    """A stock install with no host config and no GH_HOST resolves to None."""
+    _write_config(tmp_path, {"copilot": {"github_token_ref": "keychain:copilot"}})
+    assert resolve_copilot_github_host() is None
+
+
+def test_resolve_github_host_from_config(tmp_path: Path) -> None:
+    """A configured ``copilot.github_host`` resolves (trimmed)."""
+    _write_config(tmp_path, {"copilot": {"github_host": " shs.ghe.com "}})
+    assert resolve_copilot_github_host() == "shs.ghe.com"
+
+
+def test_resolve_github_host_falls_back_to_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no config field, an ambient ``GH_HOST`` is honored."""
+    _write_config(tmp_path, {})
+    monkeypatch.setenv("GH_HOST", "ghe.example.com")
+    assert resolve_copilot_github_host() == "ghe.example.com"
+
+
+def test_config_field_wins_over_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured host takes precedence over an ambient ``GH_HOST``."""
+    _write_config(tmp_path, {"copilot": {"github_host": "configured.ghe.com"}})
+    monkeypatch.setenv("GH_HOST", "ambient.ghe.com")
+    assert resolve_copilot_github_host() == "configured.ghe.com"
+
+
+def test_host_settings_shape() -> None:
+    """The settings dict targets the ``copilot.github_host`` field."""
+    assert copilot_github_host_settings("shs.ghe.com") == {
+        "copilot": {"github_host": "shs.ghe.com"}
+    }
