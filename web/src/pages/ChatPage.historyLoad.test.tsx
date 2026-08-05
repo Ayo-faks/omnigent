@@ -396,6 +396,8 @@ describe("LatestTurnSpacer", () => {
     anchorTop: number;
     spacerTop: number;
     anchor: "user" | "text" | "none";
+    /** Bottom padding on the content column (reserves the composer's height). */
+    contentPaddingBottom?: number;
   }): number {
     const holder: { cb: (() => void) | null } = { cb: null };
     class StubResizeObserver {
@@ -432,6 +434,9 @@ describe("LatestTurnSpacer", () => {
     const { container } = render(<LatestTurnSpacer />);
     const spacer = container.querySelector<HTMLElement>("div[aria-hidden]")!;
     vi.spyOn(spacer, "getBoundingClientRect").mockReturnValue(rect(opts.spacerTop));
+    if (opts.contentPaddingBottom !== undefined) {
+      spacer.parentElement!.style.paddingBottom = `${opts.contentPaddingBottom}px`;
+    }
     // Re-measure now that the rects are pinned (mount ran against jsdom's 0s).
     act(() => holder.cb?.());
 
@@ -493,6 +498,22 @@ describe("LatestTurnSpacer", () => {
     expect(measureSpacer({ clientHeight: 500, anchorTop: 0, spacerTop: 50, anchor: "text" })).toBe(
       354,
     );
+  });
+
+  it("discounts the column's bottom padding, which reserves the composer's height", () => {
+    // The transcript scrolls behind the composer, so the column reserves its
+    // height as padding below this spacer. That padding is space under the
+    // anchor too: 500 − 50 − 120 − 96 = 234. Counting it (354) would reserve a
+    // whole composer too much and push the pinned turn above the viewport top.
+    expect(
+      measureSpacer({
+        clientHeight: 500,
+        anchorTop: 0,
+        spacerTop: 50,
+        anchor: "user",
+        contentPaddingBottom: 120,
+      }),
+    ).toBe(234);
   });
 
   it("adds no padding when there is no anchor (pure tool output)", () => {

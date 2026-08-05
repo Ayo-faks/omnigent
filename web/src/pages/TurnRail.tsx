@@ -307,7 +307,10 @@ export function TurnRail({
       // wide enough for the ticks; the preview box overflows to the right.
       // Hidden on mobile (max-md:hidden): the rail is a hover minimap and
       // touch has no hover, so mobile keeps the ↑↓ nav buttons instead.
-      className="pointer-events-none absolute left-0 top-1/2 z-40 flex w-6 -translate-y-1/2 items-center max-md:hidden"
+      // Centered on the band ABOVE the composer, not on the containing box:
+      // that box spans the composer's row (the transcript flows behind it), so
+      // a plain top-1/2 would sit the ticks half a composer too low.
+      className="pointer-events-none absolute left-0 top-[calc(50%-var(--chat-composer-h,0px)/2)] z-40 flex w-6 -translate-y-1/2 items-center max-md:hidden"
       onMouseLeave={() => {
         interactingRef.current = false;
         setHoveredId(null);

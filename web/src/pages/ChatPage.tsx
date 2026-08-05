@@ -1218,7 +1218,21 @@ interface SessionLayoutProps {
 function SessionLayout({ mainAgent }: SessionLayoutProps) {
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-w-0 flex-1 flex-col">{mainAgent}</div>
+      {/* Two rows, so the chat surface can span BOTH and let the transcript
+          flow behind the composer while the composer keeps a real layout slot
+          in row 2. minmax(0,1fr) rather than 1fr: a 1fr track's automatic
+          minimum is min-content, which would let a tall transcript stretch the
+          track past the viewport — the grid equivalent of the min-h-0 this
+          column carried as a flex container.
+          The single explicit COLUMN is load-bearing, not decoration: children
+          here pin a row but leave the column auto, and auto-placement puts such
+          an item in the first column where it does not overlap — which would
+          push the composer out of the transcript's occupied cell into an
+          implicit second column, landing the two side by side. One track plus
+          col-start-1 on both children makes them share the cell and stack. */}
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]">
+        {mainAgent}
+      </div>
     </div>
   );
 }
@@ -1598,6 +1612,31 @@ function MainAgentSurface({
     conversationRef.current = el;
     setContainerEl(el);
   }, []);
+  // Composer row height, published as --chat-composer-h on the grid so the
+  // conversation subtree can reserve bottom clearance. The conversation scroll
+  // box now spans the composer's row, so without this the newest content parks
+  // permanently underneath it. Measured rather than hardcoded: the queued-
+  // message strip, sub-agent tray, quote chips and auto-grow textarea all move
+  // this edge.
+  const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = composerBoxRef.current;
+    const grid = el?.parentElement;
+    if (!el || !grid || typeof ResizeObserver === "undefined") return;
+    // offsetHeight, not contentRect: the form's own padding (pb-3 plus the
+    // native safe-area inset) is part of the space content must clear.
+    const publish = () => grid.style.setProperty("--chat-composer-h", `${el.offsetHeight}px`);
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      grid.style.removeProperty("--chat-composer-h");
+    };
+    // Keyed on showTerminal: the terminal view returns early without a
+    // composer, so the ref is null there — re-run on the switch back to chat
+    // to observe the freshly mounted row.
+  }, [showTerminal]);
   const [terminalSurfaceEl, setTerminalSurfaceEl] = useState<HTMLElement | null>(null);
   // True only while the chat/terminal surface is the frontmost thing on screen.
   // Drives both native overlays so neither floats over an opened drawer.
@@ -1717,9 +1756,13 @@ function MainAgentSurface({
     <>
       {/* Wrapper div gives us a ref to scope the SelectionPopup to the
           conversation area without requiring Conversation to forward refs. */}
+      {/* Spans both grid rows so the scroll viewport is the full surface height
+          and the transcript flows behind the composer (which owns row 2 and
+          paints above it). Bottom clearance comes from --chat-composer-h, not
+          from a shortened viewport — see the ResizeObserver above. */}
       <div
         ref={setConversationEl}
-        className="@container/chat relative flex min-h-0 flex-1 overflow-hidden"
+        className="@container/chat relative col-start-1 row-start-1 row-span-2 flex min-h-0 overflow-hidden"
       >
         {/* chat-scroll-fade masks the viewport's top edge so scrolling
             content dissolves into the canvas before reaching the
@@ -1741,7 +1784,11 @@ function MainAgentSurface({
           <ConversationContent
             scrollClassName="[overflow-anchor:none]"
             className={cn(
-              "chat-conversation-content mx-auto w-full gap-4 px-4 pt-20 pb-6",
+              "chat-conversation-content mx-auto w-full gap-4 px-4 pt-20",
+              // Bottom clearance for the composer the transcript now flows
+              // behind: the scroll box spans its row, so without this the
+              // newest content would sit under the card unreachably.
+              "pb-[calc(var(--chat-composer-h,0px)+1.5rem)]",
               "md:pl-[clamp(1rem,(54rem-100cqi)*0.5+1rem,1.5rem)]",
               CHAT_COLUMN_WIDTH,
             )}
@@ -1839,7 +1886,9 @@ function MainAgentSurface({
                 Last child so it measures everything above it. */}
             <LatestTurnSpacer scrollElement={scroller?.el ?? null} />
           </ConversationContent>
-          <ConversationScrollButton />
+          {/* Lifted clear of the composer this box now spans (the shared
+              primitive's own bottom-4 is viewport-relative). */}
+          <ConversationScrollButton className="bottom-[calc(var(--chat-composer-h,0px)+1rem)]" />
           {/* Outside ConversationContent so it's pinned to the viewport, not the scroll. See WorkingStatusPin.
               Suppressed in a sub-agent session: the composer's "Chatting with sub-agent …" tray owns this slot. */}
           <WorkingStatusPin show={showWorkingIndicator} suppress={subAgentLabel != null} />
@@ -1849,6 +1898,7 @@ function MainAgentSurface({
             canPrev={nav.canPrev}
             canNext={nav.canNext}
             hidden={userMessageIds.length === 0}
+            className="bottom-[calc(var(--chat-composer-h,0px)+1rem)]"
           />
         </Conversation>
         {/* Hover the top edge to reveal a pill that loads all older history and
@@ -1884,50 +1934,63 @@ function MainAgentSurface({
         }
       />
 
-      <Composer
-        disabled={disabled}
-        status={status}
-        isWorking={isWorking}
-        onSend={handleSend}
-        onSendSlashCommand={handleSendSlashCommand}
-        onStop={onStop}
-        agents={agents}
-        selectedAgentId={selectedAgentId}
-        permissionLevel={permissionLevel}
-        readOnlyReason={readOnlyReason}
-        replyQuotes={replyQuotes}
-        onRemoveQuote={(i) => setReplyQuotes((prev) => prev.filter((_, idx) => idx !== i))}
-        onClearAllQuotes={() => setReplyQuotes([])}
-        effortLevels={effortLevels}
-        showEffort={showEffort}
-        showModels={showModels}
-        modelPickerKind={modelPickerKind}
-        codexModelOptions={codexModelOptions}
-        showCodexPlanMode={showCodexPlanMode}
-        showGoalControl={showGoalControl}
-        showClaudeGoalControl={showClaudeGoalControl}
-        showPollyCodexGoalControl={showPollyCodexGoalControl}
-        isTerminalFirst={isTerminalFirst}
-        isNativeWrapper={isNativeWrapper}
-        reconnectHint={liveness.kind === "runner_asleep" || liveness.kind === "host_asleep"}
-        sandboxAsleepHint={liveness.kind === "host_asleep"}
-        unreachable={
-          !sandboxLaunching &&
-          (liveness.kind === "host_offline" || liveness.kind === "local_stranded")
-        }
-        onShowReconnectHelp={onShowReconnectHelp}
-        costRoutingEligible={costRoutingEligible}
-        subAgentLabel={subAgentLabel}
-      />
+      {/* Row 2 of SessionLayout's grid, over the transcript that spans both
+          rows. z-30 is load-bearing: the conversation wrapper is `relative`
+          with no z-index (so it raises no stacking context) and WorkingStatusPin
+          inside it is z-20, which would otherwise paint over the composer. */}
+      {/* pointer-events-none so this row's empty area doesn't intercept wheel
+          or selection over the transcript scrolling behind it. Re-enabled on
+          every child EXCEPT the form, which runs the same trick one level down
+          (its own transparent gutters pass through, its card does not). */}
+      <div
+        ref={composerBoxRef}
+        className="pointer-events-none relative z-30 col-start-1 row-start-2 [&>*:not(form)]:pointer-events-auto"
+      >
+        <Composer
+          disabled={disabled}
+          status={status}
+          isWorking={isWorking}
+          onSend={handleSend}
+          onSendSlashCommand={handleSendSlashCommand}
+          onStop={onStop}
+          agents={agents}
+          selectedAgentId={selectedAgentId}
+          permissionLevel={permissionLevel}
+          readOnlyReason={readOnlyReason}
+          replyQuotes={replyQuotes}
+          onRemoveQuote={(i) => setReplyQuotes((prev) => prev.filter((_, idx) => idx !== i))}
+          onClearAllQuotes={() => setReplyQuotes([])}
+          effortLevels={effortLevels}
+          showEffort={showEffort}
+          showModels={showModels}
+          modelPickerKind={modelPickerKind}
+          codexModelOptions={codexModelOptions}
+          showCodexPlanMode={showCodexPlanMode}
+          showGoalControl={showGoalControl}
+          showClaudeGoalControl={showClaudeGoalControl}
+          showPollyCodexGoalControl={showPollyCodexGoalControl}
+          isTerminalFirst={isTerminalFirst}
+          isNativeWrapper={isNativeWrapper}
+          reconnectHint={liveness.kind === "runner_asleep" || liveness.kind === "host_asleep"}
+          sandboxAsleepHint={liveness.kind === "host_asleep"}
+          unreachable={
+            !sandboxLaunching &&
+            (liveness.kind === "host_offline" || liveness.kind === "local_stranded")
+          }
+          onShowReconnectHelp={onShowReconnectHelp}
+          costRoutingEligible={costRoutingEligible}
+          subAgentLabel={subAgentLabel}
+        />
 
-      {/* Chat/Terminal toggle for terminal-first sessions, reconnect-or-
-          fork banner when unreachable, nothing otherwise. Sits below the
-          composer so its position is consistent with the terminal view. */}
-      <ConnectionIndicator
-        liveness={liveness}
-        onShowReconnectHelp={onShowReconnectHelp}
-        surfaceFrontmost={surfaceFrontmost}
-      />
+        {/* Chat/Terminal toggle for terminal-first sessions, reconnect-or-
+            fork banner when unreachable, nothing otherwise. Sits below the
+            composer so its position is consistent with the terminal view. */}
+        <ConnectionIndicator
+          liveness={liveness}
+          onShowReconnectHelp={onShowReconnectHelp}
+          surfaceFrontmost={surfaceFrontmost}
+        />
+      </div>
     </>
   );
 }
@@ -2013,13 +2076,15 @@ function WorkingStatusPin({ show, suppress = false }: { show: boolean; suppress?
   const visible = show && !isAtBottom && !suppress;
   return (
     <div
-      // Always mounted (the aria-live region announces on show); bottom-0 sits
-      // it flush on the composer so the tab reads as rising from behind it.
+      // Always mounted (the aria-live region announces on show). Anchored to
+      // the composer's top edge (--chat-composer-h) rather than the viewport's
+      // bottom — this box spans the composer's row — so the tab still reads as
+      // rising from behind the card instead of hiding underneath it.
       role="status"
       aria-live="polite"
       data-testid="working-indicator-pin"
       className={cn(
-        "pointer-events-none absolute inset-x-0 bottom-0 z-20 transition-opacity duration-200",
+        "pointer-events-none absolute inset-x-0 bottom-[var(--chat-composer-h,0px)] z-20 transition-opacity duration-200",
         visible ? "opacity-100" : "opacity-0",
       )}
     >
@@ -2357,7 +2422,18 @@ export function LatestTurnSpacer({
     // spacer's top is fixed by the content above it, so this is stable across
     // the height we're about to set — it converges in one pass.
     const anchorToEnd = spacerEl.getBoundingClientRect().top - anchor.getBoundingClientRect().top;
-    const next = Math.max(0, scrollEl.clientHeight - anchorToEnd - PINNED_ANCHOR_TOP_GAP_PX);
+    // The column's own bottom padding sits below this spacer and counts toward
+    // the space under the anchor. It reserves the composer's height (the
+    // transcript scrolls behind it), so ignoring it would over-reserve by a
+    // whole composer and park the anchor above the viewport's top edge.
+    const contentEl = spacerEl.parentElement;
+    const padBottom = contentEl
+      ? Number.parseFloat(getComputedStyle(contentEl).paddingBottom) || 0
+      : 0;
+    const next = Math.max(
+      0,
+      scrollEl.clientHeight - anchorToEnd - padBottom - PINNED_ANCHOR_TOP_GAP_PX,
+    );
     const current = Number.parseFloat(spacerEl.style.height) || 0;
     if (Math.abs(current - next) >= 1) spacerEl.style.height = `${next}px`;
   }, [ctx.scrollRef, scrollElement]);
@@ -4777,6 +4853,10 @@ export function Composer({
       onSubmit={handleSubmit}
       className={cn(
         "chat-composer-form px-4 md:px-6",
+        // The transcript scrolls behind this row, so the form's own transparent
+        // padding must not eat wheel events or text selection over the content
+        // showing through it — only its actual children (card, trays) take input.
+        "pointer-events-none [&>*]:pointer-events-auto",
         isTerminalFirst ? "terminal-first-composer-form pb-1.5" : "pb-3",
       )}
     >
