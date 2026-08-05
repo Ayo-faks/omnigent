@@ -187,8 +187,9 @@ def _build_hello_world_bundle() -> bytes:
 # Time budget for the server's /health endpoint to come up after
 # spawn. ``serve`` does YAML parse + bundle materialization +
 # DBOS init + uvicorn boot, all of which take a few seconds on a cold
-# venv.
-_HEALTH_TIMEOUT_S = 30.0
+# venv. Env-overridable because a heavily loaded dev machine can
+# stretch that boot past any fixed default.
+_HEALTH_TIMEOUT_S = float(os.environ.get("OMNIGENT_E2E_HEALTH_TIMEOUT_S", "30"))
 _HEALTH_POLL_INTERVAL_S = 0.5
 
 # Switch-target built-ins for the Files-tab os_env-boundary test
@@ -492,8 +493,11 @@ def mock_llm_server_url(
     )
     base_url = f"http://127.0.0.1:{mock_port}"
 
-    # Wait for the mock server to be ready
-    deadline = time.monotonic() + 10.0
+    # Wait for the mock server to be ready. Shares the boot-budget env
+    # override with the app server: a loaded dev machine stretches even
+    # this small server's boot past the 10s default.
+    mock_timeout_s = float(os.environ.get("OMNIGENT_E2E_HEALTH_TIMEOUT_S", "10"))
+    deadline = time.monotonic() + mock_timeout_s
     while time.monotonic() < deadline:
         try:
             resp = httpx.get(f"{base_url}/stats", timeout=1.0)
@@ -508,7 +512,8 @@ def mock_llm_server_url(
         log_handle.close()
         log_contents = mock_log.read_text() if mock_log.exists() else ""
         raise RuntimeError(
-            f"Mock LLM server didn't start within 10s.\nLog at {mock_log}:\n{log_contents[-2000:]}"
+            f"Mock LLM server didn't start within {mock_timeout_s:.0f}s.\n"
+            f"Log at {mock_log}:\n{log_contents[-2000:]}"
         )
 
     try:

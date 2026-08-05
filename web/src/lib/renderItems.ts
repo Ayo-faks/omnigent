@@ -365,6 +365,57 @@ export function lastRenderableAssistantIndex(bubbles: readonly Bubble[]): number
 }
 
 /**
+ * Blocks that open a fresh top-level bubble group (mirrors the walker's
+ * boundary list, minus `routing_decision`: a routing chip precedes its
+ * turn's assistant blocks but not the prompt — clamping there would
+ * still render a turn without its prompt).
+ */
+function isTurnStartBlock(b: AnyBlock): boolean {
+  return b.type === "user_message" || b.type === "compaction" || b.type === "compaction_loading";
+}
+
+/**
+ * Result of {@link clampToLoadedTurnStart}: the blocks to render, plus
+ * whether the window still LEADS with a partial turn because no
+ * boundary is loaded at all and the clamp fell back to rendering it.
+ */
+export interface LoadedTurnWindow {
+  blocks: AnyBlock[];
+  partialLead: boolean;
+}
+
+/**
+ * Hide the window's leading partial turn while older history can still
+ * load.
+ *
+ * History pages are item-count-aligned, so a page boundary usually
+ * lands mid-turn: the window's oldest turn is a fragment that grows as
+ * older pages prepend. Rendering the fragment folds it behind a
+ * "Worked for" row computed from PART of the turn — the duration
+ * undercounts and creeps upward, and the bubble remounts, on every
+ * page (the session-load jitter). Clamping the rendered window to the
+ * first loaded turn boundary (a user message — `[System: ...]` markers
+ * included, they split bubbles too — or a compaction marker) makes
+ * turns appear atomically: folded once, with their final duration.
+ *
+ * When no boundary is loaded at all (a single turn larger than every
+ * fetched page), the fragment renders anyway — a blank transcript is
+ * worse — and `partialLead` tells the caller to withhold the leading
+ * bubble's duration label instead.
+ */
+export function clampToLoadedTurnStart(
+  blocks: AnyBlock[],
+  hasMoreHistory: boolean,
+): LoadedTurnWindow {
+  if (!hasMoreHistory || blocks.length === 0 || isTurnStartBlock(blocks[0]!)) {
+    return { blocks, partialLead: false };
+  }
+  const idx = blocks.findIndex(isTurnStartBlock);
+  if (idx === -1) return { blocks, partialLead: true };
+  return { blocks: blocks.slice(idx), partialLead: false };
+}
+
+/**
  * Index of the last renderable assistant bubble ONLY IF it may still be
  * the session's live turn; -1 otherwise.
  *

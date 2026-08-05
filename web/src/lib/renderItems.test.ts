@@ -17,6 +17,7 @@ import {
   buildBubbles,
   bubblesEqual,
   createBubbleCache,
+  clampToLoadedTurnStart,
   lastRenderableAssistantIndex,
   liveCandidateAssistantIndex,
 } from "./renderItems";
@@ -1982,6 +1983,62 @@ describe("liveCandidateAssistantIndex", () => {
       null,
     );
     expect(liveCandidateAssistantIndex(bubbles)).toBe(1);
+  });
+});
+
+describe("clampToLoadedTurnStart", () => {
+  const textDone = (itemId: string, rid: string): AnyBlock => ({
+    type: "text_done",
+    ctx: ctx({ itemId, responseId: rid }),
+    fullText: "text",
+    hasCodeBlocks: false,
+  });
+  const userMsg = (itemId: string): AnyBlock => ({
+    type: "user_message",
+    ctx: ctx({ itemId, responseId: "" }),
+    content: [{ type: "input_text", text: "question" }],
+  });
+
+  it("hides a leading partial turn up to the first loaded prompt", () => {
+    // A history page landed mid-turn: the fragment above the prompt must
+    // not render — its fold would show a duration computed from part of
+    // the turn, then re-label as older pages prepend.
+    const blocks = [
+      textDone("m1", "r1"),
+      textDone("m2", "r1"),
+      userMsg("u2"),
+      textDone("m3", "r2"),
+    ];
+    const clamped = clampToLoadedTurnStart(blocks, true);
+    expect(clamped.partialLead).toBe(false);
+    expect(clamped.blocks).toEqual(blocks.slice(2));
+  });
+
+  it("returns the same array when the window already starts at a boundary", () => {
+    const aligned = [userMsg("u1"), textDone("m1", "r1")];
+    expect(clampToLoadedTurnStart(aligned, true).blocks).toBe(aligned);
+    const compactionFirst: AnyBlock[] = [
+      { type: "compaction", ctx: ctx({ itemId: "c1", responseId: "" }) },
+      textDone("m1", "r1"),
+    ];
+    expect(clampToLoadedTurnStart(compactionFirst, true).blocks).toBe(compactionFirst);
+  });
+
+  it("is inert once all history is loaded", () => {
+    const blocks = [textDone("m1", "r1"), userMsg("u2")];
+    const clamped = clampToLoadedTurnStart(blocks, false);
+    expect(clamped.blocks).toBe(blocks);
+    expect(clamped.partialLead).toBe(false);
+  });
+
+  it("falls back to rendering (flagged) when no boundary is loaded at all", () => {
+    // A single turn larger than every fetched page: hiding everything
+    // would blank the transcript — render the fragment, flagged so the
+    // caller withholds its creeping duration label.
+    const blocks = [textDone("m1", "r1"), textDone("m2", "r1")];
+    const clamped = clampToLoadedTurnStart(blocks, true);
+    expect(clamped.blocks).toBe(blocks);
+    expect(clamped.partialLead).toBe(true);
   });
 });
 

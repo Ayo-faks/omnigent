@@ -92,6 +92,7 @@ import {
   type BubbleCache,
   buildBubbles,
   bubblesEqual,
+  clampToLoadedTurnStart,
   createBubbleCache,
   liveCandidateAssistantIndex,
 } from "@/lib/renderItems";
@@ -725,15 +726,29 @@ export function ChatPage() {
   // active bubble, reusing the finalized prefix by reference.
   const bubbleCacheRef = useRef<BubbleCache>(createBubbleCache());
   const bubbles = useMemo<Bubble[]>(() => {
+    // While older pages can still arrive, render only COMPLETE turns:
+    // 20-item pages land mid-turn, and the fragment would fold with an
+    // undercounted "Worked for" that re-labels (and remounts) on every
+    // page. The clamp hides the window's leading partial turn until its
+    // prompt loads, so turns pop in atomically, folded, final-duration.
+    const { blocks: renderBlocks, partialLead } = clampToLoadedTurnStart(blocks, hasMoreHistory);
     // A REQUEST-phase elicitation card commits before the user message it
     // gates: while pending, the message is an optimistic trailing bubble
     // (`mergePendingBubbles` lifts it above the card); once approved, the
     // consumed message lands in `blocks` AFTER the card
     // (`reorderCommittedRequestElicitations` swaps the card below it).
     // Both keep the prompt on top across the pending → approved flip.
-    const committed = reorderCommittedRequestElicitations(
-      buildBubbles(blocks, activeResponse, bubbleCacheRef.current, interruptedResponseIds),
+    let committed = reorderCommittedRequestElicitations(
+      buildBubbles(renderBlocks, activeResponse, bubbleCacheRef.current, interruptedResponseIds),
     );
+    // Clamp fallback (a turn larger than every loaded page): the leading
+    // bubble IS partial, so never label it with a duration computed from
+    // part of a turn — it reads a stable "Worked" until fully loaded.
+    const lead = committed[0];
+    if (partialLead && lead?.kind === "assistant" && lead.workedForS !== undefined) {
+      const { workedForS: _dropped, ...rest } = lead;
+      committed = [rest, ...committed.slice(1)];
+    }
     // claude-native live previews are NOT trailing bubbles — they live in
     // `blocks` as provisional `live:*` text blocks at their streamed
     // position (see chatStore), so they render in-order with later tool /
@@ -744,7 +759,7 @@ export function ChatPage() {
       committed,
       buildPendingBubbles(pendingUserMessages, getCurrentAuthorId()),
     );
-  }, [blocks, activeResponse, interruptedResponseIds, pendingUserMessages]);
+  }, [blocks, activeResponse, interruptedResponseIds, pendingUserMessages, hasMoreHistory]);
 
   // Picker selection. ChatPage stays mounted across `/` to `/c/:id`,
   // so the pick survives sidebar clicks; resets on full page reload.

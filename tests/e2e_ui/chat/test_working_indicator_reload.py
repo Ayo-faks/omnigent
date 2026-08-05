@@ -756,3 +756,126 @@ def test_settled_fold_holds_through_scheduled_wake(
     expect(fold.nth(1)).to_be_visible(timeout=15_000)
     assert fold.count() == 2
     assert page.locator(_ASSISTANT_BUBBLE).count() == 2
+
+
+_SCROLL_TRANSCRIPT_TO_TOP_JS = """() => {
+  const log = document.querySelector('[role="log"]');
+  if (!log) return;
+  const scroller = [log, ...log.querySelectorAll('*')].find((el) => {
+    const o = getComputedStyle(el).overflowY;
+    return (o === 'auto' || o === 'scroll') && el.scrollHeight > el.clientHeight;
+  });
+  if (!scroller) return;
+  scroller.scrollTop = 0;
+  scroller.dispatchEvent(new Event('scroll'));
+}"""
+
+
+def test_history_pages_render_only_complete_turns(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """
+    Paged-in history never renders a turn's fold from partial items.
+
+    History pages are item-count-aligned, so scroll-up pages land
+    mid-turn: the window's oldest turn used to render as a growing
+    fragment — its "Worked for" fold appeared with an undercounted
+    duration, then remounted and re-labeled on every page (the
+    session-load jitter). A turn must render only once its opening user
+    prompt is loaded, appearing atomically: folded, with its final
+    duration. The invariants sampled while paging: a turn's content is
+    never on the page without its prompt, the fold count only grows,
+    and a fold's label never changes once shown.
+
+    :param page: Playwright page fixture.
+    :param seeded_session: ``(base_url, session_id)`` from the local server.
+    :returns: None.
+    """
+    base_url, session_id = seeded_session
+
+    # Turn 1 spans several 20-item history pages (1 + 10*3 + 1 = 32
+    # items); turns 2 and 3 are small, so the initial window's
+    # two-prompt boundary stop leaves turn 1 split mid-page.
+    _seed_user_message(
+        base_url, session_id, text="Alpha: run the long job.", response_id="hist_t1"
+    )
+    _publish_status(base_url, session_id, "running", response_id="hist_t1")
+    for step in range(10):
+        _seed_assistant_message(
+            base_url, session_id, text=f"Alpha step {step + 1}.", response_id="hist_t1"
+        )
+        _seed_completed_tool_call(
+            base_url,
+            session_id,
+            response_id="hist_t1",
+            call_id=f"call_hist_t1_{step}",
+            arguments=f'{{"command": "echo alpha{step}"}}',
+            output=f"alpha{step}\n",
+        )
+    _seed_assistant_message(
+        base_url, session_id, text="Alpha turn complete.", response_id="hist_t1"
+    )
+    _publish_status(base_url, session_id, "idle", response_id="hist_t1")
+    for name, rid in (("Bravo", "hist_t2"), ("Charlie", "hist_t3")):
+        _seed_user_message(base_url, session_id, text=f"{name}: quick one.", response_id=rid)
+        _publish_status(base_url, session_id, "running", response_id=rid)
+        _seed_completed_tool_call(
+            base_url,
+            session_id,
+            response_id=rid,
+            call_id=f"call_{rid}",
+            arguments=f'{{"command": "echo {name.lower()}"}}',
+            output=f"{name.lower()}\n",
+        )
+        _seed_assistant_message(base_url, session_id, text=f"{name} done.", response_id=rid)
+        _publish_status(base_url, session_id, "idle", response_id=rid)
+
+    # Localhost serves a 20-item page in ~10ms — too fast for partial-turn
+    # phases to be observable (the reported jitter is against a remote
+    # server). Per-request latency makes each history page a distinct,
+    # sampleable phase.
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("Network.enable")
+    cdp.send(
+        "Network.emulateNetworkConditions",
+        {"offline": False, "latency": 300, "downloadThroughput": -1, "uploadThroughput": -1},
+    )
+
+    page.goto(f"{base_url}/c/{session_id}")
+    expect(page.get_by_role("textbox", name="Message the agent")).to_be_visible(timeout=20_000)
+
+    fold = page.locator(_FOLD)
+    # Scope to the transcript: the sidebar auto-titles the session from
+    # the first user message, so an unscoped query would match the title
+    # and mask a transcript rendered without its prompt.
+    log = page.locator('[role="log"]')
+    t1_answer = log.get_by_text("Alpha turn complete.")
+    t1_prompt = log.get_by_text("Alpha: run the long job.")
+
+    # Drive scroll-up paging while sampling the invariants. The loop runs
+    # until the transcript is fully loaded and stable for ~1.2s.
+    max_folds_seen = 0
+    t1_fold_label: str | None = None
+    stable_samples = 0
+    for _ in range(160):
+        page.evaluate(_SCROLL_TRANSCRIPT_TO_TOP_JS)
+        if t1_answer.count() > 0:
+            assert t1_prompt.count() > 0, "turn 1 rendered before its prompt loaded"
+        count = fold.count()
+        assert count >= max_folds_seen, "a 'Worked for' fold disappeared during paging"
+        max_folds_seen = max(count, max_folds_seen)
+        if count >= 3:
+            label = fold.nth(0).locator("button").first.inner_text()
+            if t1_fold_label is None:
+                t1_fold_label = label
+            assert label == t1_fold_label, "turn 1's fold re-labeled after it appeared"
+            stable_samples += 1
+            if stable_samples >= 8:
+                break
+        page.wait_for_timeout(150)
+
+    assert stable_samples >= 8, "history never finished loading three folded turns"
+    assert fold.count() == 3
+    assert page.locator(_ASSISTANT_BUBBLE).count() == 3
+    assert t1_fold_label is not None and t1_fold_label.startswith("Worked for")
