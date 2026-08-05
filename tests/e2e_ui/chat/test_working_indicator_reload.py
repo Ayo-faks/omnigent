@@ -702,10 +702,30 @@ def test_settled_fold_holds_through_scheduled_wake(
     # A live-streamed iteration spans one clock, so the fold carries a
     # duration — the bare "Worked" label was the merged-bubble symptom.
     expect(fold.first).to_contain_text("Worked for")
-    page.wait_for_timeout(1_000)
+    # Sit past the stray-idle revive window: a real wake fires 60s+
+    # after the finalize, and only a delta INSIDE the window may revive
+    # the finished turn.
+    page.wait_for_timeout(16_000)
 
-    # The wake: marker mirrors, the fresh turn's running edge fires, and
-    # no items land for a while (the model is thinking).
+    # The wake, in live wire order: the new turn's first TEXT DELTAS
+    # stream ahead of the transcript batch (deltas-before-done), then
+    # the marker mirrors and the fresh turn's running edge fires. The
+    # early delta must not revive the FINISHED turn (the revive is for
+    # stray mid-turn idles, which are contradicted within seconds) or
+    # its fold pops open at every iteration.
+    httpx.post(
+        f"{base_url}/v1/sessions/{session_id}/events",
+        json={
+            "type": "external_output_text_delta",
+            "data": {"delta": "Iteration 2 starting", "message_id": "m_wake_1", "index": 0},
+        },
+        timeout=10.0,
+    ).raise_for_status()
+    page.wait_for_timeout(400)
+    # The swallowed delta must not preview into the settled bubble
+    # either — that glued the new turn's text to the old fold, breaking
+    # its eligibility and inflating its worked-for span.
+    expect(page.get_by_text("Iteration 2 starting")).to_have_count(0)
     _seed_user_message(
         base_url,
         session_id,
