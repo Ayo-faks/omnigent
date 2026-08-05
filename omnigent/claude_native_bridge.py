@@ -1911,6 +1911,7 @@ def read_transcript_items_since_with_position(
     *,
     agent_name: str,
     current_response_id: str | None = None,
+    settled_response_id: str | None = None,
 ) -> TranscriptReadResult:
     """
     Read transcript items from a line cursor and return byte position.
@@ -1928,6 +1929,9 @@ def read_transcript_items_since_with_position(
         tool-call items, e.g. ``"claude-native-ui"``.
     :param current_response_id: Response id for an in-progress
         Claude assistant turn from a previous poll.
+    :param settled_response_id: Response id whose turn already ended
+        (its ``Stop`` edge posted) — assistant output inheriting it is
+        a scheduled/automatic wake and opens a new marked turn.
     :returns: Parsed items plus line and byte cursors.
     """
     read_result = _read_complete_jsonl_records(
@@ -1955,6 +1959,7 @@ def read_transcript_items_since_with_position(
             record_offset=None,
             agent_name=agent_name,
             current_response_id=active_response_id,
+            settled_response_id=settled_response_id,
         )
         items.extend(parsed)
         usage = _usage_from_transcript_entry(entry)
@@ -1980,6 +1985,7 @@ def read_transcript_items_from_offset(
     start_line: int,
     agent_name: str,
     current_response_id: str | None = None,
+    settled_response_id: str | None = None,
     include_sidechains: bool = False,
 ) -> TranscriptReadResult:
     """
@@ -2000,6 +2006,9 @@ def read_transcript_items_from_offset(
         tool-call items, e.g. ``"claude-native-ui"``.
     :param current_response_id: Response id for an in-progress
         Claude assistant turn from a previous poll.
+    :param settled_response_id: Response id whose turn already ended
+        (its ``Stop`` edge posted) — assistant output inheriting it is
+        a scheduled/automatic wake and opens a new marked turn.
     :param include_sidechains: Pass ``True`` when reading a
         sub-agent's own ``agent-<id>.jsonl`` — every record there is
         a sidechain by Claude's definition, and dropping them would
@@ -2032,6 +2041,7 @@ def read_transcript_items_from_offset(
             record_offset=record.byte_offset,
             agent_name=agent_name,
             current_response_id=active_response_id,
+            settled_response_id=settled_response_id,
             include_sidechains=include_sidechains,
         )
         items.extend(parsed)
@@ -4404,6 +4414,7 @@ def _transcript_items_from_entry(
     record_offset: int | None = None,
     agent_name: str,
     current_response_id: str | None,
+    settled_response_id: str | None = None,
     include_sidechains: bool = False,
 ) -> tuple[str | None, list[ClaudeTranscriptItem]]:
     """
@@ -4464,6 +4475,7 @@ def _transcript_items_from_entry(
             record_offset=record_offset,
             agent_name=agent_name,
             current_response_id=current_response_id,
+            settled_response_id=settled_response_id,
         )
     return current_response_id, []
 
@@ -5061,6 +5073,7 @@ def _assistant_transcript_items_from_entry(
     record_offset: int | None,
     agent_name: str,
     current_response_id: str | None,
+    settled_response_id: str | None = None,
 ) -> tuple[str | None, list[ClaudeTranscriptItem]]:
     """
     Parse a Claude ``role=assistant`` transcript entry.
@@ -5072,13 +5085,25 @@ def _assistant_transcript_items_from_entry(
     :param agent_name: Agent/model name for assistant/tool items.
     :param current_response_id: Response id for the active Claude
         assistant turn.
+    :param settled_response_id: Response id of a turn whose terminal
+        ``Stop`` edge has already been forwarded. Assistant output that
+        would inherit it proves a scheduled/automatic prompt (cron
+        firing, wakeup) started a NEW turn — those re-invocations write
+        no user transcript entry, so without this the resumed output
+        extends the finished turn forever. Such output gets a fresh
+        response id plus a leading wake marker item.
     :returns: Updated active response id and parsed assistant/tool
         items.
     """
     message = entry["message"]
     content = message.get("content") if isinstance(message, dict) else None
     source_key = _transcript_source_key(entry, line_number, record_offset)
-    response_id = current_response_id or _response_id_from_source(source_key)
+    waking = current_response_id is not None and current_response_id == settled_response_id
+    response_id = (
+        _response_id_from_source(source_key)
+        if waking
+        else current_response_id or _response_id_from_source(source_key)
+    )
     items: list[ClaudeTranscriptItem] = []
 
     if isinstance(content, str):
@@ -5092,6 +5117,12 @@ def _assistant_transcript_items_from_entry(
                     text=content,
                 )
             )
+        if waking:
+            # Consume the wake only when the entry produced output — an
+            # empty entry must not burn the fresh id on nothing.
+            if not items:
+                return current_response_id, items
+            items.insert(0, _scheduled_wake_marker_item(source_key, response_id))
         return response_id, items
 
     if not isinstance(content, list):
@@ -5137,7 +5168,35 @@ def _assistant_transcript_items_from_entry(
                     response_id=response_id,
                 )
             )
+    if waking and items:
+        items.insert(0, _scheduled_wake_marker_item(source_key, response_id))
     return response_id if items else current_response_id, items
+
+
+_SCHEDULED_WAKE_MARKER_TEXT = "[System: scheduled prompt fired]"
+
+
+def _scheduled_wake_marker_item(source_key: str, response_id: str) -> ClaudeTranscriptItem:
+    """
+    Build the turn-boundary marker for a scheduled/automatic wake.
+
+    A plain (non-meta) user item on purpose: the web classifies
+    ``[System: ...]`` text as a muted system row and splits assistant
+    bubbles on it, giving each wake its own turn and "Worked for" fold.
+
+    :param source_key: Source key of the waking assistant entry.
+    :param response_id: Fresh response id minted for the new turn.
+    :returns: The marker conversation item.
+    """
+    return ClaudeTranscriptItem(
+        source_id=_source_id(source_key, 0, "scheduled_wake"),
+        item_type="message",
+        data={
+            "role": "user",
+            "content": [{"type": "input_text", "text": _SCHEDULED_WAKE_MARKER_TEXT}],
+        },
+        response_id=response_id,
+    )
 
 
 _CONTEXT_OVERFLOW_RE = re.compile(

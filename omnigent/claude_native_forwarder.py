@@ -566,6 +566,11 @@ class TranscriptForwardState:
     :param cursor_fingerprint: Hash of bytes immediately before
         ``byte_offset``. Used to detect truncation/replacement before
         seeking into a stale offset.
+    :param settled_response_id: Response id of a turn whose terminal
+        ``Stop`` edge was posted. Assistant output still inheriting it
+        is a scheduled/automatic wake (cron / wakeup firings write no
+        user transcript entry) and opens a new marked turn. Persisted
+        so a forwarder restart inside the wake gap keeps the boundary.
     """
 
     transcript_path: Path
@@ -574,6 +579,7 @@ class TranscriptForwardState:
     current_response_id: str | None = None
     seen_source_ids: tuple[str, ...] = ()
     cursor_fingerprint: str | None = None
+    settled_response_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -651,6 +657,16 @@ class _ForwardDedupeState:
     # ``state.current_response_id`` unadvanced). ``None`` until the first
     # turn-start edge. Reset on /clear and /fork like the other baselines.
     posted_running_response_id: str | None = None
+    # Turn-settle latch driving the scheduled-wake boundary. The Stop edge
+    # records the ended turn's id as PENDING; it activates (moves to
+    # ``settled_response_id``) only once a fully-consumed transcript batch
+    # carries no assistant output for it — the turn's final message can be
+    # delta-held across polls and forward AFTER its Stop edge, and latching
+    # immediately would mis-read that tail as a scheduled wake. Assistant
+    # output inheriting the ACTIVE settled id gets a fresh turn id plus a
+    # ``[System: scheduled prompt fired]`` marker (see the bridge parser).
+    pending_settled_response_id: str | None = None
+    settled_response_id: str | None = None
     # Failed cost posts are retried by this long-running poll loop. Without a
     # retry gate, an edge 429 turns the poll interval into a request storm and
     # prevents the limiter from recovering.
@@ -1063,6 +1079,7 @@ async def forward_claude_transcript_to_session(
                         bridge_dir=bridge_dir,
                         state=hook_state,
                         retry_tracker=status_retries,
+                        dedupe=dedupe,
                         task_subjects=task_subjects,
                         task_statuses=task_statuses,
                         task_order=task_order,
@@ -2685,6 +2702,7 @@ async def _forward_available_status_events(
     bridge_dir: Path,
     state: HookForwardState,
     retry_tracker: _PostRetryTracker,
+    dedupe: _ForwardDedupeState,
     task_subjects: dict[str, str],
     task_statuses: dict[str, str],
     task_order: list[str],
@@ -2713,6 +2731,9 @@ async def _forward_available_status_events(
     :param state: Current hook cursor state.
     :param retry_tracker: In-memory retry/backoff tracker for hook
         status posts.
+    :param dedupe: Mutable per-session baseline; turn-end edges record
+        the ended turn's id on it as a pending settle (scheduled-wake
+        detection — see :func:`_promote_pending_settle`).
     :param task_subjects: Mutable map of task_id → subject text for the
         native task system, e.g. ``{"1": "Create folder 'abc'"}``.
         Updated in-place from ``TaskCreated`` hook events.
@@ -3048,6 +3069,11 @@ async def _forward_available_status_events(
             )
             return durable
         retry_tracker.clear(retry_key)
+        if response_id is not None:
+            # The turn ended — record its id as a pending settle so a later
+            # assistant entry still inheriting it is marked as a scheduled
+            # wake (see _promote_pending_settle and the bridge parser).
+            dedupe.pending_settled_response_id = response_id
         durable = next_durable
         await _write_hook_state_async(bridge_dir, durable)
     durable = HookForwardState(
@@ -3134,6 +3160,52 @@ def _turn_has_assistant_output(items: list[ClaudeTranscriptItem], response_id: s
         if item.item_type == "message" and item.data.get("role") == "assistant":
             return True
     return False
+
+
+def _promote_pending_settle(
+    dedupe: _ForwardDedupeState, items: list[ClaudeTranscriptItem]
+) -> bool:
+    """
+    Activate a pending turn settle once the transcript is quiescent.
+
+    The turn's final assistant message can be delta-held across polls and
+    forward AFTER its ``Stop`` edge posted; latching immediately would
+    mis-read that tail as a scheduled wake. Promote only when a batch
+    carries no assistant output for the pending turn.
+
+    :param dedupe: Mutable per-session dedupe/latch state.
+    :param items: Transcript items read this poll (may be empty).
+    :returns: ``True`` when the pending settle was activated.
+    """
+    pending = dedupe.pending_settled_response_id
+    if pending is None:
+        return False
+    if _turn_has_assistant_output(items, pending):
+        return False
+    dedupe.settled_response_id = pending
+    dedupe.pending_settled_response_id = None
+    return True
+
+
+def _with_settled_response_id(
+    state: TranscriptForwardState, settled_response_id: str | None
+) -> TranscriptForwardState:
+    """
+    Copy ``state`` with a different ``settled_response_id``.
+
+    :param state: Transcript cursor state to copy.
+    :param settled_response_id: Value for the copy.
+    :returns: The updated state.
+    """
+    return TranscriptForwardState(
+        transcript_path=state.transcript_path,
+        line_cursor=state.line_cursor,
+        byte_offset=state.byte_offset,
+        current_response_id=state.current_response_id,
+        seen_source_ids=state.seen_source_ids,
+        cursor_fingerprint=state.cursor_fingerprint,
+        settled_response_id=settled_response_id,
+    )
 
 
 def _compact_summary_text(item: ClaudeTranscriptItem) -> str | None:
@@ -3318,12 +3390,23 @@ async def _forward_available_items(
         is the last durable cursor so retries don't re-post successful
         items.
     """
-    result = await asyncio.to_thread(_read_transcript_items_for_state, state, agent_name)
+    if dedupe.settled_response_id is None and state.settled_response_id is not None:
+        # Restart recovery: adopt the persisted settle so a forwarder
+        # restart inside a scheduled-wake gap still marks the wake.
+        dedupe.settled_response_id = state.settled_response_id
+    result = await asyncio.to_thread(
+        _read_transcript_items_for_state, state, agent_name, dedupe.settled_response_id
+    )
     items = result.items
     if not items:
         if result.line_cursor == state.line_cursor and result.byte_offset == (
             state.byte_offset or 0
         ):
+            # Quiet poll — the transcript is fully consumed, so a pending
+            # turn settle is safe to activate (and persist) here.
+            if _promote_pending_settle(dedupe, items):
+                state = _with_settled_response_id(state, dedupe.settled_response_id)
+                await _write_forward_state_async(bridge_dir, state)
             return state
     current_response_id = result.current_response_id
     seen_source_ids = list(state.seen_source_ids)
@@ -3404,6 +3487,11 @@ async def _forward_available_items(
                 # Hard persist failure or active backoff — stop the batch
                 # here with the cursor before this item so it is retried.
                 return updated
+            # Post-compaction output continues the SAME turn (the
+            # compaction card is the boundary) — drop any settle so the
+            # resume is not mis-marked as a scheduled wake.
+            dedupe.pending_settled_response_id = None
+            dedupe.settled_response_id = None
             seen.add(item.source_id)
             seen_source_ids.append(item.source_id)
             updated = TranscriptForwardState(
@@ -3413,6 +3501,7 @@ async def _forward_available_items(
                 current_response_id=current_response_id,
                 seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                 cursor_fingerprint=state.cursor_fingerprint,
+                settled_response_id=dedupe.settled_response_id,
             )
             await _write_forward_state_async(bridge_dir, updated)
             continue
@@ -3481,6 +3570,7 @@ async def _forward_available_items(
                     current_response_id=current_response_id,
                     seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                     cursor_fingerprint=state.cursor_fingerprint,
+                    settled_response_id=dedupe.settled_response_id,
                 )
                 await _write_forward_state_async(bridge_dir, updated)
                 continue
@@ -3510,6 +3600,7 @@ async def _forward_available_items(
                     current_response_id=current_response_id,
                     seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                     cursor_fingerprint=state.cursor_fingerprint,
+                    settled_response_id=dedupe.settled_response_id,
                 )
                 await _write_forward_state_async(bridge_dir, updated)
                 continue
@@ -3539,8 +3630,12 @@ async def _forward_available_items(
             current_response_id=current_response_id,
             seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
             cursor_fingerprint=state.cursor_fingerprint,
+            settled_response_id=dedupe.settled_response_id,
         )
         await _write_forward_state_async(bridge_dir, updated)
+    # Fully-consumed batch: a pending settle may activate now, provided
+    # this batch carried no assistant output for the settling turn.
+    _promote_pending_settle(dedupe, items)
     updated = TranscriptForwardState(
         transcript_path=state.transcript_path,
         line_cursor=result.line_cursor,
@@ -3548,6 +3643,7 @@ async def _forward_available_items(
         current_response_id=current_response_id,
         seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
         cursor_fingerprint=_jsonl_cursor_fingerprint(state.transcript_path, result.byte_offset),
+        settled_response_id=dedupe.settled_response_id,
     )
     await _write_forward_state_async(bridge_dir, updated)
     # POST usage AFTER items so the ring never leads the transcript.
@@ -3749,12 +3845,15 @@ def _validated_hook_state(
 def _read_transcript_items_for_state(
     state: TranscriptForwardState,
     agent_name: str,
+    settled_response_id: str | None = None,
 ) -> TranscriptReadResult:
     """
     Read transcript items using the best cursor available in ``state``.
 
     :param state: Current transcript forwarder state.
     :param agent_name: Agent/model name to stamp on mirrored output.
+    :param settled_response_id: Active turn-settle latch — assistant
+        output inheriting this id parses as a scheduled wake.
     :returns: Transcript items and updated cursors. States without a
         byte offset are migrated by one line-cursor compatibility scan.
     """
@@ -3764,6 +3863,7 @@ def _read_transcript_items_for_state(
             state.line_cursor,
             agent_name=agent_name,
             current_response_id=state.current_response_id,
+            settled_response_id=settled_response_id,
         )
     return read_transcript_items_from_offset(
         state.transcript_path,
@@ -3771,6 +3871,7 @@ def _read_transcript_items_for_state(
         start_line=state.line_cursor,
         agent_name=agent_name,
         current_response_id=state.current_response_id,
+        settled_response_id=settled_response_id,
     )
 
 
@@ -3821,6 +3922,7 @@ def _validated_transcript_state(
                 current_response_id=state.current_response_id,
                 seen_source_ids=state.seen_source_ids,
                 cursor_fingerprint=current_fingerprint,
+                settled_response_id=state.settled_response_id,
             )
         _logger.warning(
             "Claude transcript cursor missing fingerprint; skipping to end of transcript; "
@@ -5169,6 +5271,7 @@ def _read_forward_state(bridge_dir: Path) -> TranscriptForwardState | None:
     line_cursor = raw.get("line_cursor")
     byte_offset = raw.get("byte_offset")
     current_response_id = raw.get("current_response_id")
+    settled_response_id = raw.get("settled_response_id")
     cursor_fingerprint = raw.get("cursor_fingerprint")
     seen_source_ids = raw.get("seen_source_ids", [])
     if not isinstance(transcript_path, str) or not isinstance(line_cursor, int):
@@ -5179,6 +5282,8 @@ def _read_forward_state(bridge_dir: Path) -> TranscriptForwardState | None:
         return None
     if current_response_id is not None and not isinstance(current_response_id, str):
         return None
+    if settled_response_id is not None and not isinstance(settled_response_id, str):
+        settled_response_id = None
     if cursor_fingerprint is not None and not isinstance(cursor_fingerprint, str):
         return None
     if not isinstance(seen_source_ids, list) or not all(
@@ -5192,6 +5297,7 @@ def _read_forward_state(bridge_dir: Path) -> TranscriptForwardState | None:
         current_response_id=current_response_id,
         seen_source_ids=tuple(seen_source_ids),
         cursor_fingerprint=cursor_fingerprint,
+        settled_response_id=settled_response_id,
     )
 
 
@@ -5208,6 +5314,7 @@ def _write_forward_state(bridge_dir: Path, state: TranscriptForwardState) -> Non
         "transcript_path": str(state.transcript_path),
         "line_cursor": state.line_cursor,
         "current_response_id": state.current_response_id,
+        "settled_response_id": state.settled_response_id,
         "seen_source_ids": list(state.seen_source_ids),
         "updated_at": time.time(),
     }

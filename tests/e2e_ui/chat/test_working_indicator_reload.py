@@ -655,3 +655,84 @@ def test_prior_fold_holds_through_followup_send(
 
     expect(fold.nth(1)).to_be_visible(timeout=15_000)
     assert fold.count() == 2
+
+
+def test_settled_fold_holds_through_scheduled_wake(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """
+    A /loop iteration's fold survives the next scheduled wake.
+
+    Claude-native /loop sessions resume on cron/wakeup firings with no
+    real user input; the forwarder mirrors the resume as a
+    ``[System: scheduled prompt fired]`` marker plus a fresh turn's
+    running edge. The settled iteration is still the last assistant
+    bubble through that item-less gap, and a system marker does not end
+    its possibly-live status — the shown-fold latch is what keeps the
+    trace from popping open at every iteration. Both iterations then
+    settle into their own folds.
+
+    :param page: Playwright page fixture.
+    :param seeded_session: ``(base_url, session_id)`` from the local server.
+    :returns: None.
+    """
+    base_url, session_id = seeded_session
+
+    page.goto(f"{base_url}/c/{session_id}")
+    expect(page.get_by_role("textbox", name="Message the agent")).to_be_visible(timeout=20_000)
+
+    _seed_user_message(base_url, session_id, text="Watch the PR.", response_id="loop_t1")
+    _publish_status(base_url, session_id, "running", response_id="loop_t1")
+    _seed_completed_tool_call(
+        base_url,
+        session_id,
+        response_id="loop_t1",
+        call_id="call_loop_1",
+        arguments='{"command": "gh pr checks"}',
+        output="all green\n",
+    )
+    _seed_assistant_message(
+        base_url, session_id, text="Iteration 1: all green.", response_id="loop_t1"
+    )
+    _publish_status(base_url, session_id, "idle", response_id="loop_t1")
+
+    fold = page.locator(_FOLD)
+    expect(fold.first).to_be_visible(timeout=15_000)
+    # A live-streamed iteration spans one clock, so the fold carries a
+    # duration — the bare "Worked" label was the merged-bubble symptom.
+    expect(fold.first).to_contain_text("Worked for")
+    page.wait_for_timeout(1_000)
+
+    # The wake: marker mirrors, the fresh turn's running edge fires, and
+    # no items land for a while (the model is thinking).
+    _seed_user_message(
+        base_url,
+        session_id,
+        text="[System: scheduled prompt fired]",
+        response_id="loop_t2",
+    )
+    page.wait_for_timeout(300)
+    _publish_status(base_url, session_id, "running", response_id="loop_t2")
+
+    # Fold hide is undebounced, so any dip is visible within one sample.
+    for _ in range(17):
+        assert fold.count() >= 1
+        page.wait_for_timeout(150)
+
+    _seed_completed_tool_call(
+        base_url,
+        session_id,
+        response_id="loop_t2",
+        call_id="call_loop_2",
+        arguments='{"command": "gh pr checks"}',
+        output="still green\n",
+    )
+    _seed_assistant_message(
+        base_url, session_id, text="Iteration 2: still green.", response_id="loop_t2"
+    )
+    _publish_status(base_url, session_id, "idle", response_id="loop_t2")
+
+    expect(fold.nth(1)).to_be_visible(timeout=15_000)
+    assert fold.count() == 2
+    assert page.locator(_ASSISTANT_BUBBLE).count() == 2
