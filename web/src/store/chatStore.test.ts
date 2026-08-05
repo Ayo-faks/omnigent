@@ -6790,6 +6790,66 @@ describe("chatStore — pumpStreamEvents end reasons", () => {
   });
 });
 
+describe("chatStore — event-stream transport selection", () => {
+  // The suite's SPA/test env pins SSE (see test-setup.ts), so these cases
+  // assert the localStorage override that lets one tab (or a WS-targeted
+  // e2e test) pick the other transport without a rebuild.
+  const TRANSPORT_KEY = "omnigent.eventStream.transport";
+
+  afterEach(() => {
+    window.localStorage.removeItem(TRANSPORT_KEY);
+  });
+
+  it("uses the SSE fetch when the override selects sse", async () => {
+    window.localStorage.setItem(TRANSPORT_KEY, "sse");
+    seedSession("conv_transport_sse");
+    await useChatStore.getState().switchTo("conv_transport_sse");
+    // The SSE stream open is an HTTP GET through the mocked fetch; a WS
+    // transport would never touch it.
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes("/v1/sessions/conv_transport_sse/stream"),
+      ),
+    ).toBe(true);
+  });
+
+  it("opens a WebSocket instead of the SSE fetch when the override selects ws", async () => {
+    window.localStorage.setItem(TRANSPORT_KEY, "ws");
+    const sockets: string[] = [];
+    class RecordingWebSocket {
+      static readonly OPEN = 1;
+      static readonly CONNECTING = 0;
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((e: { code: number }) => void) | null = null;
+      constructor(url: string) {
+        sockets.push(url);
+      }
+      close(): void {
+        this.onclose?.({ code: 1000 });
+      }
+    }
+    vi.stubGlobal("WebSocket", RecordingWebSocket as unknown as typeof WebSocket);
+    try {
+      seedSession("conv_transport_ws");
+      await useChatStore.getState().switchTo("conv_transport_ws");
+      expect(sockets.some((u) => u.includes("/v1/sessions/conv_transport_ws/stream/ws"))).toBe(
+        true,
+      );
+      // And the constrained HTTP pool is left alone — that's the whole point.
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/v1/sessions/conv_transport_ws/stream"),
+        ),
+      ).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("chatStore — pumpParsedEvents (WebSocket transport core)", () => {
   const setState = useChatStore.setState as unknown as Parameters<typeof pumpParsedEvents>[3];
   const getState = useChatStore.getState as unknown as Parameters<typeof pumpParsedEvents>[4];

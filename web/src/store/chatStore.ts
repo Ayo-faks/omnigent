@@ -3129,6 +3129,9 @@ if (typeof document !== "undefined") {
   );
 }
 
+/** localStorage key that overrides the built-in event-stream transport. */
+const EVENT_STREAM_TRANSPORT_KEY = "omnigent.eventStream.transport";
+
 /**
  * Whether the event stream should ride a WebSocket instead of the SSE fetch.
  *
@@ -3137,8 +3140,22 @@ if (typeof document !== "undefined") {
  * ~6-per-origin HTTP/1.1 pool and stall unrelated requests. Set
  * `VITE_EVENT_STREAM_TRANSPORT=sse` at build time to force the legacy SSE
  * fallback (e.g. a deployment whose ingress can't proxy this WebSocket).
+ *
+ * A `omnigent.eventStream.transport` localStorage value (`"ws"` / `"sse"`)
+ * overrides the build-time default for the current browser, so a transport
+ * can be flipped for one tab without a rebuild — used to diagnose a
+ * suspected transport issue in a deployed build, and by the e2e suite to
+ * exercise whichever transport a given test targets.
  */
-function useEventStreamWebSocket(): boolean {
+function eventStreamUsesWebSocket(): boolean {
+  try {
+    const override = window.localStorage.getItem(EVENT_STREAM_TRANSPORT_KEY);
+    if (override === "ws") return true;
+    if (override === "sse") return false;
+  } catch {
+    // Storage can throw in private-mode / sandboxed frames; fall through
+    // to the build-time default.
+  }
   return import.meta.env.VITE_EVENT_STREAM_TRANSPORT !== "sse";
 }
 
@@ -3193,7 +3210,7 @@ export async function startStreamPump(
   // WS-only: consecutive opens that closed before any event (see
   // MAX_WS_EMPTY_OPENS). Reset the moment a WS delivers its first event.
   let wsEmptyOpens = 0;
-  const useWebSocket = useEventStreamWebSocket();
+  const useWebSocket = eventStreamUsesWebSocket();
   // A reconnect loop is inherently sequential — open → pump → reconnect —
   // so its awaits cannot be parallelized; no-await-in-loop doesn't apply.
   /* eslint-disable no-await-in-loop */

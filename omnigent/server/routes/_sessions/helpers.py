@@ -17,6 +17,7 @@ import urllib.parse
 import weakref
 from collections import deque
 from collections.abc import (
+    AsyncGenerator,
     AsyncIterator,
     Awaitable,
     Callable,
@@ -7200,7 +7201,7 @@ async def _iter_session_events(
     viewer_user_id: str | None = None,
     viewer_idle: bool = False,
     presence_root_id: str | None = None,
-) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
     """
     Yield validated ``(event_type, payload)`` pairs from the live stream.
 
