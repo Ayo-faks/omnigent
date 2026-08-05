@@ -4941,7 +4941,7 @@ function finalizeCurrentActive(state: ActiveResponse["state"], responseIdOverrid
     if (s.activeResponse === null && responseIdOverride === undefined) return {};
     const responseId = s.activeResponse?.responseId ?? responseIdOverride ?? "";
     return {
-      activeResponse: { responseId, state, error: null },
+      activeResponse: { responseId, state, error: null, completedAt: Date.now() },
     };
   });
 }
@@ -4966,7 +4966,7 @@ function finalizeActive(
     if (s.activeResponse === null && !responseIdOverride) return {};
     const responseId = s.activeResponse?.responseId ?? responseIdOverride ?? "";
     return {
-      activeResponse: { responseId, state, error },
+      activeResponse: { responseId, state, error, completedAt: Date.now() },
     };
   });
 }

@@ -5303,11 +5303,13 @@ def test_transcript_forward_state_persists_settled_response_id(tmp_path: Path) -
         byte_offset=64,
         current_response_id="resp_a",
         settled_response_id="resp_a",
+        pending_settled_response_id="resp_b",
     )
     forwarder._write_forward_state(bridge_dir, state)
     loaded = forwarder._read_forward_state(bridge_dir)
     assert loaded is not None
     assert loaded.settled_response_id == "resp_a"
+    assert loaded.pending_settled_response_id == "resp_b"
 
     raw = json.loads((bridge_dir / forwarder._FORWARDER_STATE_FILE).read_text("utf-8"))
     del raw["settled_response_id"]
@@ -5338,14 +5340,25 @@ def test_promote_pending_settle_waits_for_turn_quiescence() -> None:
     assert dedupe.settled_response_id is None
     assert dedupe.pending_settled_response_id == "resp_a"
 
-    # A late tool result is not assistant output — it must not defer.
+    # A late tool result also defers: it can surface EARLIER than the
+    # held assistant tail, and promoting on it would mis-mark that tail.
     late_result = ClaudeTranscriptItem(
         source_id="s2:0:function_call_output",
         item_type="function_call_output",
         data={"call_id": "c1", "output": "done"},
         response_id="resp_a",
     )
-    assert forwarder._promote_pending_settle(dedupe, [late_result]) is True
+    assert forwarder._promote_pending_settle(dedupe, [late_result]) is False
+    assert dedupe.pending_settled_response_id == "resp_a"
+
+    # Items for OTHER turns don't defer; a truly quiet batch promotes.
+    other = ClaudeTranscriptItem(
+        source_id="s3:0:message",
+        item_type="message",
+        data={"role": "assistant", "content": [{"type": "output_text", "text": "hi"}]},
+        response_id="resp_b",
+    )
+    assert forwarder._promote_pending_settle(dedupe, [other]) is True
     assert dedupe.settled_response_id == "resp_a"
     assert dedupe.pending_settled_response_id is None
 

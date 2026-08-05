@@ -1034,6 +1034,52 @@ def test_scheduled_wake_requires_settled_turn(tmp_path: Path) -> None:
     assert result.current_response_id == "resp_live_turn"
 
 
+def test_scheduled_wake_not_marked_for_post_compaction_output(tmp_path: Path) -> None:
+    """
+    Post-compaction output in the SAME batch as the summary is no wake.
+
+    The compaction card is the boundary; the resumed output continues
+    the settled turn. A batch holding the ``isCompactSummary`` record
+    AND the resumed assistant entry must parse the resume with the
+    settle disarmed — no marker, same turn id.
+    """
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text(
+        _transcript_line(
+            {
+                "type": "user",
+                "uuid": "compact-1",
+                "isCompactSummary": True,
+                "message": {"role": "user", "content": "Summary of the prior context."},
+            }
+        )
+        + _transcript_line(_assistant_text_entry("post-compact", "continuing the task")),
+        encoding="utf-8",
+    )
+
+    result = read_transcript_items_from_offset(
+        transcript_path,
+        0,
+        start_line=0,
+        agent_name="claude-native-ui",
+        current_response_id="resp_prev_turn",
+        settled_response_id="resp_prev_turn",
+    )
+
+    texts = [
+        block.get("text")
+        for item in result.items
+        if item.item_type == "message"
+        for block in item.data["content"]
+        if isinstance(block, dict)
+    ]
+    assert claude_native_bridge._SCHEDULED_WAKE_MARKER_TEXT not in texts
+    resumed = result.items[-1]
+    assert resumed.data["role"] == "assistant"
+    assert resumed.response_id == "resp_prev_turn"
+    assert result.current_response_id == "resp_prev_turn"
+
+
 def test_scheduled_wake_skips_tool_results_and_real_prompts(tmp_path: Path) -> None:
     """
     Only assistant output triggers the wake; other entries behave as before.

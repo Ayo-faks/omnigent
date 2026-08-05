@@ -4451,6 +4451,7 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
         responseId: "resp_1",
         state: "cancelled",
         error: null,
+        completedAt: expect.any(Number),
       });
     });
 
@@ -7656,6 +7657,7 @@ describe("chatStore — live delta streaming (claude-native)", () => {
       responseId: "codex_turn_123",
       state: "cancelled",
       error: null,
+      completedAt: expect.any(Number),
     });
     expect(state.interruptedResponseIds).toEqual(["codex_turn_123"]);
     useChatStore.setState({ activeResponse: null });

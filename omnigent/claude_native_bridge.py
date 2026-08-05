@@ -1942,6 +1942,7 @@ def read_transcript_items_since_with_position(
     )
     items: list[ClaudeTranscriptItem] = []
     active_response_id = current_response_id
+    active_settled_id = settled_response_id
     latest_usage: dict[str, int] | None = None
     latest_model: str | None = None
     for record in read_result.records:
@@ -1959,9 +1960,14 @@ def read_transcript_items_since_with_position(
             record_offset=None,
             agent_name=agent_name,
             current_response_id=active_response_id,
-            settled_response_id=settled_response_id,
+            settled_response_id=active_settled_id,
         )
         items.extend(parsed)
+        # Post-compaction output continues the SAME turn: a batch holding
+        # the compact summary AND the resumed output must not parse the
+        # resume against a still-armed settle (spurious wake marker).
+        if any(item.is_compact_summary for item in parsed):
+            active_settled_id = None
         usage = _usage_from_transcript_entry(entry)
         if usage is not None:
             latest_usage = usage
@@ -2024,6 +2030,7 @@ def read_transcript_items_from_offset(
     )
     items: list[ClaudeTranscriptItem] = []
     active_response_id = current_response_id
+    active_settled_id = settled_response_id
     latest_usage: dict[str, int] | None = None
     latest_model: str | None = None
     for record in read_result.records:
@@ -2041,10 +2048,15 @@ def read_transcript_items_from_offset(
             record_offset=record.byte_offset,
             agent_name=agent_name,
             current_response_id=active_response_id,
-            settled_response_id=settled_response_id,
+            settled_response_id=active_settled_id,
             include_sidechains=include_sidechains,
         )
         items.extend(parsed)
+        # Post-compaction output continues the SAME turn: a batch holding
+        # the compact summary AND the resumed output must not parse the
+        # resume against a still-armed settle (spurious wake marker).
+        if any(item.is_compact_summary for item in parsed):
+            active_settled_id = None
         usage = _usage_from_transcript_entry(entry)
         if usage is not None:
             latest_usage = usage

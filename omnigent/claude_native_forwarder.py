@@ -571,6 +571,11 @@ class TranscriptForwardState:
         is a scheduled/automatic wake (cron / wakeup firings write no
         user transcript entry) and opens a new marked turn. Persisted
         so a forwarder restart inside the wake gap keeps the boundary.
+    :param pending_settled_response_id: Settle recorded by the ``Stop``
+        edge but not yet promoted to ``settled_response_id`` (promotion
+        waits for transcript quiescence). Persisted so a restart inside
+        that window doesn't lose the settle — the hook cursor has
+        already advanced past the Stop edge and won't re-read it.
     """
 
     transcript_path: Path
@@ -580,6 +585,7 @@ class TranscriptForwardState:
     seen_source_ids: tuple[str, ...] = ()
     cursor_fingerprint: str | None = None
     settled_response_id: str | None = None
+    pending_settled_response_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3169,9 +3175,11 @@ def _promote_pending_settle(
     Activate a pending turn settle once the transcript is quiescent.
 
     The turn's final assistant message can be delta-held across polls and
-    forward AFTER its ``Stop`` edge posted; latching immediately would
-    mis-read that tail as a scheduled wake. Promote only when a batch
-    carries no assistant output for the pending turn.
+    forward AFTER its ``Stop`` edge posted — and a late tool result can
+    surface in a batch EARLIER than that held tail. Promote only when a
+    batch carries no item at all for the pending turn: any activity
+    means its tail may still be in flight, and promoting then would
+    mis-mark the tail as a scheduled wake.
 
     :param dedupe: Mutable per-session dedupe/latch state.
     :param items: Transcript items read this poll (may be empty).
@@ -3180,21 +3188,21 @@ def _promote_pending_settle(
     pending = dedupe.pending_settled_response_id
     if pending is None:
         return False
-    if _turn_has_assistant_output(items, pending):
+    if any(item.response_id == pending for item in items):
         return False
     dedupe.settled_response_id = pending
     dedupe.pending_settled_response_id = None
     return True
 
 
-def _with_settled_response_id(
-    state: TranscriptForwardState, settled_response_id: str | None
+def _with_settle_latch(
+    state: TranscriptForwardState, dedupe: _ForwardDedupeState
 ) -> TranscriptForwardState:
     """
-    Copy ``state`` with a different ``settled_response_id``.
+    Copy ``state`` with the dedupe's current settle-latch fields.
 
     :param state: Transcript cursor state to copy.
-    :param settled_response_id: Value for the copy.
+    :param dedupe: Latch source for both settle fields.
     :returns: The updated state.
     """
     return TranscriptForwardState(
@@ -3204,7 +3212,8 @@ def _with_settled_response_id(
         current_response_id=state.current_response_id,
         seen_source_ids=state.seen_source_ids,
         cursor_fingerprint=state.cursor_fingerprint,
-        settled_response_id=settled_response_id,
+        settled_response_id=dedupe.settled_response_id,
+        pending_settled_response_id=dedupe.pending_settled_response_id,
     )
 
 
@@ -3394,6 +3403,11 @@ async def _forward_available_items(
         # Restart recovery: adopt the persisted settle so a forwarder
         # restart inside a scheduled-wake gap still marks the wake.
         dedupe.settled_response_id = state.settled_response_id
+    if (
+        dedupe.pending_settled_response_id is None
+        and state.pending_settled_response_id is not None
+    ):
+        dedupe.pending_settled_response_id = state.pending_settled_response_id
     result = await asyncio.to_thread(
         _read_transcript_items_for_state, state, agent_name, dedupe.settled_response_id
     )
@@ -3404,8 +3418,9 @@ async def _forward_available_items(
         ):
             # Quiet poll — the transcript is fully consumed, so a pending
             # turn settle is safe to activate (and persist) here.
-            if _promote_pending_settle(dedupe, items):
-                state = _with_settled_response_id(state, dedupe.settled_response_id)
+            promoted = _promote_pending_settle(dedupe, items)
+            if promoted or dedupe.pending_settled_response_id != state.pending_settled_response_id:
+                state = _with_settle_latch(state, dedupe)
                 await _write_forward_state_async(bridge_dir, state)
             return state
     current_response_id = result.current_response_id
@@ -3502,6 +3517,7 @@ async def _forward_available_items(
                 seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                 cursor_fingerprint=state.cursor_fingerprint,
                 settled_response_id=dedupe.settled_response_id,
+                pending_settled_response_id=dedupe.pending_settled_response_id,
             )
             await _write_forward_state_async(bridge_dir, updated)
             continue
@@ -3571,6 +3587,7 @@ async def _forward_available_items(
                     seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                     cursor_fingerprint=state.cursor_fingerprint,
                     settled_response_id=dedupe.settled_response_id,
+                    pending_settled_response_id=dedupe.pending_settled_response_id,
                 )
                 await _write_forward_state_async(bridge_dir, updated)
                 continue
@@ -3601,6 +3618,7 @@ async def _forward_available_items(
                     seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                     cursor_fingerprint=state.cursor_fingerprint,
                     settled_response_id=dedupe.settled_response_id,
+                    pending_settled_response_id=dedupe.pending_settled_response_id,
                 )
                 await _write_forward_state_async(bridge_dir, updated)
                 continue
@@ -3631,6 +3649,7 @@ async def _forward_available_items(
             seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
             cursor_fingerprint=state.cursor_fingerprint,
             settled_response_id=dedupe.settled_response_id,
+            pending_settled_response_id=dedupe.pending_settled_response_id,
         )
         await _write_forward_state_async(bridge_dir, updated)
     # Fully-consumed batch: a pending settle may activate now, provided
@@ -3644,6 +3663,7 @@ async def _forward_available_items(
         seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
         cursor_fingerprint=_jsonl_cursor_fingerprint(state.transcript_path, result.byte_offset),
         settled_response_id=dedupe.settled_response_id,
+        pending_settled_response_id=dedupe.pending_settled_response_id,
     )
     await _write_forward_state_async(bridge_dir, updated)
     # POST usage AFTER items so the ring never leads the transcript.
@@ -3923,6 +3943,7 @@ def _validated_transcript_state(
                 seen_source_ids=state.seen_source_ids,
                 cursor_fingerprint=current_fingerprint,
                 settled_response_id=state.settled_response_id,
+                pending_settled_response_id=state.pending_settled_response_id,
             )
         _logger.warning(
             "Claude transcript cursor missing fingerprint; skipping to end of transcript; "
@@ -5272,6 +5293,7 @@ def _read_forward_state(bridge_dir: Path) -> TranscriptForwardState | None:
     byte_offset = raw.get("byte_offset")
     current_response_id = raw.get("current_response_id")
     settled_response_id = raw.get("settled_response_id")
+    pending_settled_response_id = raw.get("pending_settled_response_id")
     cursor_fingerprint = raw.get("cursor_fingerprint")
     seen_source_ids = raw.get("seen_source_ids", [])
     if not isinstance(transcript_path, str) or not isinstance(line_cursor, int):
@@ -5284,6 +5306,10 @@ def _read_forward_state(bridge_dir: Path) -> TranscriptForwardState | None:
         return None
     if settled_response_id is not None and not isinstance(settled_response_id, str):
         settled_response_id = None
+    if pending_settled_response_id is not None and not isinstance(
+        pending_settled_response_id, str
+    ):
+        pending_settled_response_id = None
     if cursor_fingerprint is not None and not isinstance(cursor_fingerprint, str):
         return None
     if not isinstance(seen_source_ids, list) or not all(
@@ -5298,6 +5324,7 @@ def _read_forward_state(bridge_dir: Path) -> TranscriptForwardState | None:
         seen_source_ids=tuple(seen_source_ids),
         cursor_fingerprint=cursor_fingerprint,
         settled_response_id=settled_response_id,
+        pending_settled_response_id=pending_settled_response_id,
     )
 
 
@@ -5315,6 +5342,7 @@ def _write_forward_state(bridge_dir: Path, state: TranscriptForwardState) -> Non
         "line_cursor": state.line_cursor,
         "current_response_id": state.current_response_id,
         "settled_response_id": state.settled_response_id,
+        "pending_settled_response_id": state.pending_settled_response_id,
         "seen_source_ids": list(state.seen_source_ids),
         "updated_at": time.time(),
     }
