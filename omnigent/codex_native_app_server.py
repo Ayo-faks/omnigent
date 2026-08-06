@@ -1764,6 +1764,42 @@ def _gateway_servlet_session(profile: str) -> tuple[str, str] | None:
         return None
 
 
+def _gateway_catalog_default(base_url: str) -> str | None:
+    """
+    Resolve the launch default from the servlet's live catalog.
+
+    Reads the session's own ``/models`` — the exact payload codex will poll —
+    and takes the first entry (the catalog's marked default), so the pinned
+    launch model and the picker's ``(default)`` row agree by construction.
+    Also warms the servlet's catalog cache for codex's first poll.
+
+    :param base_url: The session's servlet base, e.g.
+        ``"http://127.0.0.1:6768/g/<token>/v1"``.
+    :returns: The default slug, or ``None`` on any failure/timeout (callers
+        fall back to the bundled catalog; a cold daemon's first catalog
+        build can exceed the timeout, in which case codex's own poll
+        finishes the warm-up).
+    """
+    try:
+        import httpx
+
+        response = httpx.get(f"{base_url}/models", timeout=6.0)
+        if response.status_code != 200:
+            return None
+        models = response.json().get("models")
+        if not isinstance(models, list):
+            return None
+        for entry in models:
+            if isinstance(entry, dict):
+                slug = entry.get("slug")
+                if isinstance(slug, str) and slug:
+                    return slug
+        return None
+    except Exception:  # noqa: BLE001 — default resolution is best-effort by design
+        _logger.info("gateway catalog default unavailable; using the bundled catalog")
+        return None
+
+
 def build_codex_native_server(
     *,
     socket_path: Path,
@@ -1831,6 +1867,11 @@ def build_codex_native_server(
         )
     env = _clean_codex_env()
     config_overrides: list[str] = []
+    # Written into the session config copy by _pin_codex_config_model; the
+    # databricks branch upgrades it to the launch-resolved default (O1) so
+    # argv and the config file agree from t=0. Other provider kinds keep
+    # today's behavior: pin only an explicitly supplied model.
+    pinned_model_value = model
     if profile is not None:
         # Use the profile's own host so the gateway base URL matches the token
         # the profile-pinned auth command mints; a DATABRICKS_HOST override in
@@ -1853,14 +1894,28 @@ def build_codex_native_server(
         else:
             gateway_base_url = _databricks_codex_base_url(host)
             gateway_auth_command = _databricks_codex_auth_command(host, profile)
+        # Launch-default resolution: explicit model → the servlet catalog's
+        # own default (the live workspace inventory, in the slug spelling
+        # codex has native metadata for) → the bundled/cached catalog.
+        resolved_model = model
+        if resolved_model is None and servlet_session is not None:
+            resolved_model = _gateway_catalog_default(gateway_base_url)
+        if resolved_model is None:
+            resolved_model = model_catalog.resolve_catalog_model(
+                "databricks", family="openai"
+            ).model_id
         config_overrides.extend(
             _databricks_codex_config_overrides(
-                model=model
-                or model_catalog.resolve_catalog_model("databricks", family="openai").model_id,
+                model=resolved_model,
                 base_url=gateway_base_url,
                 auth_command=gateway_auth_command,
             )
         )
+        # Pin the SAME resolved value into the session config copy: the
+        # forwarder mirrors that file into the session record, so an
+        # unpinned launch reports whatever stale `model =` line was copied
+        # from the user's shared config while the wire runs the override.
+        pinned_model_value = resolved_model
         env["DATABRICKS_HOST"] = host
     if extra_config_overrides:
         config_overrides.extend(extra_config_overrides)
@@ -1887,7 +1942,7 @@ def build_codex_native_server(
         ap_server_url=ap_server_url,
         ap_auth_headers=ap_auth_headers,
         python_executable=python_executable,
-        pinned_model=model,
+        pinned_model=pinned_model_value,
         trust_project=trust_project,
     )
 

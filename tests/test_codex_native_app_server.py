@@ -1745,3 +1745,148 @@ async def test_codex_native_launch_config_reads_the_auto_harness_flag(
         config = await _codex_native_launch_config(session_id="conv_abc", server_client=client)
 
     assert config.auto_harness is expected
+
+
+def test_gateway_catalog_default_takes_first_slug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The catalog's first entry (its marked default) becomes the launch default."""
+    from omnigent import codex_native_app_server
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"models": [{"slug": "gpt-5.6-sol"}, {"slug": "gpt-5.5"}]}
+
+    monkeypatch.setattr("httpx.get", lambda url, timeout: _Resp())
+    assert (
+        codex_native_app_server._gateway_catalog_default("http://127.0.0.1:6768/g/T/v1")
+        == "gpt-5.6-sol"
+    )
+
+
+def test_gateway_catalog_default_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any failure resolves to None so the bundled-catalog fallback runs."""
+    from omnigent import codex_native_app_server
+
+    def _boom(url: str, timeout: float) -> None:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("httpx.get", _boom)
+    assert codex_native_app_server._gateway_catalog_default("http://127.0.0.1:1/g/T/v1") is None
+
+
+def _write_oss_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg_path = tmp_path / "databrickscfg"
+    cfg_path.write_text(
+        "[oss]\nhost = https://example.cloud.databricks.com\nauth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg_path))
+
+
+def test_build_codex_native_server_pins_servlet_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A default launch resolves the model from the servlet catalog and pins it
+    into BOTH places codex reads: the ``-c model=`` override and
+    ``pinned_model`` (which seeds the session config copy). Before this, the
+    pin received the pre-resolution ``None`` and the session record mirrored
+    the stale copied ``model =`` line while the wire ran the override.
+    """
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._find_codex_cli",
+        lambda: sys.executable,
+    )
+    _write_oss_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._gateway_servlet_session",
+        lambda profile: ("http://127.0.0.1:6768/g/T/v1", "printf %s T"),
+    )
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._gateway_catalog_default",
+        lambda base_url: "gpt-5.6-sol",
+    )
+
+    app_server = build_codex_native_server(
+        socket_path=tmp_path / "codex.sock",
+        codex_home=tmp_path / "codex-home",
+        cwd=tmp_path,
+        model=None,
+        profile="oss",
+        bridge_dir=tmp_path / "bridge",
+        ap_server_url=None,
+        ap_auth_headers={},
+    )
+    assert app_server.pinned_model == "gpt-5.6-sol"
+    assert any('model="gpt-5.6-sol"' in override for override in app_server.config_overrides)
+
+
+def test_build_codex_native_server_explicit_model_skips_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit/session model wins; the servlet catalog is never asked."""
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._find_codex_cli",
+        lambda: sys.executable,
+    )
+    _write_oss_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._gateway_servlet_session",
+        lambda profile: ("http://127.0.0.1:6768/g/T/v1", "printf %s T"),
+    )
+
+    def _must_not_run(base_url: str) -> str:
+        raise AssertionError("catalog default must not be resolved for explicit models")
+
+    monkeypatch.setattr("omnigent.codex_native_app_server._gateway_catalog_default", _must_not_run)
+
+    app_server = build_codex_native_server(
+        socket_path=tmp_path / "codex.sock",
+        codex_home=tmp_path / "codex-home",
+        cwd=tmp_path,
+        model="gpt-5.5",
+        profile="oss",
+        bridge_dir=tmp_path / "bridge",
+        ap_server_url=None,
+        ap_auth_headers={},
+    )
+    assert app_server.pinned_model == "gpt-5.5"
+
+
+def test_build_codex_native_server_falls_back_without_servlet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No servlet → the bundled/cached catalog default, pinned all the same."""
+    import types
+
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._find_codex_cli",
+        lambda: sys.executable,
+    )
+    _write_oss_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._gateway_servlet_session",
+        lambda profile: None,
+    )
+    monkeypatch.setattr(
+        "omnigent.model_catalog.resolve_catalog_model",
+        lambda name, family: types.SimpleNamespace(model_id="databricks-gpt-test"),
+    )
+
+    app_server = build_codex_native_server(
+        socket_path=tmp_path / "codex.sock",
+        codex_home=tmp_path / "codex-home",
+        cwd=tmp_path,
+        model=None,
+        profile="oss",
+        bridge_dir=tmp_path / "bridge",
+        ap_server_url=None,
+        ap_auth_headers={},
+    )
+    assert app_server.pinned_model == "databricks-gpt-test"
+    assert any('model="databricks-gpt-test"' in o for o in app_server.config_overrides)
