@@ -4566,7 +4566,13 @@ async def _forward_event_to_runner(
                     _child_updates: dict[str, Any] = {}
                     if _routed_model is not None:
                         _child_updates["model_override"] = _routed_model
-                    if _routed_harness is not None:
+                    # Only overwrite the harness when the child was created with
+                    # the "auto" sentinel — a concrete harness set at create time
+                    # (the sub-agent's own spec harness) must not be replaced by
+                    # the router's cross-family pick.
+                    if _routed_harness is not None and (
+                        conv.harness_override == "auto" or conv.harness_override is None
+                    ):
                         _child_updates["harness_override"] = _routed_harness
                     if _child_updates:
                         await asyncio.to_thread(
