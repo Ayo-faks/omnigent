@@ -1890,8 +1890,14 @@ async def _execute_subagent_tool(
             "title": f"{sub_agent_name}:{session_name}",
             "sub_agent_name": sub_agent_name,
         }
+        # Always record the child's actual harness so the server (and UI) can
+        # resolve it correctly. An explicit LLM-requested override takes
+        # precedence; otherwise use the sub-agent's spec-derived harness so
+        # the child session never inherits the parent brain's harness.
         if harness_override_canonical is not None:
             create_body["harness_override"] = harness_override_canonical
+        elif child_harness is not None:
+            create_body["harness_override"] = child_harness
         if model is not None:
             # Reject up front when the child harness would silently
             # ignore the persisted override — no silent drops.

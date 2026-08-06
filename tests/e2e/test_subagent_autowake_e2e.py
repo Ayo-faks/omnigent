@@ -368,3 +368,93 @@ def test_subagent_completion_auto_wakes_parent_on_a_second_round(
         f"No NEW auto-wake notice for round 2 in session {session_id} "
         f"(round1_wakes={round1_wakes}, round2_wakes={round2_wakes})."
     )
+
+
+def test_concurrent_subagent_completions_all_reach_inbox(
+    http_client: httpx.Client,
+    live_runner_id: str,
+    autowake_test_agent: tuple[str, str, str],
+    mock_llm_server_url: str,
+) -> None:
+    """All concurrently-dispatched sub-agents surface their results.
+
+    Regression test for the stranded-wake bug: when two sub-agents complete
+    close together, the second ``_schedule_subagent_wake`` was skipped because
+    the first wake was still pending. After the first wake POST succeeded the
+    pending flag was never cleared, so the second child's inbox item was never
+    picked up. The fix calls ``_rewake_parent_if_inbox_stranded`` after a
+    successful wake POST so any items that accumulated during delivery trigger
+    another wake.
+
+    Flow: parent dispatches TWO children concurrently (fan-out). Both complete.
+    The parent must be woken twice (one per child) and both markers must appear.
+    """
+    parent_name, parent_model, researcher_model = autowake_test_agent
+    reset_mock_llm(mock_llm_server_url)
+
+    second_researcher_model = f"{researcher_model}-b"
+
+    configure_mock_llm(
+        mock_llm_server_url,
+        [
+            # Dispatch both children in a single turn (fan-out).
+            {
+                "tool_calls": [
+                    _sys_session_send_tool_call(
+                        "researcher", "child-a", "Research A", call_id="call_a"
+                    ),
+                    _sys_session_send_tool_call(
+                        "researcher", "child-b", "Research B", call_id="call_b"
+                    ),
+                ],
+            },
+            {"text": "Dispatched both, waiting."},
+            # First auto-wake: acknowledge but don't drain fully yet.
+            {"text": f"Got first result: {_RESEARCHER_MARKER}"},
+            # Second auto-wake: acknowledge the second child's result.
+            {"text": f"Got second result: {_RESEARCHER_MARKER}"},
+        ],
+        key=parent_model,
+    )
+    # Both children return the same marker string.
+    configure_mock_llm(
+        mock_llm_server_url,
+        [{"text": f"Child A done. {_RESEARCHER_MARKER}"}],
+        key=researcher_model,
+    )
+    configure_mock_llm(
+        mock_llm_server_url,
+        [{"text": f"Child B done. {_RESEARCHER_MARKER}"}],
+        key=second_researcher_model,
+    )
+
+    session_id = create_runner_bound_session(
+        http_client,
+        agent_name=parent_name,
+        runner_id=live_runner_id,
+    )
+    dispatch_response_id = send_user_message_to_session(
+        http_client,
+        session_id=session_id,
+        content="Dispatch both researchers concurrently.",
+    )
+    poll_session_until_terminal(
+        http_client,
+        session_id=session_id,
+        response_id=dispatch_response_id,
+        timeout=180,
+    )
+
+    # Both wake notices AND both markers must appear without any user input.
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        wakes = _count_wake_notices(http_client, session_id)
+        if wakes >= 2:
+            break
+        time.sleep(POLL_INTERVAL_S)
+
+    wakes = _count_wake_notices(http_client, session_id)
+    assert wakes >= 2, (
+        f"Expected at least 2 auto-wake notices in session {session_id}, got {wakes}. "
+        "Concurrent sub-agent completions may not all have reached the parent inbox."
+    )

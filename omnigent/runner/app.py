@@ -1954,6 +1954,10 @@ def create_runner_app(
     app.state.interrupted_sessions = _interrupted_sessions
     _background_tasks: set[asyncio.Task[object]] = set()
     _subagent_wake_pending: set[str] = set()
+    # Parent ids whose _schedule_subagent_wake was skipped because a wake was
+    # already pending. Cleared on next successful wake delivery so a follow-up
+    # wake fires immediately rather than waiting for the next turn-end.
+    _subagent_wake_skipped: set[str] = set()
 
     _session_histories = _session_histories_ref
     _last_server_item_id: dict[str, str] = {}
@@ -3282,6 +3286,7 @@ def create_runner_app(
         _session_event_queues.pop(session_id, None)
         _session_inboxes.pop(session_id, None)
         _subagent_wake_pending.discard(session_id)
+        _subagent_wake_skipped.discard(session_id)
         _session_sub_agent_names.pop(session_id, None)
         unregister_child_session(session_id)
         unregister_subagent_work_for_session(session_id)
@@ -4921,7 +4926,11 @@ def create_runner_app(
                 _cond.notify_all()
 
     async def _post_subagent_wake_notice(
-        parent_id: str, notice: str, child_id: str, created_by: str | None
+        parent_id: str,
+        notice: str,
+        child_id: str,
+        created_by: str | None,
+        inbox_size_at_schedule: int,
     ) -> None:
         delivered = await _deliver_subagent_wake_post(
             server_client, parent_id, notice, created_by=created_by
@@ -4935,6 +4944,21 @@ def create_runner_app(
                 child_id,
                 _WAKE_POST_MAX_ATTEMPTS,
             )
+        elif _subagent_wake_skipped.discard(parent_id):
+            # A child was skipped by _schedule_subagent_wake while this wake
+            # was in-flight (pending flag was set at its schedule time). Fire a
+            # follow-up wake immediately rather than waiting for _rewake at
+            # the next turn-end, which may never come if the parent is busy.
+            _subagent_wake_pending.discard(parent_id)
+            inbox = _session_inboxes.get(parent_id)
+            if inbox is not None and inbox.qsize() > inbox_size_at_schedule:
+                entries = list_subagent_work(parent_id)
+                if entries:
+                    latest = max(
+                        entries,
+                        key=lambda e: e.completed_at if e.completed_at is not None else 0.0,
+                    )
+                    _schedule_subagent_wake(latest)
 
     def _schedule_subagent_wake(entry: _SubagentWorkEntry) -> None:
         if entry.parent_session_id == entry.child_session_id:
@@ -4943,17 +4967,19 @@ def create_runner_app(
         if inbox is None:
             return
         if entry.parent_session_id in _subagent_wake_pending:
+            _subagent_wake_skipped.add(entry.parent_session_id)
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
         _subagent_wake_pending.add(entry.parent_session_id)
+        current_size = inbox.qsize()
         notice = _format_subagent_wake_notice(
             agent=entry.agent,
             title=entry.title,
             status=entry.status,
-            pending=inbox.qsize(),
+            pending=current_size,
         )
         _wake_task = loop.create_task(
             _post_subagent_wake_notice(
@@ -4961,6 +4987,7 @@ def create_runner_app(
                 notice,
                 entry.child_session_id,
                 entry.created_by,
+                current_size,
             )
         )
         _wake_task.add_done_callback(_background_tasks.discard)
@@ -5100,6 +5127,7 @@ def create_runner_app(
         conv: str,
     ) -> None:
         _subagent_wake_pending.discard(conv)
+        _subagent_wake_skipped.discard(conv)
         try:
             await _run_turn_bg_setup_and_stream(msg_body, conv)
         except asyncio.CancelledError as exc:
