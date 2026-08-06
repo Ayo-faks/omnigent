@@ -1721,12 +1721,12 @@ def _trust_codex_project(codex_home: Path, cwd: Path) -> None:
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
 
-def _gateway_servlet_session(profile: str, workspace_host: str) -> tuple[str, str] | None:
+def _gateway_servlet_session(profile: str) -> tuple[str, str] | None:
     """
     Register this session with the host gateway servlet, if one is running.
 
-    :param profile: Databricks profile from the provider entry.
-    :param workspace_host: Workspace origin (no trailing slash).
+    :param profile: Databricks profile from the provider entry; the servlet
+        resolves the workspace host itself from ``~/.databrickscfg``.
     :returns: ``(base_url, auth_command)`` routing the session through the
         servlet, or ``None`` to use the direct gateway URL (no servlet
         running, registration failed, or anything else went wrong).
@@ -1739,9 +1739,12 @@ def _gateway_servlet_session(profile: str, workspace_host: str) -> tuple[str, st
             return None
         import httpx
 
+        # The payload is a pointer into shared host config (the profile
+        # name); the servlet resolves the workspace host itself from the
+        # same ~/.databrickscfg the launcher read.
         response = httpx.post(
             f"{state.url}/admin/sessions",
-            json={"profile": profile, "workspace_host": workspace_host},
+            json={"profile": profile},
             headers={"authorization": f"Bearer {state.admin_token}"},
             timeout=3.0,
         )
@@ -1844,7 +1847,7 @@ def build_codex_native_server(
         # it implements /models (live workspace catalog) and relays turns
         # with a freshly minted bearer. Any registration failure falls back
         # to the direct gateway URL.
-        servlet_session = _gateway_servlet_session(profile, host)
+        servlet_session = _gateway_servlet_session(profile)
         if servlet_session is not None:
             gateway_base_url, gateway_auth_command = servlet_session
         else:

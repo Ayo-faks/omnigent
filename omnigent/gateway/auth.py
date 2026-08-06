@@ -10,10 +10,12 @@ so a 15-minute re-mint cadence always stays ahead of expiry.
 from __future__ import annotations
 
 import asyncio
+import configparser
 import json
 import logging
 import os
 import time
+from pathlib import Path
 
 _logger = logging.getLogger(__name__)
 
@@ -21,6 +23,29 @@ _logger = logging.getLogger(__name__)
 # codex refresh_interval_ms are both 900s).
 _TOKEN_TTL_S = 900.0
 _MINT_TIMEOUT_S = 30.0
+
+
+def databrickscfg_host_for_profile(profile: str) -> str | None:
+    """
+    Resolve a profile's workspace host from ``~/.databrickscfg``.
+
+    Registration passes only a profile *name* (a pointer into shared host
+    config); the servlet resolves the host itself from the same file the
+    launcher read.
+
+    :param profile: Profile section name, e.g. ``"oss"``.
+    :returns: The workspace origin without a trailing slash, or ``None`` when
+        the file/section/host is absent or unreadable.
+    """
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(Path.home() / ".databrickscfg")
+    except (OSError, configparser.Error):
+        return None
+    if not parser.has_section(profile):
+        return None
+    host = parser.get(profile, "host", fallback="").strip().rstrip("/")
+    return host or None
 
 
 class TokenMinter:
