@@ -2,6 +2,8 @@
 
 Thanks for your interest in improving Omnigent. Issues and pull requests are
 welcome. For larger changes, open an issue first so we can discuss the approach.
+See [how we prioritize issues](docs/issue-prioritization.md) for the signals
+behind severity and priority labels.
 
 Please don't include secrets, internal URLs, customer data, or private
 configuration in issues, tests, examples, or logs.
