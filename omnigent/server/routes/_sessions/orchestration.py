@@ -4566,13 +4566,7 @@ async def _forward_event_to_runner(
                     _child_updates: dict[str, Any] = {}
                     if _routed_model is not None:
                         _child_updates["model_override"] = _routed_model
-                    # Only overwrite the harness when the child was created with
-                    # the "auto" sentinel — a concrete harness set at create time
-                    # (the sub-agent's own spec harness) must not be replaced by
-                    # the router's cross-family pick.
-                    if _routed_harness is not None and (
-                        conv.harness_override == "auto" or conv.harness_override is None
-                    ):
+                    if _routed_harness is not None:
                         _child_updates["harness_override"] = _routed_harness
                     if _child_updates:
                         await asyncio.to_thread(
@@ -7094,10 +7088,6 @@ async def _create_session_from_existing_agent(
             _parent_for_routing is not None
             and subagent_routing_enabled(_parent_for_routing.subagent_routing_override)
             and auto_harness_session(_parent_for_routing)
-            # When the runner already supplied the sub-agent's spec harness
-            # (not "auto" and not absent), keep it — the runner knows the
-            # sub-agent's declared harness and routing should not override it.
-            and (body.harness_override is None or body.harness_override == "auto")
         ):
             try:
                 await asyncio.to_thread(_validated_harness_override_executor_type, agent)
