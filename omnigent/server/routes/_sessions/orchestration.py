@@ -7362,19 +7362,20 @@ async def _create_session_from_existing_agent(
     # a concrete native harness_override. Routing later overwrites harness_override
     # in session_overrides with its pick, but the child routing path needs the
     # original spec harness to decide the correct candidate pool.
+    # Use body.harness_override (runner-supplied spec harness), not the local
+    # harness_override variable which may have been changed to "auto" by
+    # _force_auto_for_child. The label must capture the spec harness before
+    # routing overwrites it so the child routing path can use the original.
     from omnigent.harness_aliases import is_native_harness as _is_native_harness
 
-    if (
-        harness_override is not None
-        and harness_override != "auto"
-        and _is_native_harness(harness_override)
-    ):
+    _body_harness = body.harness_override
+    if _body_harness is not None and _body_harness != "auto" and _is_native_harness(_body_harness):
         from omnigent.runner.subagent_routing import SPEC_HARNESS_LABEL_KEY
 
         await asyncio.to_thread(
             conversation_store.set_labels,
             conv.id,
-            {SPEC_HARNESS_LABEL_KEY: harness_override},
+            {SPEC_HARNESS_LABEL_KEY: _body_harness},
         )
         updated_conv = await asyncio.to_thread(conversation_store.get_conversation, conv.id)
         if updated_conv is not None:
