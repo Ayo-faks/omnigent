@@ -610,6 +610,7 @@ class _SessionSnapshot:
     agent_id: str | None
     sub_agent_name: str | None = None
     parent_session_id: str | None = None
+    harness_override: str | None = None
     agent_name: str | None = None
 
 
@@ -2309,6 +2310,7 @@ def create_runner_app(
             sub_agent_name: str | None = None
             parent_session_id: str | None = None
             agent_name: str | None = None
+            harness_override: str | None = None
             try:
                 resp = await server_client.get(f"/v1/sessions/{session_id}")
                 status_code = resp.status_code
@@ -2330,6 +2332,9 @@ def create_runner_app(
                     raw_agent_name = body.get("agent_name")
                     if isinstance(raw_agent_name, str) and raw_agent_name:
                         agent_name = raw_agent_name
+                    raw_harness_override = body.get("harness")
+                    if isinstance(raw_harness_override, str) and raw_harness_override:
+                        harness_override = raw_harness_override
             except Exception:  # noqa: BLE001 — best-effort; created_at falls back to wall time
                 pass
             snapshot = _SessionSnapshot(
@@ -2341,6 +2346,7 @@ def create_runner_app(
                 sub_agent_name=sub_agent_name,
                 parent_session_id=parent_session_id,
                 agent_name=agent_name,
+                harness_override=harness_override,
             )
             if snapshot.ok and snapshot.agent_id is not None:
                 _session_snapshot_cache[session_id] = snapshot
@@ -7691,6 +7697,14 @@ def create_runner_app(
                     f"session {session_id!r} was not found",
                     code=ErrorCode.NOT_FOUND,
                 )
+            # Cache the runtime harness override so _session_harness_name
+            # returns the effective harness even on the on-demand spec path.
+            _snap_harness_override = snapshot.harness_override
+            if _snap_harness_override and _snap_harness_override != "auto":
+                _effective_ho = (
+                    canonicalize_harness(_snap_harness_override) or _snap_harness_override
+                )
+                _session_harness_override_cache[session_id] = _effective_ho
             sub_agent_name = snapshot.sub_agent_name
             if sub_agent_name:
                 _session_sub_agent_names[session_id] = sub_agent_name
