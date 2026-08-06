@@ -5151,6 +5151,13 @@ async def _codex_session_needs_runner_terminal(
     payload = await _session_payload_for_host_spawn_check(server_client, session_id)
     if payload is None:
         return False
+    # Only auto-create for sessions confirmed to be codex-native. A session
+    # with harness="auto" hasn't been routed yet; routing may land it on the
+    # codex SDK harness (not native), so creating a native terminal now would
+    # conflict with the SDK harness that runs after routing fires.
+    harness = payload.get("harness")
+    if harness == "auto" or harness is None:
+        return False
     return True
 
 
