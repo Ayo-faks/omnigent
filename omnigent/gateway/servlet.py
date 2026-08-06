@@ -39,7 +39,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from omnigent.gateway.auth import TokenMinter
+from omnigent.gateway.auth import TokenMinter, databrickscfg_host_for_profile
 from omnigent.gateway.catalog import (
     build_models_response,
     catalog_etag,
@@ -48,7 +48,16 @@ from omnigent.gateway.catalog import (
     picker_options,
     routable_models,
 )
-from omnigent.gateway.state import ServletState, clear_servlet_state, write_servlet_state
+from omnigent.gateway.state import (
+    DEFAULT_GATEWAY_PORT,
+    ServletState,
+    _pid_alive,
+    clear_servlet_state,
+    read_servlet_state,
+    read_session_registry,
+    write_servlet_state,
+    write_session_registry,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -122,6 +131,18 @@ class GatewayServlet:
             limits=_UPSTREAM_LIMITS,
             follow_redirects=False,
         )
+        # Restore sessions registered by a previous daemon: their base URLs
+        # are frozen in live session configs, so the tokens must keep
+        # resolving after a restart.
+        for token, row in read_session_registry().items():
+            self._sessions[token] = _Session(
+                token=token,
+                profile=row["profile"],
+                workspace_host=row["workspace_host"],
+                upstream_base=f"{row['workspace_host']}{_CODEX_GATEWAY_PATH}",
+            )
+        if self._sessions:
+            _logger.info("gateway registry restored: %d session(s)", len(self._sessions))
 
     # ------------------------------------------------------------------ app
 
@@ -164,7 +185,20 @@ class GatewayServlet:
             upstream_base=f"{workspace_host}{_CODEX_GATEWAY_PATH}",
         )
         self._sessions[session.token] = session
+        self._persist_registry()
         return session
+
+    def _persist_registry(self) -> None:
+        """Best-effort write-through of the session registry."""
+        try:
+            write_session_registry(
+                {
+                    token: {"profile": s.profile, "workspace_host": s.workspace_host}
+                    for token, s in self._sessions.items()
+                }
+            )
+        except OSError:
+            _logger.warning("could not persist the gateway session registry", exc_info=True)
 
     # ------------------------------------------------------------- handlers
 
@@ -184,11 +218,19 @@ class GatewayServlet:
         except json.JSONDecodeError:
             return JSONResponse({"error": "invalid JSON"}, status_code=400)
         profile = body.get("profile")
-        workspace_host = body.get("workspace_host")
         if not isinstance(profile, str) or not profile:
             return JSONResponse({"error": "profile required"}, status_code=400)
+        # The payload is a pointer into shared host config: the profile name.
+        # The host is resolved here from ~/.databrickscfg (an explicit
+        # workspace_host is still honored for forward compatibility).
+        workspace_host = body.get("workspace_host")
+        if not isinstance(workspace_host, str) or not workspace_host:
+            workspace_host = databrickscfg_host_for_profile(profile)
         if not isinstance(workspace_host, str) or not workspace_host.startswith("http"):
-            return JSONResponse({"error": "workspace_host required"}, status_code=400)
+            return JSONResponse(
+                {"error": f"no workspace host resolvable for profile {profile!r}"},
+                status_code=400,
+            )
         session = self.register_session(profile, workspace_host.rstrip("/"))
         self.stats["sessions_registered"] += 1
         _logger.info(
@@ -246,6 +288,9 @@ class GatewayServlet:
             and key.lower() not in ("authorization", "content-length")
         }
         headers["authorization"] = f"Bearer {bearer}"
+        # Usage attribution: tag relayed traffic unless the client already
+        # carries its own tags (starlette lowercases header names).
+        headers.setdefault("databricks-ai-gateway-request-tags", '{"source": "omnigent"}')
         body = await request.body()
         upstream_request = self._client.build_request(
             request.method, url, content=body, headers=headers
@@ -383,21 +428,32 @@ class GatewayHandle:
         clear_servlet_state(os.getpid())
 
 
-async def start_gateway_servlet(
-    native_catalog_provider: Callable[[], dict[str, Any] | None] | None = None,
-    port: int = 0,
-) -> GatewayHandle:
+def _port_of(url: str) -> int | None:
     """
-    Start the servlet on loopback and publish its discovery state.
+    Extract the port from a published servlet URL.
 
-    :param native_catalog_provider: See :class:`GatewayServlet`.
-    :param port: Port to bind; ``0`` lets the OS choose.
-    :returns: A handle owning the listener.
-    :raises RuntimeError: When the listener fails to come up.
+    :param url: e.g. ``"http://127.0.0.1:6768"``.
+    :returns: The port, or ``None`` when unparsable.
     """
-    servlet = GatewayServlet(native_catalog_provider)
+    from urllib.parse import urlsplit
+
+    try:
+        return urlsplit(url).port
+    except ValueError:
+        return None
+
+
+async def _serve_on(app: Starlette, port: int) -> tuple[uvicorn.Server, asyncio.Task[None], int]:
+    """
+    Bind and start serving *app* on one loopback port.
+
+    :param app: The servlet ASGI app.
+    :param port: Port to bind; ``0`` lets the OS choose.
+    :returns: ``(server, serve_task, bound_port)``.
+    :raises RuntimeError: When the bind or startup fails.
+    """
     config = uvicorn.Config(
-        servlet.build_app(),
+        app,
         host="127.0.0.1",
         port=port,
         log_level="warning",
@@ -409,16 +465,72 @@ async def start_gateway_servlet(
     deadline = time.monotonic() + _START_TIMEOUT_S
     while not server.started:
         if task.done():
-            raise RuntimeError(f"gateway servlet failed to start: {task.exception()!r}")
+            raise RuntimeError(f"gateway servlet failed to bind port {port}: {task.exception()!r}")
         if time.monotonic() > deadline:
             task.cancel()
-            raise RuntimeError("gateway servlet did not start in time")
+            raise RuntimeError(f"gateway servlet did not start in time on port {port}")
         await asyncio.sleep(0.02)
     sockets = server.servers[0].sockets if server.servers else []
     if not sockets:
         task.cancel()
         raise RuntimeError("gateway servlet bound no socket")
-    bound_port = sockets[0].getsockname()[1]
+    return server, task, sockets[0].getsockname()[1]
+
+
+async def start_gateway_servlet(
+    native_catalog_provider: Callable[[], dict[str, Any] | None] | None = None,
+    port: int | None = None,
+) -> GatewayHandle:
+    """
+    Start the servlet on loopback and publish its discovery state.
+
+    Port policy (``port=None``): rebind the previous state file's port when
+    its owner is dead (session configs freeze the base URL, so a restart must
+    come back on the same port), else the fixed default
+    :data:`DEFAULT_GATEWAY_PORT`, else an OS-assigned fallback. A state file
+    owned by a *live* foreign pid is left alone — a second daemon must not
+    fight the first for its port.
+
+    :param native_catalog_provider: See :class:`GatewayServlet`.
+    :param port: Explicit port to bind (no fallback), or ``None`` for the
+        policy above.
+    :returns: A handle owning the listener.
+    :raises RuntimeError: When no candidate port can be bound.
+    """
+    servlet = GatewayServlet(native_catalog_provider)
+    app = servlet.build_app()
+    if port is not None:
+        candidates = [port]
+    else:
+        candidates = []
+        prior = read_servlet_state(allow_stale=True)
+        if prior is not None:
+            prior_port = _port_of(prior.url)
+            if _pid_alive(prior.pid) and prior.pid != os.getpid():
+                _logger.error(
+                    "gateway servlet state at %s is owned by live pid %d; "
+                    "not contending for its port",
+                    prior.url,
+                    prior.pid,
+                )
+            elif prior_port is not None:
+                candidates.append(prior_port)
+        if DEFAULT_GATEWAY_PORT not in candidates:
+            candidates.append(DEFAULT_GATEWAY_PORT)
+        candidates.append(0)
+    last_error: Exception | None = None
+    server: uvicorn.Server | None = None
+    task: asyncio.Task[None] | None = None
+    bound_port = 0
+    for candidate in candidates:
+        try:
+            server, task, bound_port = await _serve_on(app, candidate)
+            break
+        except RuntimeError as exc:
+            last_error = exc
+            _logger.warning("gateway servlet could not use port %s: %s", candidate, exc)
+    if server is None or task is None:
+        raise RuntimeError(f"gateway servlet failed to start: {last_error}")
     url = f"http://127.0.0.1:{bound_port}"
     write_servlet_state(ServletState(url=url, admin_token=servlet.admin_token, pid=os.getpid()))
     return GatewayHandle(url=url, servlet=servlet, _server=server, _task=task)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
+from omnigent.gateway.auth import databrickscfg_host_for_profile
 from omnigent.gateway.catalog import (
     build_models_response,
     catalog_etag,
@@ -16,7 +19,9 @@ from omnigent.gateway.state import (
     ServletState,
     clear_servlet_state,
     read_servlet_state,
+    read_session_registry,
     write_servlet_state,
+    write_session_registry,
 )
 
 
@@ -122,11 +127,70 @@ def test_catalog_etag_deterministic() -> None:
 def test_servlet_state_roundtrip(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     assert read_servlet_state() is None
-    write_servlet_state(ServletState(url="http://127.0.0.1:5", admin_token="t", pid=123))
+    pid = os.getpid()
+    write_servlet_state(ServletState(url="http://127.0.0.1:5", admin_token="t", pid=pid))
     state = read_servlet_state()
-    assert state == ServletState(url="http://127.0.0.1:5", admin_token="t", pid=123)
+    assert state == ServletState(url="http://127.0.0.1:5", admin_token="t", pid=pid)
     # A different owner must not clear a newer daemon's file.
     clear_servlet_state(owner_pid=999)
     assert read_servlet_state() is not None
-    clear_servlet_state(owner_pid=123)
+    clear_servlet_state(owner_pid=pid)
     assert read_servlet_state() is None
+
+
+def test_servlet_state_stale_owner_reads_absent(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    write_servlet_state(ServletState(url="http://127.0.0.1:6768", admin_token="t", pid=4))
+    monkeypatch.setattr("omnigent.gateway.state._pid_alive", lambda pid: False)
+    # Launchers see no servlet (fall open without a connect timeout)…
+    assert read_servlet_state() is None
+    # …but the next daemon start can still read the port to reclaim it,
+    # and the dead owner's pid still matches for retraction.
+    stale = read_servlet_state(allow_stale=True)
+    assert stale is not None and stale.url.endswith(":6768")
+    clear_servlet_state(owner_pid=4)
+    assert read_servlet_state(allow_stale=True) is None
+
+
+def test_session_registry_roundtrip_and_cap(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    assert read_session_registry() == {}
+    write_session_registry(
+        {
+            "tok1": {"profile": "oss", "workspace_host": "https://a.example"},
+            "bad": {"profile": ""},  # dropped on read
+        }
+    )
+    assert read_session_registry() == {
+        "tok1": {"profile": "oss", "workspace_host": "https://a.example"}
+    }
+    # Cap keeps the newest entries (insertion order).
+    write_session_registry(
+        {f"tok{i}": {"profile": "p", "workspace_host": "https://a.example"} for i in range(600)}
+    )
+    loaded = read_session_registry()
+    assert len(loaded) == 512
+    assert "tok599" in loaded and "tok0" not in loaded
+
+
+def test_registry_restores_into_new_servlet(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    from omnigent.gateway.servlet import GatewayServlet
+
+    first = GatewayServlet()
+    session = first.register_session("oss", "https://ws.example")
+    # A fresh servlet (post-restart) restores the same token → session map.
+    second = GatewayServlet()
+    restored = second._sessions[session.token]
+    assert restored.profile == "oss"
+    assert restored.upstream_base == "https://ws.example/ai-gateway/codex/v1"
+
+
+def test_databrickscfg_host_for_profile(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    assert databrickscfg_host_for_profile("oss") is None
+    (tmp_path / ".databrickscfg").write_text(
+        "[oss]\nhost = https://ws.example/\nauth_type = databricks-cli\n"
+    )
+    assert databrickscfg_host_for_profile("oss") == "https://ws.example"
+    assert databrickscfg_host_for_profile("missing") is None
