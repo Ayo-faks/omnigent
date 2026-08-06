@@ -1284,35 +1284,37 @@ def _deliver_subagent_completion(entry: _SubagentWorkEntry) -> _SubagentDelivery
             reason=_SUBAGENT_DELIVERY_ALREADY_DELIVERED,
         )
     inbox = _session_inboxes_ref.get(entry.parent_session_id)
+    output = entry.output
+    if output is None:
+        output = "[System: sub-agent completed with no output]"
+    payload: _JsonObject = {
+        "type": "sub_agent",
+        "work_id": entry.work_id,
+        "task_id": entry.child_session_id,
+        "handle_id": entry.child_session_id,
+        "conversation_id": entry.child_session_id,
+        "tool_name": entry.agent,
+        "agent": entry.agent,
+        "title": entry.title,
+        "status": entry.status,
+        "output": output,
+    }
     if inbox is None:
+        # Parent inbox not yet created (parent session hasn't had its first turn).
+        # Stash the payload so it's flushed when the inbox is created.
         _logger.warning(
-            "Sub-agent work completed but parent inbox is missing; parent=%s child=%s",
+            "Sub-agent work completed but parent inbox is missing; stashing parent=%s child=%s",
             entry.parent_session_id,
             entry.child_session_id,
         )
+        _pending_inbox_deliveries.setdefault(entry.parent_session_id, []).append(payload)
         return _SubagentDeliveryAck(
             entry=entry,
             delivered=False,
             delivered_now=False,
             reason=_SUBAGENT_DELIVERY_MISSING_PARENT_INBOX,
         )
-    output = entry.output
-    if output is None:
-        output = "[System: sub-agent completed with no output]"
-    inbox.put_nowait(
-        {
-            "type": "sub_agent",
-            "work_id": entry.work_id,
-            "task_id": entry.child_session_id,
-            "handle_id": entry.child_session_id,
-            "conversation_id": entry.child_session_id,
-            "tool_name": entry.agent,
-            "agent": entry.agent,
-            "title": entry.title,
-            "status": entry.status,
-            "output": output,
-        }
-    )
+    inbox.put_nowait(payload)
     entry.delivered = True
     return _SubagentDeliveryAck(
         entry=entry,
@@ -1749,6 +1751,11 @@ _session_event_queues_ref: dict[str, asyncio.Queue[_JsonObject | None]] = {}
 # Module-level ref to _session_inboxes. Populated inside create_runner_app;
 # used by the sub-agent work registry to deliver completions to the parent.
 _session_inboxes_ref: dict[str, asyncio.Queue[_JsonObject]] = {}
+
+# Payloads stashed when _deliver_subagent_completion could not find the parent
+# inbox (inbox not yet created because the parent session hasn't had its first
+# turn). Flushed into the inbox when the parent session initializes.
+_pending_inbox_deliveries: dict[str, list[_JsonObject]] = {}
 
 
 def get_session_agent_id(session_id: str) -> str | None:
@@ -2734,25 +2741,19 @@ def create_runner_app(
         if session_id not in _session_event_queues:
             _session_event_queues[session_id] = asyncio.Queue()
         if session_id not in _session_inboxes:
-            _session_inboxes[session_id] = asyncio.Queue()
-            # Re-deliver any sub-agent completions that arrived while the inbox
-            # was missing (runner restart gap). list_subagent_work reads the
-            # in-memory registry; if the runner just restarted, the server's
-            # _on_runner_connect re-delivery path covers DB-idle children.
-            # This covers the complementary case: child delivered AFTER reconnect
-            # but BEFORE the parent session initialized (inbox didn't exist yet).
-            _pending_deliveries = [
-                e
-                for e in list_subagent_work(session_id)
-                if e.status in _SUBAGENT_TERMINAL_STATUSES and not e.delivered
-            ]
-            for _pending in _pending_deliveries:
+            new_inbox: asyncio.Queue[_JsonObject] = asyncio.Queue()
+            _session_inboxes[session_id] = new_inbox
+            # Flush payloads stashed while the inbox was missing (the child
+            # completed before this parent session had its first turn).
+            stashed = _pending_inbox_deliveries.pop(session_id, None)
+            if stashed:
                 _logger.info(
-                    "session_init: re-delivering stranded sub-agent result parent=%s child=%s",
+                    "session_init: flushing %d stashed sub-agent result(s) for parent=%s",
+                    len(stashed),
                     session_id,
-                    _pending.child_session_id,
                 )
-                _deliver_subagent_completion(_pending)
+                for _payload in stashed:
+                    new_inbox.put_nowait(_payload)
         if session_id not in _session_async_tasks:
             _session_async_tasks[session_id] = {}
         raw_sub_agent_name = body.get("sub_agent_name")
@@ -3305,6 +3306,7 @@ def create_runner_app(
         _session_inboxes.pop(session_id, None)
         _subagent_wake_pending.discard(session_id)
         _subagent_wake_skipped.discard(session_id)
+        _pending_inbox_deliveries.pop(session_id, None)
         _session_sub_agent_names.pop(session_id, None)
         unregister_child_session(session_id)
         unregister_subagent_work_for_session(session_id)
