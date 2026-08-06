@@ -4944,11 +4944,12 @@ def create_runner_app(
                 child_id,
                 _WAKE_POST_MAX_ATTEMPTS,
             )
-        elif _subagent_wake_skipped.discard(parent_id):
+        elif parent_id in _subagent_wake_skipped:
             # A child was skipped by _schedule_subagent_wake while this wake
             # was in-flight (pending flag was set at its schedule time). Fire a
             # follow-up wake immediately rather than waiting for _rewake at
             # the next turn-end, which may never come if the parent is busy.
+            _subagent_wake_skipped.discard(parent_id)
             _subagent_wake_pending.discard(parent_id)
             inbox = _session_inboxes.get(parent_id)
             if inbox is not None and inbox.qsize() > inbox_size_at_schedule:
