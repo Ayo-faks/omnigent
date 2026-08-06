@@ -4520,7 +4520,9 @@ async def _forward_event_to_runner(
                 # Child sessions: use route_session_harness to pick both harness
                 # and model, overriding whatever the orchestrator specified in
                 # sys_session_send.
+                from omnigent.harness_aliases import is_native_harness
                 from omnigent.server.smart_routing import (
+                    _AUTO_ROUTING_HARNESSES,
                     AUTO_NATIVE_ROUTING_HARNESSES,
                     route_session_harness,
                 )
@@ -4530,19 +4532,43 @@ async def _forward_event_to_runner(
                 # candidate set is the parent's family, so a codex session's
                 # children stay on codex. Same family rule the native-subagent
                 # hook path applies to in-harness spawns.
-                _child_family = (
-                    None
-                    if auto_harness_session(conv, _parent_conv)
-                    else harness_family(_resolve_harness(_parent_conv))
+                #
+                # When the parent is in auto-harness mode, preserve the child's
+                # harness class: a child whose spec declares a native harness
+                # routes within the native pool (keeps its terminal); a child
+                # with an SDK spec routes within the SDK pool. This prevents the
+                # router from switching a codex-native child to the codex SDK
+                # harness mid-dispatch (harness mismatch / respawn).
+                _child_spec_harness = conv.harness_override
+                _child_spec_is_native = bool(
+                    _child_spec_harness
+                    and _child_spec_harness != "auto"
+                    and is_native_harness(_child_spec_harness)
                 )
-                # Which families the pick may land on decides whose gateway
-                # backing must hold: a cross-harness child can go either way, a
-                # family-restricted one only where its parent already runs.
-                _child_gateway_harnesses = (
-                    AUTO_NATIVE_ROUTING_HARNESSES
-                    if _child_family is None
-                    else (_resolve_harness(_parent_conv) or "",)
-                )
+                if not auto_harness_session(conv, _parent_conv):
+                    _child_family = harness_family(_resolve_harness(_parent_conv))
+                    _child_harness_candidates: tuple[str, ...] | None = None
+                    _child_gateway_harnesses: tuple[str, ...] = (
+                        _resolve_harness(_parent_conv) or "",
+                    )
+                else:
+                    _child_family = None
+                    # Constrain the routing candidate pool to the child's harness
+                    # class so the router can't switch a native sub-agent to an
+                    # SDK harness (or vice-versa). When the spec harness is "auto"
+                    # or absent, fall through to the default native pool.
+                    _child_harness_candidates = (
+                        AUTO_NATIVE_ROUTING_HARNESSES
+                        if _child_spec_is_native
+                        else _AUTO_ROUTING_HARNESSES
+                        if _child_spec_harness and _child_spec_harness != "auto"
+                        else None  # unresolved: default pool in route_session_harness
+                    )
+                    _child_gateway_harnesses = (
+                        AUTO_NATIVE_ROUTING_HARNESSES
+                        if _child_family is None
+                        else (_resolve_harness(_parent_conv) or "",)
+                    )
                 _child_host = await _session_routing_host(conv, host_store)
                 if _child_host is None and _parent_conv is not None:
                     _child_host = await _session_routing_host(_parent_conv, host_store)
@@ -4557,6 +4583,7 @@ async def _forward_event_to_runner(
                     catalog_session_id=conv.parent_conversation_id,
                     runner_client=runner_client,
                     allowed_family=_child_family,
+                    harness_candidates=_child_harness_candidates,
                     gateway_backed=_child_backed,
                     allow_static_fallback=_child_backed,
                 )
