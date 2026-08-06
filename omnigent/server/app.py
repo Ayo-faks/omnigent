@@ -2267,13 +2267,34 @@ def create_app(
             await _publish_runner_recovered_status(
                 conv.id, conversation_store, require_disconnect_code=True
             )
-            # Re-deliver any sub-agent completion whose external_session_status
-            # idle edge was lost during a server restart. When a child session
-            # has live_status=idle but the parent runner's inbox never received
-            # it (server died between the status write and the runner forward),
-            # re-posting the idle edge here triggers mark_subagent_work_terminal
-            # on the (freshly reconnected) parent runner.
+            # Re-deliver any sub-agent completions whose external_session_status
+            # idle edge was lost while the runner was offline. Two cases:
+            # 1. This session IS the idle child (bound directly to this runner).
+            # 2. This session is a parent — re-deliver its idle children so the
+            #    parent inbox isn't left waiting after the runner reconnects.
+            sessions_to_recheck: list[str] = []
             if conv.kind == "sub_agent" and conv.live_status == "idle":
+                sessions_to_recheck.append(conv.id)
+            elif conv.kind != "sub_agent":
+                # Parent session: fetch its children and recheck idle ones.
+                try:
+                    child_id_map = await asyncio.to_thread(
+                        conversation_store.list_child_conversation_ids_by_parent,
+                        [conv.id],
+                    )
+                    for child_id in child_id_map.get(conv.id, []):
+                        child = await asyncio.to_thread(
+                            conversation_store.get_conversation, child_id
+                        )
+                        if (
+                            child is not None
+                            and child.kind == "sub_agent"
+                            and child.live_status == "idle"
+                        ):
+                            sessions_to_recheck.append(child_id)
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
+            for child_id in sessions_to_recheck:
                 try:
                     from omnigent.server.routes._sessions.orchestration import (
                         _enrich_idle_status_with_subagent_output,
@@ -2281,21 +2302,21 @@ def create_app(
 
                     data: dict[str, object] = {"status": "idle"}
                     data = await _enrich_idle_status_with_subagent_output(
-                        data, "idle", conv.id, conversation_store
+                        data, "idle", child_id, conversation_store
                     )
                     await routed.client.post(
-                        f"/v1/sessions/{conv.id}/events",
+                        f"/v1/sessions/{child_id}/events",
                         json={"type": "external_session_status", "data": data},
                         timeout=5.0,
                     )
                     _logger.info(
                         "_on_runner_connect: re-delivered idle edge for sub-agent child %s",
-                        conv.id,
+                        child_id,
                     )
                 except Exception:  # noqa: BLE001 — best-effort
                     _logger.warning(
                         "_on_runner_connect: failed to re-deliver idle edge for %s",
-                        conv.id,
+                        child_id,
                         exc_info=True,
                     )
 
