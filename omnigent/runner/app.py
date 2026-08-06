@@ -2735,6 +2735,24 @@ def create_runner_app(
             _session_event_queues[session_id] = asyncio.Queue()
         if session_id not in _session_inboxes:
             _session_inboxes[session_id] = asyncio.Queue()
+            # Re-deliver any sub-agent completions that arrived while the inbox
+            # was missing (runner restart gap). list_subagent_work reads the
+            # in-memory registry; if the runner just restarted, the server's
+            # _on_runner_connect re-delivery path covers DB-idle children.
+            # This covers the complementary case: child delivered AFTER reconnect
+            # but BEFORE the parent session initialized (inbox didn't exist yet).
+            _pending_deliveries = [
+                e
+                for e in list_subagent_work(session_id)
+                if e.status in _SUBAGENT_TERMINAL_STATUSES and not e.delivered
+            ]
+            for _pending in _pending_deliveries:
+                _logger.info(
+                    "session_init: re-delivering stranded sub-agent result parent=%s child=%s",
+                    session_id,
+                    _pending.child_session_id,
+                )
+                _deliver_subagent_completion(_pending)
         if session_id not in _session_async_tasks:
             _session_async_tasks[session_id] = {}
         raw_sub_agent_name = body.get("sub_agent_name")
