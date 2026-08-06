@@ -20,7 +20,7 @@
 
 import type { AnyBlock, MessageContentBlock, ToolExecution, ToolResultBlock } from "./blocks";
 import { LIVE_ITEM_PREFIX } from "./blocks";
-import { isSystemUserContent } from "./systemMessage";
+import { isHiddenSystemUserContent, isSystemUserContent } from "./systemMessage";
 import type { RememberScope } from "./types";
 import type { ActiveResponse } from "@/store/types";
 
@@ -368,10 +368,13 @@ export function lastRenderableAssistantIndex(bubbles: readonly Bubble[]): number
  * Blocks that open a fresh top-level bubble group (mirrors the walker's
  * boundary list, minus `routing_decision`: a routing chip precedes its
  * turn's assistant blocks but not the prompt — clamping there would
- * still render a turn without its prompt).
+ * still render a turn without its prompt). Hidden sub-agent wake
+ * markers don't split bubbles, so they aren't a loaded-turn boundary
+ * either — a window starting at one is still mid-turn.
  */
 function isTurnStartBlock(b: AnyBlock): boolean {
-  return b.type === "user_message" || b.type === "compaction" || b.type === "compaction_loading";
+  if (b.type === "user_message") return !isHiddenSystemUserContent(b.content);
+  return b.type === "compaction" || b.type === "compaction_loading";
 }
 
 /**
@@ -588,6 +591,14 @@ function walkBubbles(
     }
 
     if (b.type === "user_message") {
+      // Hidden system markers (sub-agent wakes) render null — emitting
+      // a bubble for one would split the surrounding assistant turn on
+      // an invisible row: separate "Worked for" folds per fragment with
+      // dead spacing between them. Skip them entirely.
+      if (isHiddenSystemUserContent(b.content)) {
+        i += 1;
+        continue;
+      }
       lastBubbleStart = i;
       bubbles.push({
         kind: "user",
@@ -677,8 +688,18 @@ function walkBubbles(
       // silently absorbed into the preceding assistant bubble (they share
       // the previous response's `responseId` because the BlockStream
       // carries `state.responseId` into `ctx()` for all events).
+      if (cur.type === "user_message") {
+        // A hidden marker mid-turn (sub-agents finished, the turn
+        // resumed) is absorbed: the continuation stays in THIS bubble
+        // and folds with it, instead of splitting into a fragment that
+        // folds on its own.
+        if (isHiddenSystemUserContent(cur.content)) {
+          i += 1;
+          continue;
+        }
+        break;
+      }
       if (
-        cur.type === "user_message" ||
         cur.type === "compaction" ||
         cur.type === "compaction_loading" ||
         cur.type === "routing_decision"

@@ -1897,6 +1897,32 @@ describe("buildBubbles — anonymous blocks join the surrounding turn", () => {
     expect(assistants(bubbles)).toHaveLength(2);
   });
 
+  it("absorbs hidden sub-agent wake markers without splitting the turn", () => {
+    // The runtime's full wake text renders null (SystemMessageView hides
+    // subagent_wake), so splitting on it produced two fragment bubbles —
+    // two "Worked for" folds with dead spacing where the marker renders
+    // nothing. The turn stays ONE bubble across the wake; the resumed
+    // output's id drives the bubble's lifecycle.
+    const wake: AnyBlock = {
+      type: "user_message",
+      ctx: ctx({ itemId: "u_wake", responseId: "resp_wake" }),
+      content: [
+        {
+          type: "input_text",
+          text:
+            "[System: sub-agent Explore/Explore finished (completed) — " +
+            "2 results waiting in inbox. Call sys_read_inbox to collect.]",
+        },
+      ],
+    };
+    const bubbles = buildBubbles(
+      [textDone("m1", "resp_a", "dispatching…"), wake, textDone("m2", "resp_b", "resumed")],
+      null,
+    );
+    expect(bubbles).toHaveLength(1);
+    expect(assistants(bubbles)[0]!.responseId).toBe("resp_b");
+  });
+
   it("does not key the bubble off a transient live: preview id", () => {
     // The authoritative item replaces the preview in place; keying off the
     // preview id would remount the bubble at the swap.
@@ -2039,6 +2065,27 @@ describe("clampToLoadedTurnStart", () => {
     const clamped = clampToLoadedTurnStart(blocks, true);
     expect(clamped.blocks).toBe(blocks);
     expect(clamped.partialLead).toBe(true);
+  });
+
+  it("skips a leading hidden wake marker — it isn't a turn boundary", () => {
+    // Hidden sub-agent wakes don't split bubbles, so a window starting
+    // at one is still mid-turn: keep clamping to the next real prompt.
+    const wake: AnyBlock = {
+      type: "user_message",
+      ctx: ctx({ itemId: "u_wake", responseId: "" }),
+      content: [
+        {
+          type: "input_text",
+          text:
+            "[System: sub-agent general-purpose/x finished (completed) — " +
+            "1 result waiting in inbox. Call sys_read_inbox to collect.]",
+        },
+      ],
+    };
+    const blocks = [wake, textDone("m1", "r1"), userMsg("u2"), textDone("m2", "r2")];
+    const clamped = clampToLoadedTurnStart(blocks, true);
+    expect(clamped.partialLead).toBe(false);
+    expect(clamped.blocks).toEqual(blocks.slice(2));
   });
 });
 

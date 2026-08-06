@@ -879,3 +879,67 @@ def test_history_pages_render_only_complete_turns(
     assert fold.count() == 3
     assert page.locator(_ASSISTANT_BUBBLE).count() == 3
     assert t1_fold_label is not None and t1_fold_label.startswith("Worked for")
+
+
+def test_hidden_subagent_wake_marker_does_not_split_the_fold(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """
+    A turn spanning a sub-agent wake settles as ONE bubble and ONE fold.
+
+    Sub-agent auto-wake notices ride in as user-role items but render as
+    nothing (the Agents rail owns that status). Splitting the turn on
+    one produced two fragment bubbles — two "Worked for" folds with dead
+    spacing between them where the marker renders null. The dispatch
+    trace, the wake, and the resumed work must merge into one assistant
+    bubble that folds once, and the marker must not render a row.
+
+    :param page: Playwright page fixture.
+    :param seeded_session: ``(base_url, session_id)`` from the local server.
+    :returns: None.
+    """
+    base_url, session_id = seeded_session
+
+    page.goto(f"{base_url}/c/{session_id}")
+    expect(page.get_by_role("textbox", name="Message the agent")).to_be_visible(timeout=20_000)
+
+    _seed_user_message(base_url, session_id, text="Research the repo.", response_id="wake_t1")
+    _publish_status(base_url, session_id, "running", response_id="wake_t1")
+    _seed_assistant_message(
+        base_url, session_id, text="Dispatching a research sub-agent.", response_id="wake_t1"
+    )
+    _seed_completed_tool_call(
+        base_url,
+        session_id,
+        response_id="wake_t1",
+        call_id="call_wake_1",
+        arguments='{"command": "echo dispatch"}',
+        output="dispatched\n",
+    )
+    _seed_user_message(
+        base_url,
+        session_id,
+        text=(
+            "[System: sub-agent Explore/Explore finished (completed) — "
+            "1 result waiting in inbox. Call sys_read_inbox to collect.]"
+        ),
+        response_id="wake_t2",
+    )
+    _seed_completed_tool_call(
+        base_url,
+        session_id,
+        response_id="wake_t2",
+        call_id="call_wake_2",
+        arguments='{"command": "echo resume"}',
+        output="resumed\n",
+    )
+    _seed_assistant_message(base_url, session_id, text="Research complete.", response_id="wake_t2")
+    _publish_status(base_url, session_id, "idle", response_id="wake_t2")
+
+    fold = page.locator(_FOLD)
+    expect(fold.first).to_be_visible(timeout=15_000)
+    assert fold.count() == 1
+    assert page.locator(_ASSISTANT_BUBBLE).count() == 1
+    # The hidden marker renders nothing — no row for it either.
+    assert page.get_by_text("sub-agent Explore", exact=False).count() == 0

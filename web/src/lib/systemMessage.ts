@@ -131,8 +131,19 @@ const ATTACHED_RE = /\[Attached(?: file)?:\s*([^\]]*)\]\s*/g;
  * :returns: ``true`` for a system marker, ``false`` for a real user message.
  */
 export function isSystemUserContent(content: MessageContentBlock[]): boolean {
+  return parseSystemUserContent(content) !== null;
+}
+
+/**
+ * Parse a user message block's content as a `[System: …]` marker, or
+ * ``null`` for a real user message (attachments always mean real).
+ *
+ * :param content: A user message block's content array.
+ * :returns: The parsed marker, or ``null``.
+ */
+export function parseSystemUserContent(content: MessageContentBlock[]): ParsedSystemMessage | null {
   const hasAttachments = content.some((c) => c.type === "input_image" || c.type === "input_file");
-  if (hasAttachments) return false;
+  if (hasAttachments) return null;
   const text = content
     .filter(
       (c): c is Extract<MessageContentBlock, { type: "input_text" }> => c.type === "input_text",
@@ -141,5 +152,20 @@ export function isSystemUserContent(content: MessageContentBlock[]): boolean {
     .join("")
     .replace(ATTACHED_RE, "")
     .trim();
-  return parseSystemMessage(text) !== null;
+  return parseSystemMessage(text);
+}
+
+/**
+ * True for system markers the UI renders as NOTHING (today: sub-agent
+ * auto-wake notices — model-facing control traffic whose status the
+ * Agents rail already owns). These must not act as transcript
+ * boundaries: splitting an assistant turn on an invisible row yields
+ * phantom bubble splits — separate "Worked for" folds per fragment
+ * with dead spacing between them where the marker renders null.
+ *
+ * :param content: A user message block's content array.
+ * :returns: ``true`` when the marker is a hidden one.
+ */
+export function isHiddenSystemUserContent(content: MessageContentBlock[]): boolean {
+  return parseSystemUserContent(content)?.kind === "subagent_wake";
 }
