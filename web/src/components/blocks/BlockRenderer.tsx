@@ -373,6 +373,84 @@ interface BlockRendererProps {
   lastActivityAtS?: number;
 }
 
+/** The subset of {@link BlockRendererProps} the fold decision reads. */
+type FoldInputs = Pick<
+  BlockRendererProps,
+  | "items"
+  | "sessionStatus"
+  | "turnLifecycle"
+  | "continued"
+  | "isLastAssistant"
+  | "hasPendingElicitation"
+>;
+
+/**
+ * Whether the turn is still in flight. `turnLifecycle` is authoritative
+ * when the bubble knows its own; otherwise the session's status stands in.
+ */
+function isTurnLive(
+  sessionStatus: SessionStatus,
+  turnLifecycle: ActiveResponse["state"] | undefined,
+): boolean {
+  if (turnLifecycle !== undefined) return turnLifecycle === "streaming";
+  return sessionStatus === "running" || sessionStatus === "waiting";
+}
+
+/**
+ * Whether a turn's process trace collapses behind the "Worked for" row:
+ * it did work AND either answered here or continues in a later bubble.
+ * Exempt cards stay visible after the row, and the answer (when this
+ * bubble carries one) renders last at full style. A turn that did no
+ * work, or that dead-ends with no answer anywhere, renders expanded —
+ * there is nothing to demarcate.
+ *
+ * A `continued` bubble additionally has to have RUN something. That is
+ * the shape the flag exists for (narration + tool calls, then a yield to
+ * await sub-agents), and it keeps a stray narration- or reasoning-only
+ * fragment of a split turn from folding into a lone "Worked" row with
+ * nothing behind it.
+ */
+function isFoldEligible(
+  {
+    items,
+    sessionStatus,
+    turnLifecycle,
+    continued = false,
+    isLastAssistant = false,
+    hasPendingElicitation = false,
+  }: FoldInputs,
+  { process, final }: TurnPartition,
+): boolean {
+  return (
+    !isTurnLive(sessionStatus, turnLifecycle) &&
+    // The last assistant bubble of a RUNNING session — or one parked on
+    // a pending elicitation — is (or may be) the live turn even when its
+    // lifecycle reads settled: a mid-turn (re)connect can miss the edge
+    // that names the turn. Never fold it until the session settles AND
+    // the card is answered; the terminal status edge folds it.
+    !(isLastAssistant && (sessionStatus === "running" || hasPendingElicitation)) &&
+    !isProvisionalTrace(items) &&
+    process.length > 0 &&
+    (final.length > 0 || (continued && process.some(isToolItem)))
+  );
+}
+
+/**
+ * Whether the bubble renders NOTHING but the collapsed "Worked for" row:
+ * a turn fragment that yielded mid-task, so its whole trace folds and the
+ * answer lands in a later bubble.
+ *
+ * Such a bubble has no visible content to anchor bubble-level chrome to.
+ * The copy/fork actions would otherwise hang 40px of near-invisible
+ * height off it — but only when the HIDDEN trace happened to contain
+ * narration, so consecutive collapsed rows sat 16px or 56px apart with
+ * nothing on screen to explain the difference.
+ */
+export function rendersOnlyWorkedFold(inputs: FoldInputs): boolean {
+  const partition = partitionTurn(inputs.items);
+  return isFoldEligible(inputs, partition) && partition.final.length === 0;
+}
+
 type ToolRunFragment =
   | {
       kind: "group";
@@ -395,32 +473,12 @@ export function BlockRenderer({
   hasPendingElicitation = false,
   lastActivityAtS,
 }: BlockRendererProps) {
-  const isAgentActive = sessionStatus === "running" || sessionStatus === "waiting";
-  const isTurnLive = turnLifecycle !== undefined ? turnLifecycle === "streaming" : isAgentActive;
-
-  // Fold a turn that did work AND either answered here or continues in a
-  // later bubble: the trace collapses behind the "Worked for" row, exempt
-  // cards stay visible after it, and the answer (when this bubble carries
-  // one) renders last at full style. A turn that did no work, or that
-  // dead-ends with no answer anywhere, renders expanded — there is
-  // nothing to demarcate.
-  const { process, exempt, final, finalStart } = partitionTurn(items);
-  // A `continued` bubble additionally has to have RUN something. That is
-  // the shape the flag exists for (narration + tool calls, then a yield
-  // to await sub-agents), and it keeps a stray narration- or
-  // reasoning-only fragment of a split turn from folding into a lone
-  // "Worked" row with nothing behind it.
-  const foldEligible =
-    !isTurnLive &&
-    // The last assistant bubble of a RUNNING session — or one parked on
-    // a pending elicitation — is (or may be) the live turn even when its
-    // lifecycle reads settled: a mid-turn (re)connect can miss the edge
-    // that names the turn. Never fold it until the session settles AND
-    // the card is answered; the terminal status edge folds it.
-    !(isLastAssistant && (sessionStatus === "running" || hasPendingElicitation)) &&
-    !isProvisionalTrace(items) &&
-    process.length > 0 &&
-    (final.length > 0 || (continued && process.some(isToolItem)));
+  const partition = partitionTurn(items);
+  const { process, exempt, final, finalStart } = partition;
+  const foldEligible = isFoldEligible(
+    { items, sessionStatus, turnLifecycle, continued, isLastAssistant, hasPendingElicitation },
+    partition,
+  );
 
   // Debounce fold APPEARANCE on a live bubble: transient settled reads —
   // a step-wise turn's idle edge between steps, a stray bare idle before
@@ -479,7 +537,7 @@ export function BlockRenderer({
     );
   }
 
-  return renderSequence(items, { liveEdge: isTurnLive, canApprove });
+  return renderSequence(items, { liveEdge: isTurnLive(sessionStatus, turnLifecycle), canApprove });
 }
 
 /**
