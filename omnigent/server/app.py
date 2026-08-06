@@ -2267,6 +2267,37 @@ def create_app(
             await _publish_runner_recovered_status(
                 conv.id, conversation_store, require_disconnect_code=True
             )
+            # Re-deliver any sub-agent completion whose external_session_status
+            # idle edge was lost during a server restart. When a child session
+            # has live_status=idle but the parent runner's inbox never received
+            # it (server died between the status write and the runner forward),
+            # re-posting the idle edge here triggers mark_subagent_work_terminal
+            # on the (freshly reconnected) parent runner.
+            if conv.kind == "sub_agent" and conv.live_status == "idle":
+                try:
+                    from omnigent.server.routes._sessions.orchestration import (
+                        _enrich_idle_status_with_subagent_output,
+                    )
+
+                    data: dict[str, object] = {"status": "idle"}
+                    data = await _enrich_idle_status_with_subagent_output(
+                        data, "idle", conv.id, conversation_store
+                    )
+                    await routed.client.post(
+                        f"/v1/sessions/{conv.id}/events",
+                        json={"type": "external_session_status", "data": data},
+                        timeout=5.0,
+                    )
+                    _logger.info(
+                        "_on_runner_connect: re-delivered idle edge for sub-agent child %s",
+                        conv.id,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort
+                    _logger.warning(
+                        "_on_runner_connect: failed to re-deliver idle edge for %s",
+                        conv.id,
+                        exc_info=True,
+                    )
 
     def _resolve_managed_runner_owner(runner_id: str) -> str | None:
         """Owner for a delegated runner, by its bound session.
