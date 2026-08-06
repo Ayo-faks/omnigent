@@ -1721,6 +1721,46 @@ def _trust_codex_project(codex_home: Path, cwd: Path) -> None:
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
 
+def _gateway_servlet_session(profile: str, workspace_host: str) -> tuple[str, str] | None:
+    """
+    Register this session with the host gateway servlet, if one is running.
+
+    :param profile: Databricks profile from the provider entry.
+    :param workspace_host: Workspace origin (no trailing slash).
+    :returns: ``(base_url, auth_command)`` routing the session through the
+        servlet, or ``None`` to use the direct gateway URL (no servlet
+        running, registration failed, or anything else went wrong).
+    """
+    try:
+        from omnigent.gateway.state import read_servlet_state
+
+        state = read_servlet_state()
+        if state is None:
+            return None
+        import httpx
+
+        response = httpx.post(
+            f"{state.url}/admin/sessions",
+            json={"profile": profile, "workspace_host": workspace_host},
+            headers={"authorization": f"Bearer {state.admin_token}"},
+            timeout=3.0,
+        )
+        if response.status_code != 200:
+            _logger.warning(
+                "gateway servlet registration returned %s; using the direct gateway",
+                response.status_code,
+            )
+            return None
+        token = response.json().get("token")
+        if not isinstance(token, str) or not token:
+            return None
+        _logger.info("native-codex routing via gateway servlet at %s", state.url)
+        return f"{state.url}/g/{token}/v1", f"printf %s {token}"
+    except Exception:  # noqa: BLE001 — any servlet failure falls open to the direct gateway
+        _logger.warning("gateway servlet unavailable; using the direct gateway", exc_info=True)
+        return None
+
+
 def build_codex_native_server(
     *,
     socket_path: Path,
@@ -1800,12 +1840,22 @@ def build_codex_native_server(
                 "with a host visible to the runner process."
             )
         host = host.rstrip("/")
+        # Route through the host-level gateway servlet when one is running:
+        # it implements /models (live workspace catalog) and relays turns
+        # with a freshly minted bearer. Any registration failure falls back
+        # to the direct gateway URL.
+        servlet_session = _gateway_servlet_session(profile, host)
+        if servlet_session is not None:
+            gateway_base_url, gateway_auth_command = servlet_session
+        else:
+            gateway_base_url = _databricks_codex_base_url(host)
+            gateway_auth_command = _databricks_codex_auth_command(host, profile)
         config_overrides.extend(
             _databricks_codex_config_overrides(
                 model=model
                 or model_catalog.resolve_catalog_model("databricks", family="openai").model_id,
-                base_url=_databricks_codex_base_url(host),
-                auth_command=_databricks_codex_auth_command(host, profile),
+                base_url=gateway_base_url,
+                auth_command=gateway_auth_command,
             )
         )
         env["DATABRICKS_HOST"] = host

@@ -1,0 +1,424 @@
+"""The gateway servlet: a loopback provider endpoint for gateway harnesses.
+
+One asyncio listener per host, sized for hundreds of concurrent streaming
+sessions (shared ``httpx.AsyncClient`` pool; chunked passthrough with no
+buffering). Endpoints:
+
+- ``GET  /g/{token}/v1/models`` — **implemented**: the live workspace model
+  catalog in Codex's ``ModelsResponse`` shape, ETag/304 for the CLI's
+  3-minute poll.
+- ``*    /g/{token}/v1/{path}`` — transparent streaming passthrough to the
+  session's workspace gateway, with a freshly minted Databricks bearer
+  replacing the session's local token.
+- ``/admin/*`` — loopback control plane (session registration, catalog for
+  the host tunnel), guarded by the admin bearer published in the state file.
+
+Fail-open posture throughout: a session that cannot register falls back to
+the direct gateway URL at launch; a catalog that cannot build returns 503 so
+Codex keeps its bundled list; upstream errors relay verbatim so the harness
+sees the gateway's real status and body.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import secrets
+import time
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+import uvicorn
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.routing import Route
+
+from omnigent.gateway.auth import TokenMinter
+from omnigent.gateway.catalog import (
+    build_models_response,
+    catalog_etag,
+    dumps_catalog,
+    fetch_codex_service_ids,
+    picker_options,
+    routable_models,
+)
+from omnigent.gateway.state import ServletState, clear_servlet_state, write_servlet_state
+
+_logger = logging.getLogger(__name__)
+
+# End-to-end semantics must survive the relay; hop-by-hop headers must not.
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+    }
+)
+
+_CATALOG_TTL_S = 300.0
+_UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=120.0, pool=30.0)
+_UPSTREAM_LIMITS = httpx.Limits(max_connections=1024, max_keepalive_connections=128)
+_START_TIMEOUT_S = 10.0
+
+# The Databricks codex surface, relative to a workspace origin.
+_CODEX_GATEWAY_PATH = "/ai-gateway/codex/v1"
+
+
+@dataclass(frozen=True)
+class _Session:
+    """One registered harness session.
+
+    :param token: Unguessable path/bearer token identifying the session.
+    :param profile: ``~/.databrickscfg`` profile minting its credentials.
+    :param workspace_host: Workspace origin the session routes to.
+    :param upstream_base: Upstream provider base, e.g.
+        ``"https://x.databricks.com/ai-gateway/codex/v1"``.
+    """
+
+    token: str
+    profile: str
+    workspace_host: str
+    upstream_base: str
+
+
+class GatewayServlet:
+    """Session registry + catalog cache + streaming passthrough."""
+
+    def __init__(
+        self,
+        native_catalog_provider: Callable[[], dict[str, Any] | None] | None = None,
+    ) -> None:
+        """
+        :param native_catalog_provider: Blocking callable returning Codex's
+            own model catalog (``codex debug models`` output) used to enrich
+            served entries; ``None`` disables ``/models`` (passthrough still
+            works).
+        """
+        self.admin_token = secrets.token_urlsafe(24)
+        self.stats: Counter[str] = Counter()
+        self._sessions: dict[str, _Session] = {}
+        self._minter = TokenMinter()
+        self._native_provider = native_catalog_provider
+        self._native_catalog: dict[str, Any] | None = None
+        self._native_loaded = False
+        self._native_lock = asyncio.Lock()
+        # workspace_host -> (payload, etag, expires_at)
+        self._catalog_cache: dict[str, tuple[bytes, str, float]] = {}
+        self._catalog_locks: dict[str, asyncio.Lock] = {}
+        self._client = httpx.AsyncClient(
+            timeout=_UPSTREAM_TIMEOUT,
+            limits=_UPSTREAM_LIMITS,
+            follow_redirects=False,
+        )
+
+    # ------------------------------------------------------------------ app
+
+    def build_app(self) -> Starlette:
+        """
+        :returns: The ASGI app serving admin + per-session routes.
+        """
+        return Starlette(
+            routes=[
+                Route("/healthz", self._healthz, methods=["GET"]),
+                Route("/admin/sessions", self._admin_register, methods=["POST"]),
+                Route("/admin/catalog", self._admin_catalog, methods=["GET"]),
+                Route("/g/{token}/v1/models", self._models, methods=["GET"]),
+                Route(
+                    "/g/{token}/v1/{path:path}",
+                    self._proxy,
+                    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+                ),
+            ]
+        )
+
+    async def aclose(self) -> None:
+        """Release the upstream connection pool."""
+        await self._client.aclose()
+
+    # ------------------------------------------------------- session registry
+
+    def register_session(self, profile: str, workspace_host: str) -> _Session:
+        """
+        Register one harness session and mint its path token.
+
+        :param profile: Databricks profile for credentials.
+        :param workspace_host: Workspace origin (no trailing slash).
+        :returns: The registered session.
+        """
+        session = _Session(
+            token=secrets.token_urlsafe(18),
+            profile=profile,
+            workspace_host=workspace_host,
+            upstream_base=f"{workspace_host}{_CODEX_GATEWAY_PATH}",
+        )
+        self._sessions[session.token] = session
+        return session
+
+    # ------------------------------------------------------------- handlers
+
+    async def _healthz(self, _request: Request) -> Response:
+        return JSONResponse(
+            {"status": "ok", "sessions": len(self._sessions), "stats": dict(self.stats)}
+        )
+
+    def _admin_authorized(self, request: Request) -> bool:
+        return request.headers.get("authorization") == f"Bearer {self.admin_token}"
+
+    async def _admin_register(self, request: Request) -> Response:
+        if not self._admin_authorized(request):
+            return JSONResponse({"error": "admin token required"}, status_code=401)
+        try:
+            body = json.loads(await request.body())
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+        profile = body.get("profile")
+        workspace_host = body.get("workspace_host")
+        if not isinstance(profile, str) or not profile:
+            return JSONResponse({"error": "profile required"}, status_code=400)
+        if not isinstance(workspace_host, str) or not workspace_host.startswith("http"):
+            return JSONResponse({"error": "workspace_host required"}, status_code=400)
+        session = self.register_session(profile, workspace_host.rstrip("/"))
+        self.stats["sessions_registered"] += 1
+        _logger.info(
+            "gateway session registered (%s… -> %s, profile %r)",
+            session.token[:6],
+            session.workspace_host,
+            profile,
+        )
+        return JSONResponse({"token": session.token})
+
+    async def _admin_catalog(self, request: Request) -> Response:
+        if not self._admin_authorized(request):
+            return JSONResponse({"error": "admin token required"}, status_code=401)
+        profile = request.query_params.get("profile") or ""
+        workspace_host = (request.query_params.get("workspace_host") or "").rstrip("/")
+        if not profile or not workspace_host:
+            return JSONResponse({"error": "profile and workspace_host required"}, status_code=400)
+        options = await self.catalog_options(profile=profile, workspace_host=workspace_host)
+        if options is None:
+            return JSONResponse({"error": "catalog unavailable"}, status_code=503)
+        models, routable = options
+        return JSONResponse({"models": models, "routable_models": routable})
+
+    async def _models(self, request: Request) -> Response:
+        session = self._sessions.get(request.path_params["token"])
+        if session is None:
+            return JSONResponse({"error": "unknown gateway session"}, status_code=404)
+        built = await self._catalog_payload(session.profile, session.workspace_host)
+        if built is None:
+            # Fail open: Codex keeps its bundled catalog on 5xx.
+            return JSONResponse({"error": "catalog unavailable"}, status_code=503)
+        payload, etag = built
+        self.stats["models_served"] += 1
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"etag": etag})
+        return Response(payload, media_type="application/json", headers={"etag": etag})
+
+    async def _proxy(self, request: Request) -> Response:
+        session = self._sessions.get(request.path_params["token"])
+        if session is None:
+            return JSONResponse({"error": "unknown gateway session"}, status_code=404)
+        path = request.path_params["path"]
+        try:
+            bearer = await self._minter.bearer(session.profile)
+        except RuntimeError as exc:
+            _logger.warning("credential mint failed for %r: %s", session.profile, exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        url = f"{session.upstream_base}/{path}"
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in _HOP_BY_HOP
+            and key.lower() not in ("authorization", "content-length")
+        }
+        headers["authorization"] = f"Bearer {bearer}"
+        body = await request.body()
+        upstream_request = self._client.build_request(
+            request.method, url, content=body, headers=headers
+        )
+        try:
+            upstream = await self._client.send(upstream_request, stream=True)
+        except httpx.HTTPError as exc:
+            _logger.warning("upstream error for /%s: %s", path, exc)
+            return JSONResponse(
+                {"error": f"gateway servlet upstream error: {exc}"}, status_code=502
+            )
+        self.stats["relayed_requests"] += 1
+        _logger.info(
+            "relay %s /%s -> %s (%s, session %s…)",
+            request.method,
+            path,
+            upstream.status_code,
+            session.workspace_host,
+            session.token[:6],
+        )
+        response_headers = {
+            key: value
+            for key, value in upstream.headers.items()
+            if key.lower() not in _HOP_BY_HOP and key.lower() != "content-length"
+        }
+
+        async def stream() -> Any:
+            # Raw (undecoded) chunks so Content-Encoding stays end-to-end;
+            # yielded as they arrive so SSE first-token latency survives.
+            try:
+                async for chunk in upstream.aiter_raw():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+
+        return StreamingResponse(
+            stream(), status_code=upstream.status_code, headers=response_headers
+        )
+
+    # -------------------------------------------------------------- catalog
+
+    async def catalog_options(
+        self, *, profile: str, workspace_host: str
+    ) -> tuple[list[dict[str, object]], list[str]] | None:
+        """
+        Picker rows + routable ids for a workspace (host-tunnel consumption).
+
+        :param profile: Databricks profile for credentials.
+        :param workspace_host: Workspace origin (no trailing slash).
+        :returns: ``(models, routable_models)`` or ``None`` when the catalog
+            is unavailable.
+        """
+        built = await self._catalog_payload(profile, workspace_host)
+        if built is None:
+            return None
+        models_response = json.loads(built[0])
+        return picker_options(models_response), routable_models(models_response)
+
+    async def _native(self) -> dict[str, Any] | None:
+        if self._native_loaded:
+            return self._native_catalog
+        async with self._native_lock:
+            if self._native_loaded:
+                return self._native_catalog
+            catalog: dict[str, Any] | None = None
+            if self._native_provider is not None:
+                try:
+                    catalog = await asyncio.to_thread(self._native_provider)
+                except Exception:
+                    _logger.exception("native codex catalog probe failed")
+            self._native_catalog = catalog if isinstance(catalog, dict) else None
+            self._native_loaded = True
+            return self._native_catalog
+
+    async def _catalog_payload(
+        self, profile: str, workspace_host: str
+    ) -> tuple[bytes, str] | None:
+        now = time.monotonic()
+        cached = self._catalog_cache.get(workspace_host)
+        if cached is not None and cached[2] > now:
+            return cached[0], cached[1]
+        lock = self._catalog_locks.setdefault(workspace_host, asyncio.Lock())
+        async with lock:
+            cached = self._catalog_cache.get(workspace_host)
+            if cached is not None and cached[2] > time.monotonic():
+                return cached[0], cached[1]
+            native = await self._native()
+            if native is None:
+                return None
+            try:
+                bearer = await self._minter.bearer(profile)
+                service_ids = await fetch_codex_service_ids(self._client, workspace_host, bearer)
+            except (RuntimeError, httpx.HTTPError):
+                _logger.warning(
+                    "model-services listing failed for %s", workspace_host, exc_info=True
+                )
+                return None
+            models_response = build_models_response(service_ids, native)
+            if models_response is None:
+                return None
+            payload = dumps_catalog(models_response)
+            etag = catalog_etag(payload)
+            self._catalog_cache[workspace_host] = (
+                payload,
+                etag,
+                time.monotonic() + _CATALOG_TTL_S,
+            )
+            _logger.info("catalog built for %s: %d models", workspace_host, len(service_ids))
+            return payload, etag
+
+
+@dataclass
+class GatewayHandle:
+    """Running servlet + its lifecycle, held by the host daemon."""
+
+    url: str
+    servlet: GatewayServlet
+    _server: uvicorn.Server
+    _task: asyncio.Task[None]
+
+    async def catalog_options(
+        self, *, profile: str, workspace_host: str
+    ) -> tuple[list[dict[str, object]], list[str]] | None:
+        """Delegate to :meth:`GatewayServlet.catalog_options`."""
+        return await self.servlet.catalog_options(profile=profile, workspace_host=workspace_host)
+
+    async def stop(self) -> None:
+        """Stop the listener, close the pool, and retract the state file."""
+        self._server.should_exit = True
+        try:
+            await asyncio.wait_for(self._task, timeout=5.0)
+        except (TimeoutError, asyncio.CancelledError):
+            self._task.cancel()
+        await self.servlet.aclose()
+        clear_servlet_state(os.getpid())
+
+
+async def start_gateway_servlet(
+    native_catalog_provider: Callable[[], dict[str, Any] | None] | None = None,
+    port: int = 0,
+) -> GatewayHandle:
+    """
+    Start the servlet on loopback and publish its discovery state.
+
+    :param native_catalog_provider: See :class:`GatewayServlet`.
+    :param port: Port to bind; ``0`` lets the OS choose.
+    :returns: A handle owning the listener.
+    :raises RuntimeError: When the listener fails to come up.
+    """
+    servlet = GatewayServlet(native_catalog_provider)
+    config = uvicorn.Config(
+        servlet.build_app(),
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+        lifespan="off",
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(), name="gateway-servlet")
+    deadline = time.monotonic() + _START_TIMEOUT_S
+    while not server.started:
+        if task.done():
+            raise RuntimeError(f"gateway servlet failed to start: {task.exception()!r}")
+        if time.monotonic() > deadline:
+            task.cancel()
+            raise RuntimeError("gateway servlet did not start in time")
+        await asyncio.sleep(0.02)
+    sockets = server.servers[0].sockets if server.servers else []
+    if not sockets:
+        task.cancel()
+        raise RuntimeError("gateway servlet bound no socket")
+    bound_port = sockets[0].getsockname()[1]
+    url = f"http://127.0.0.1:{bound_port}"
+    write_servlet_state(ServletState(url=url, admin_token=servlet.admin_token, pid=os.getpid()))
+    return GatewayHandle(url=url, servlet=servlet, _server=server, _task=task)
