@@ -5128,7 +5128,12 @@ def create_runner_app(
         conv: str,
     ) -> None:
         _subagent_wake_pending.discard(conv)
-        _subagent_wake_skipped.discard(conv)
+        # Do NOT discard _subagent_wake_skipped here: a child may have
+        # completed and set the flag while this wake POST was in-flight.
+        # _post_subagent_wake_notice checks the flag after delivery and
+        # fires a follow-up wake if there are still inbox items. Clearing
+        # the flag at turn-start would race against that check and drop
+        # the follow-up for any child that completed mid-delivery.
         try:
             await _run_turn_bg_setup_and_stream(msg_body, conv)
         except asyncio.CancelledError as exc:
