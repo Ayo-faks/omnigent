@@ -89,11 +89,26 @@ def config_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     global config through this env var, so writing a ``config.yaml`` under
     *tmp_path* exercises the real file-loading path the runtime uses.
 
+    Also neutralizes ambient **CLI-login** detection. Several tests here set
+    ``HOME`` to isolate credentials, but that is not sufficient on macOS:
+    :func:`omnigent.onboarding.ambient._claude_login_detected` falls back to
+    running ``claude auth status``, which reads the **Keychain** — a location no
+    ``HOME`` override can hide. On any signed-in Mac that detection injects a
+    ``kind="subscription"`` anthropic provider which outranks the test's own
+    configured entry and emits no gateway vars, so the assertions die on a bare
+    ``KeyError``. Forcing it ``False`` reproduces the CI box (no ``claude``
+    login) and keeps these tests about the config they actually write. The
+    detection's own behavior is covered by ``tests/onboarding/test_ambient.py``.
+
     :param monkeypatch: Pytest monkeypatch fixture.
     :param tmp_path: Per-test temp directory.
     :returns: The temp directory used as the config home.
     """
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "omnigent.onboarding.ambient._claude_login_detected",
+        lambda: False,
+    )
     return tmp_path
 
 
@@ -255,11 +270,20 @@ def test_detected_ambient_key_routes_with_no_config(
     (``effective_config_with_detected``) and route the claude-sdk harness
     through it, so "first run without configure" works. Failure means a
     fresh machine would emit no gateway vars and the harness would hit
-    api.anthropic.com with no key. HOME is isolated so a real CLI login on
-    the test box can't shadow the env-key detection.
+    api.anthropic.com with no key. HOME is isolated, and ``config_home``
+    additionally stubs CLI-login detection, so a real ``claude`` login on the
+    test box (Keychain-backed on macOS, which HOME cannot hide) can't shadow the
+    env-key detection.
     """
     monkeypatch.setenv("HOME", str(config_home))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # A bare ``ANTHROPIC_API_KEY`` is the whole point of this test, so drop the
+    # companion vars a gateway user's shell exports: detection deliberately
+    # folds ``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_MODEL`` into the entry (a
+    # gateway key 401s against api.anthropic.com), which would otherwise
+    # redirect the assertions below at the developer's own gateway.
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-detected")
     spec = _make_spec(harness="claude-sdk")  # no auth, no config file
 
@@ -385,7 +409,8 @@ def test_claude_sdk_falls_back_to_first_available_anthropic_credential(
     back to it via the same `first_available_provider`, so the brain launches
     instead of hitting api.anthropic.com with no key. Resolved per spawn; the
     config is not mutated; the readout resolver (`for_launch=False`) still
-    returns `None`. HOME is isolated so a real CLI login can't shadow the test.
+    returns `None`. HOME is isolated, and ``config_home`` additionally stubs
+    CLI-login detection, so a real ``claude`` login can't shadow the test.
     """
     monkeypatch.setenv("HOME", str(config_home))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

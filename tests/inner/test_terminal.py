@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -366,9 +368,27 @@ async def test_is_alive_true_when_pane_live(
     assert instance.running is True
 
 
+@pytest.fixture()
+def short_tmp_parent() -> Iterator[Path]:
+    """Short-pathed tmpdir under ``/tmp``. ``tmp_path`` overflows AF_UNIX on macOS.
+
+    Only the real-tmux test needs this: macOS caps a Unix socket path at 104
+    bytes and its ``$TMPDIR`` is already ~48, so pytest's ``tmp_path`` (which
+    embeds the test name) makes ``tmux -S`` fail with "File name too long"
+    before the server ever starts. The stubbed tests never bind their socket,
+    so they keep using ``tmp_path``. Mirrors ``tests/inner/egress/test_relay.py``.
+    """
+    parent = Path("/tmp") / f"omni-term-{uuid.uuid4().hex[:8]}"
+    parent.mkdir(mode=0o700)
+    try:
+        yield parent
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
+
+
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="requires a real tmux binary")
 @pytest.mark.asyncio
-async def test_server_survives_inner_process_exit_real_tmux(tmp_path: Path) -> None:
+async def test_server_survives_inner_process_exit_real_tmux(short_tmp_parent: Path) -> None:
     """
     The private tmux server outlives an inner-process exit (issue #540).
 
@@ -379,19 +399,19 @@ async def test_server_survives_inner_process_exit_real_tmux(tmp_path: Path) -> N
     up (so control commands keep working and the dead pane stays capturable)
     while ``is_alive`` still reports the inner process as gone.
 
-    :param tmp_path: Temporary directory for the real tmux socket.
+    :param short_tmp_parent: Short-pathed directory for the real tmux socket.
     """
     instance = TerminalInstance(
         name="bash",
         session_key="s1",
-        socket_path=tmp_path / "tmux.sock",
-        private_dir=tmp_path,
+        socket_path=short_tmp_parent / "tmux.sock",
+        private_dir=short_tmp_parent,
         command="sh",
         args=["-c", "exit 0"],
         keep_alive_after_exit=True,
     )
     try:
-        await instance.launch(cwd=tmp_path)
+        await instance.launch(cwd=short_tmp_parent)
 
         # Wait for the inner `sh` to exit. is_alive() flips running -> False
         # once the pane is dead.

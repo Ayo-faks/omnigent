@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import shutil
 import socket
 import ssl
+import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +23,23 @@ from omnigent.inner.egress.ca import ensure_ca, ensure_ca_bundle
 from omnigent.inner.egress.certs import HostCertCache
 from omnigent.inner.egress.proxy import EgressProxy
 from omnigent.inner.egress.rules import parse_rules
+
+
+@pytest.fixture()
+def short_tmp_parent() -> Iterator[Path]:
+    """Short-pathed tmpdir under ``/tmp``. ``tmp_path`` overflows AF_UNIX on macOS.
+
+    macOS caps a Unix socket path at 104 bytes and its ``$TMPDIR`` is already
+    ~48, so pytest's ``tmp_path`` (which embeds the test name) overflows before
+    a socket file is even appended. Mirrors the fixture in
+    ``tests/inner/egress/test_relay.py``.
+    """
+    parent = Path("/tmp") / f"omni-proxy-{uuid.uuid4().hex[:8]}"
+    parent.mkdir(mode=0o700)
+    try:
+        yield parent
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 @pytest.fixture()
@@ -51,13 +71,13 @@ async def test_proxy_start_stop_tcp(
 
 
 @pytest.mark.asyncio
-async def test_proxy_start_unix(ca_paths: tuple[Path, Path, Path], tmp_path: Path) -> None:
+async def test_proxy_start_unix(ca_paths: tuple[Path, Path, Path], short_tmp_parent: Path) -> None:
     """Proxy can listen on a Unix socket."""
     cert_path, key_path, _ = ca_paths
     rules = parse_rules(["GET example.com/**"])
     proxy = EgressProxy(rules, cert_path, key_path)
 
-    sock_path = tmp_path / "test.sock"
+    sock_path = short_tmp_parent / "test.sock"
     await proxy.start_unix(sock_path)
 
     # Socket file is created

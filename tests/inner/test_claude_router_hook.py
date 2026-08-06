@@ -8,9 +8,27 @@ from typing import Any
 
 import pytest
 
-from omnigent.claude_model_vocabulary import claude_model_alias
+from omnigent.claude_model_vocabulary import ALIAS_MODEL_ENV_VARS, claude_model_alias
 from omnigent.inner.hook_scripts import claude_router_hook, subagent_router
 from tests.inner.conftest import advertise_relay_tools, advertise_router
+
+
+@pytest.fixture(autouse=True)
+def _unpinned_alias_vocabulary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the developer's own alias pinning so translation is deterministic.
+
+    ``claude_model_alias`` falls back to :data:`os.environ` when the session
+    records no vocabulary, and a MISMATCHED pin makes it return ``None`` by
+    design (it refuses to resolve an alias to a model nobody routed to). So a
+    developer whose shell pins ``ANTHROPIC_DEFAULT_SONNET_MODEL`` — anyone
+    driving Claude through a gateway — silently gets no translation, and tests
+    asserting a bare ``"sonnet"`` fail locally while passing in CI, where these
+    are unset. Clearing them reproduces CI's unpinned vocabulary; the tests that
+    exercise pinning pass an explicit mapping or a bridge ``model_env``, never
+    the process env, so nothing here is masked.
+    """
+    for env_var in ALIAS_MODEL_ENV_VARS.values():
+        monkeypatch.delenv(env_var, raising=False)
 
 
 def _payload(
@@ -138,8 +156,7 @@ def test_untranslatable_model_allows_spawn_unchanged(
 ) -> None:
     """An id with no Agent-tool alias must not be injected — the CLI 400s."""
     router_dir = advertise_router(tmp_path)
-    for env_var in ("ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL"):
-        monkeypatch.delenv(env_var, raising=False)
+    # Alias pinning is already cleared by ``_unpinned_alias_vocabulary``.
     out, _requests = _run_hook(
         monkeypatch,
         router_dir,

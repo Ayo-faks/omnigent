@@ -40,8 +40,16 @@ def _isolate_global_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     Tests that need a specific global config write their own config.yaml
     into a separate temp dir and set OMNIGENT_CONFIG_HOME themselves —
     that setenv call wins because monkeypatch applies in call order.
+
+    ``HOME`` is redirected for the same reason: ambient detection also reads
+    ``~/.codex/config.toml``, which is OUTSIDE ``OMNIGENT_CONFIG_HOME``. A
+    developer with a codex CLI provider configured there gets it detected as a
+    ``cli-config`` provider that can only drive the ``codex`` harness, so these
+    tests die on an unrelated ``OmnigentError`` instead of asserting their env
+    vars. CI has no such file, which is why this only bites locally.
     """
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def _make_spec(

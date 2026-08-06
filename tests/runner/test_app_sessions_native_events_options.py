@@ -15,6 +15,7 @@ from omnigent import (
     kiro_native_bridge,
     qwen_native_bridge,
 )
+from omnigent.claude_model_vocabulary import ALIAS_MODEL_ENV_VARS
 from omnigent.claude_native_bridge import (
     bridge_dir_for_bridge_id,
     bridge_dir_for_conversation_id,
@@ -29,6 +30,23 @@ from tests.runner.conftest import (
     _ScriptedHarnessClient,
 )
 from tests.runner.helpers import NullServerClient
+
+
+@pytest.fixture(autouse=True)
+def _unpinned_alias_vocabulary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the developer's own alias pinning so the /model picker is deterministic.
+
+    The Claude picker's spellable vocabulary is read from the launch env's
+    ``ANTHROPIC_DEFAULT_*_MODEL`` pins (see
+    :func:`omnigent.claude_model_vocabulary.alias_pins`). A developer whose
+    shell pins those — anyone driving Claude through a gateway — gets a picker
+    that can spell real models, so a model-change these tests expect to fail
+    with ``claude_native_model_failed`` instead comes back
+    ``claude_native_model_unsupported``. CI has no pins, which is why this only
+    bites locally. Tests here that exercise pinning set their own env.
+    """
+    for env_var in ALIAS_MODEL_ENV_VARS.values():
+        monkeypatch.delenv(env_var, raising=False)
 
 
 @pytest.mark.asyncio

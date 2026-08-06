@@ -212,6 +212,17 @@ def test_baseline_denylist_has_no_duplicates() -> None:
 # ---------------------------------------------------------------------------
 
 
+# seccomp is a Linux kernel facility: there is no ``prctl``/``seccomp_load`` to
+# call on macOS (the child dies with ``dlsym(RTLD_DEFAULT, prctl): symbol not
+# found``), so these probes can only assert anything on Linux. The denylist
+# CONTENT tests above stay ungated — they are pure data checks and run
+# everywhere.
+requires_seccomp = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="seccomp filters are a Linux kernel facility",
+)
+
+
 def _run_in_child(probe: str) -> int:
     """
     Fork-exec a fresh Python with *probe* and return the child exit code.
@@ -234,6 +245,7 @@ def _run_in_child(probe: str) -> int:
     return -1
 
 
+@requires_seccomp
 def test_apply_baseline_denylist_blocks_ptrace_in_child() -> None:
     """
     :func:`apply_baseline_denylist` actually engages the kernel:
@@ -276,6 +288,7 @@ def test_apply_baseline_denylist_blocks_ptrace_in_child() -> None:
     )
 
 
+@requires_seccomp
 def test_apply_baseline_denylist_does_not_break_subprocess_basics() -> None:
     """
     A child that loads the baseline can still ``read``, ``write``,
@@ -314,6 +327,7 @@ def test_apply_baseline_denylist_does_not_break_subprocess_basics() -> None:
     )
 
 
+@requires_seccomp
 def test_arg_filter_blocks_socket_family_only() -> None:
     """
     ``SCMP_CMP_EQ`` on ``socket(domain, ...)`` returns ``EPERM`` for
@@ -361,6 +375,7 @@ def test_arg_filter_blocks_socket_family_only() -> None:
     assert rc == 0
 
 
+@requires_seccomp
 def test_masked_eq_filter_blocks_clone_with_namespace_bit() -> None:
     """
     ``SCMP_CMP_MASKED_EQ`` on ``clone(flags, ...)`` returns ``EPERM``
@@ -402,6 +417,7 @@ def test_masked_eq_filter_blocks_clone_with_namespace_bit() -> None:
     assert rc == 0
 
 
+@requires_seccomp
 def test_unknown_syscall_silently_skipped() -> None:
     """
     A rule referencing a syscall name libseccomp can't resolve on

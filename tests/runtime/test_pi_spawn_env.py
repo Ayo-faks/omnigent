@@ -26,10 +26,17 @@ def _isolate_global_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     this file so the developer's real ``~/.omnigent/config.yaml`` (e.g.
     a default provider) cannot hijack the legacy-profile path under test.
 
+    ``HOME`` is redirected for the same reason: ambient detection also reads
+    ``~/.codex/config.toml``, which is OUTSIDE ``OMNIGENT_CONFIG_HOME``. A
+    developer with a codex CLI provider configured there gets it detected and
+    ranked ahead of the path under test, failing the run locally while CI —
+    which has no such file — passes.
+
     :param monkeypatch: Pytest monkeypatch fixture.
     :param tmp_path: Temporary directory for the isolated config.
     """
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
         "omnigent.runtime.workflow._resolve_catalog_default_model",
         lambda provider_name, family, *, context: f"catalog-{provider_name}-{family}-default",

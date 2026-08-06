@@ -158,6 +158,16 @@ async def test_create_session_threads_workspace_to_pi_cwd(
 ) -> None:
     """Pi pre-spawn receives the session workspace, not the bundle dir."""
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
+    # Isolate HOME too: the pi pre-spawn resolves credentials through ambient
+    # detection, which reads ~/.codex/config.toml and ~/.databrickscfg — both
+    # OUTSIDE OMNIGENT_CONFIG_HOME. On a developer box those make the pre-spawn
+    # 400 before any cwd is threaded (a cli-config provider it cannot use, or
+    # several ~/.databrickscfg profiles matching one host, which the SDK refuses
+    # to disambiguate). CI has neither file, which is why this only bites locally.
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
     session_id = "18f39ab73f49285e4dab0c80ff7b8455"
     runner_workspace = tmp_path / "runner-workspace"
     runner_workspace.mkdir()
@@ -226,6 +236,16 @@ async def test_create_session_threads_runner_workspace_to_pi_cwd_when_session_wo
 ) -> None:
     """Pi pre-spawn falls back to runner workspace when session workspace is empty."""
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
+    # Isolate HOME too: the pi pre-spawn resolves credentials through ambient
+    # detection, which reads ~/.codex/config.toml and ~/.databrickscfg — both
+    # OUTSIDE OMNIGENT_CONFIG_HOME. On a developer box those make the pre-spawn
+    # 400 before any cwd is threaded (a cli-config provider it cannot use, or
+    # several ~/.databrickscfg profiles matching one host, which the SDK refuses
+    # to disambiguate). CI has neither file, which is why this only bites locally.
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
     session_id = "3f1d20a97a7d0ba93e02cf17aeb92367"
     runner_workspace = tmp_path / "runner-workspace"
     runner_workspace.mkdir()
