@@ -7088,6 +7088,10 @@ async def _create_session_from_existing_agent(
             _parent_for_routing is not None
             and subagent_routing_enabled(_parent_for_routing.subagent_routing_override)
             and auto_harness_session(_parent_for_routing)
+            # When the runner already supplied the sub-agent's spec harness
+            # (not "auto" and not absent), keep it — the runner knows the
+            # sub-agent's declared harness and routing should not override it.
+            and (body.harness_override is None or body.harness_override == "auto")
         ):
             try:
                 await asyncio.to_thread(_validated_harness_override_executor_type, agent)
