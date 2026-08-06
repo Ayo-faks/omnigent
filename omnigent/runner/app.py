@@ -1752,6 +1752,10 @@ _session_event_queues_ref: dict[str, asyncio.Queue[_JsonObject | None]] = {}
 # used by the sub-agent work registry to deliver completions to the parent.
 _session_inboxes_ref: dict[str, asyncio.Queue[_JsonObject]] = {}
 
+# Per-session harness_override: effective runtime harness when it differs from
+# the spec (e.g. Smart Routing redirected codex-native → codex SDK).
+_session_harness_override_cache: dict[str, str] = {}
+
 # Payloads stashed when _deliver_subagent_completion could not find the parent
 # inbox (inbox not yet created because the parent session hasn't had its first
 # turn). Flushed into the inbox when the parent session initializes.
@@ -2682,6 +2686,17 @@ def create_runner_app(
                     _warn_unresolved_sub_agent(session_id, _sa_name_assign)
             harness_name = spec.executor.config.get("harness") or spec.executor.type
             harness_name = canonicalize_harness(harness_name) or harness_name
+            # A per-session harness_override (e.g. from Smart Routing) wins
+            # over the spec's declared harness. Store the effective runtime
+            # harness so _session_harness_name reflects what actually runs.
+            _harness_override = (
+                init_context.envelope.snapshot.harness_override
+                if init_context.envelope is not None
+                else None
+            )
+            if _harness_override and _harness_override != "auto":
+                _effective = canonicalize_harness(_harness_override) or _harness_override
+                _session_harness_override_cache[session_id] = _effective
 
             _start_verdict = await _evaluate_agent_start_gate(spec, harness_name)
             if _start_verdict is not None:
@@ -3307,6 +3322,7 @@ def create_runner_app(
         _subagent_wake_pending.discard(session_id)
         _subagent_wake_skipped.discard(session_id)
         _pending_inbox_deliveries.pop(session_id, None)
+        _session_harness_override_cache.pop(session_id, None)
         _session_sub_agent_names.pop(session_id, None)
         unregister_child_session(session_id)
         unregister_subagent_work_for_session(session_id)
@@ -3784,6 +3800,11 @@ def create_runner_app(
         )
 
     def _session_harness_name(conv_id: str) -> str | None:
+        # Effective runtime harness wins over the spec (e.g. Smart Routing
+        # redirected the session to a different harness family).
+        override = _session_harness_override_cache.get(conv_id)
+        if override is not None:
+            return override
         spec = _session_spec_cache.get(conv_id)
         if spec is None:
             return None
