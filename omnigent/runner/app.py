@@ -7678,6 +7678,12 @@ def create_runner_app(
             if session_id in _session_spec_cache:
                 return _session_spec_cache[session_id]
             snapshot = await _session_snapshot(session_id)
+            _logger.info(
+                "_resolve_session_spec_entry: session=%s harness=%r ok=%s",
+                session_id,
+                snapshot.harness_override,
+                snapshot.ok,
+            )
             if not snapshot.ok:
                 raise OmnigentError(
                     f"session spec resolver: GET /v1/sessions/{session_id} "
