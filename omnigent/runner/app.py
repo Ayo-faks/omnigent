@@ -5300,6 +5300,18 @@ def create_runner_app(
                 else cached_spec
             )
 
+        # Ensure _session_harness_override_cache is populated for this session.
+        # This covers the path where spec was resolved on-demand (no prior
+        # create_session call) and _resolve_session_spec_entry wasn't used.
+        if conv not in _session_harness_override_cache:
+            try:
+                _snap = await _session_snapshot(conv)
+                if _snap.harness_override and _snap.harness_override != "auto":
+                    _eff = canonicalize_harness(_snap.harness_override) or _snap.harness_override
+                    _session_harness_override_cache[conv] = _eff
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+
         harness_name: str | None = None
         spawn_env: dict[str, str] | None = None
         instructions: str | None = None
