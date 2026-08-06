@@ -3751,15 +3751,31 @@ def create_runner_app(
         if existing is not None:
             return existing
         if conv_id in _drained_delivered_subagent_children:
+            _logger.info("_ensure_subagent_work_entry: %s already drained", conv_id)
             return None
         try:
             snapshot = await _session_snapshot(conv_id)
         except Exception:  # noqa: BLE001 — best-effort recovery
+            _logger.warning(
+                "_ensure_subagent_work_entry: snapshot fetch failed for %s", conv_id, exc_info=True
+            )
             return None
         parent_id = snapshot.parent_session_id
         if not parent_id or parent_id == conv_id:
+            _logger.info(
+                "_ensure_subagent_work_entry: %s has no valid parent (parent=%r)",
+                conv_id,
+                parent_id,
+            )
             return None
         agent = snapshot.sub_agent_name or snapshot.agent_name or "sub-agent"
+        _logger.info(
+            "_ensure_subagent_work_entry: recovering parent=%s child=%s agent=%r inbox=%s",
+            parent_id,
+            conv_id,
+            agent,
+            parent_id in _session_inboxes,
+        )
         return register_subagent_work(
             parent_session_id=parent_id,
             child_session_id=conv_id,
