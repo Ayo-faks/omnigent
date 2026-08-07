@@ -1386,7 +1386,7 @@ async def _drive_model_effort(base_url: str, session_id: str) -> None:
                 )
 
             await page.route(
-                f"**/v1/hosts/{_HOST_ID}/harnesses/claude-native/model-options",
+                f"**/v1/hosts/{_HOST_ID}/model-options?harness=claude-native",
                 handle_model_options,
             )
 
@@ -1479,7 +1479,7 @@ async def _drive_codex_model(base_url: str, session_id: str) -> None:
 
             await page.route(re.compile(r"/v1/sessions\?.*kind=any"), handle_agent_scan)
             await page.route(
-                f"**/v1/hosts/{_HOST_ID}/harnesses/codex-native/model-options",
+                f"**/v1/hosts/{_HOST_ID}/model-options?harness=codex-native",
                 handle_model_options,
             )
             await page.add_init_script(

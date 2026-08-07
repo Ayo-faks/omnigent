@@ -738,3 +738,38 @@ async def test_host_model_options_query_form_normalizes_standard_rows(
         ],
         "routable_models": ["gpt-5.6-sol", "gpt-5.5"],
     }
+
+
+async def test_host_model_options_query_form_passes_claude_rows_unchanged(
+    fs_setup: tuple[
+        FastAPI,
+        HostRegistry,
+        ApplicationCommunicator,
+        dict[str, dict[str, Any]],
+        asyncio.Task[None],
+    ],
+) -> None:
+    """Non-codex rows survive the query form's normalization byte-identically.
+
+    The standard-row normalization is shape-preserving for the host's claude
+    rows (no nulls, no malformed entries), so switching the web to the query
+    form changes nothing for non-codex harnesses.
+    """
+    app, _reg, _comm, replies, _drain = fs_setup
+    claude_rows = [
+        {
+            "id": "sonnet",
+            "model": "system.ai.claude-sonnet-4-6[1m]",
+            "displayName": "Sonnet 4.6",
+        }
+    ]
+    replies["model:claude-native"] = {"models": claude_rows}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(
+            f"/v1/hosts/{_HOST_ID}/model-options",
+            params={"harness": "claude-native"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"models": claude_rows, "routable_models": []}

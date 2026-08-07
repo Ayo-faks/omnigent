@@ -27,6 +27,8 @@ export const EFFORT_UNAVAILABLE_PLACEHOLDER = "—";
 export interface RoutingModelOption {
   id: string;
   label: string;
+  /** Muted sub-line under the label, e.g. the gateway routing marker. */
+  description?: string;
 }
 
 /**
@@ -95,7 +97,14 @@ export function RoutingModelSelect({
             data-model-id={m.id}
             data-active={activeModelId === m.id ? "true" : undefined}
           >
-            {m.label}
+            {m.description ? (
+              <span className="flex flex-col items-start">
+                <span>{m.label}</span>
+                <span className="text-xs text-muted-foreground">{m.description}</span>
+              </span>
+            ) : (
+              m.label
+            )}
           </SelectItem>
         ))}
         {children}
