@@ -260,8 +260,9 @@ def test_glm_arm_row_is_verbatim_and_never_default() -> None:
 
 
 def test_normalize_relay_model_body_translates_bare_arms() -> None:
-    from omnigent.gateway.catalog import normalize_relay_model_body
     import json as _json
+
+    from omnigent.gateway.catalog import normalize_relay_model_body
 
     out = normalize_relay_model_body(b'{"model": "glm-5-2", "stream": true}')
     assert _json.loads(out)["model"] == "system.ai.glm-5-2"
