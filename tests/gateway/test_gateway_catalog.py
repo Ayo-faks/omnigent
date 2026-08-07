@@ -398,6 +398,7 @@ def test_synthesized_arm_entries_do_not_advertise_code_mode() -> None:
     by_slug = {m["slug"]: m for m in response["models"]}
     assert by_slug["glm-5-2"]["tool_mode"] is None
     assert by_slug["glm-5-2"]["multi_agent_version"] is None
+    assert by_slug["glm-5-2"]["supports_search_tool"] is False
     # Native entries keep their own metadata untouched.
     assert by_slug["gpt-5.6-sol"]["tool_mode"] == _native_catalog()["models"][0]["tool_mode"]
 

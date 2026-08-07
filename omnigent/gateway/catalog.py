@@ -294,6 +294,11 @@ def build_models_response(
             # tools.
             entry["tool_mode"] = None
             entry["multi_agent_version"] = None
+            # ``supports_search_tool`` defers the whole tool set behind
+            # codex's tool-search mechanism (tools leave the request and are
+            # discovered on demand) — another GPT-only protocol an arm
+            # cannot drive. Off ⇒ direct tools stay in the request.
+            entry["supports_search_tool"] = False
         models.append(entry)
     return {"models": models}
 
