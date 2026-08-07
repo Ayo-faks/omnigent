@@ -194,3 +194,63 @@ def test_databrickscfg_host_for_profile(tmp_path, monkeypatch) -> None:
     )
     assert databrickscfg_host_for_profile("oss") == "https://ws.example"
     assert databrickscfg_host_for_profile("missing") is None
+
+
+def test_fetch_includes_translated_arms(monkeypatch) -> None:
+    """Chat-only ids in the translated-arm set are served; other chat-only
+    ids stay excluded."""
+    import asyncio
+
+    from omnigent.gateway.catalog import fetch_codex_service_ids
+
+    payload = {
+        "model_services": [
+            {
+                "name": "model-services/system.ai.gpt-5-6-sol",
+                "supported_api_types": ["mlflow/v1/chat/completions", "openai/v1/responses"],
+            },
+            {
+                "name": "model-services/system.ai.glm-5-2",
+                "supported_api_types": ["mlflow/v1/chat/completions"],
+            },
+            {
+                "name": "model-services/system.ai.llama-4-maverick",
+                "supported_api_types": ["mlflow/v1/chat/completions"],
+            },
+        ]
+    }
+
+    class _Resp:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict:
+            return payload
+
+    class _Client:
+        async def get(self, url: str, params: dict, headers: dict) -> _Resp:
+            return _Resp()
+
+    ids = asyncio.run(fetch_codex_service_ids(_Client(), "https://ws.example", "tok"))
+    assert ids == ["system.ai.glm-5-2", "system.ai.gpt-5-6-sol"]
+
+
+def test_glm_arm_row_is_verbatim_and_never_default() -> None:
+    response = build_models_response(
+        ["system.ai.gpt-5-6-sol", "system.ai.glm-5-2"], _native_catalog()
+    )
+    assert response is not None
+    slugs = [m["slug"] for m in response["models"]]
+    assert slugs == ["gpt-5.6-sol", "system.ai.glm-5-2"]
+    glm = response["models"][1]
+    assert glm["display_name"] == "glm-5-2"
+    assert [lvl["effort"] for lvl in glm["supported_reasoning_levels"]] == [
+        "low",
+        "medium",
+        "high",
+    ]
+    options = picker_options(response)
+    assert options[0]["isDefault"] is True and options[0]["id"] == "gpt-5.6-sol"
+    assert options[1] == {"id": "system.ai.glm-5-2", "displayName": "glm-5-2"}
