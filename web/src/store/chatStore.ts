@@ -63,8 +63,8 @@ import {
   bindOnlyOnlineRunner,
   createSession,
   getSessionSlim,
-  fetchInitialHistoryWindow,
   fetchSessionItemsPage,
+  INITIAL_WINDOW_ITEMS,
   interrupt as interruptSession,
   openSessionStream,
   postEvent,
@@ -313,6 +313,13 @@ export interface ChatState {
    */
   sessionStatus: SessionStatus;
   backgroundTaskCount: number;
+  /**
+   * Why a still-`running` session is parked, e.g. "permission prompt".
+   * Terminal-backed agents can block on a dialog the web UI does not
+   * mirror, so the working indicator names it instead of shimmering with
+   * no explanation. `null` whenever the session is not parked.
+   */
+  blockedOn: string | null;
   /**
    * Whether the active session is a native-terminal wrapper
    * (claude-native / codex-native), derived from the `omnigent.wrapper`
@@ -934,6 +941,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   status: "idle",
   sessionStatus: "idle",
   backgroundTaskCount: 0,
+  blockedOn: null,
   isNativeTerminalSession: false,
   nativeVendorOwnsModel: false,
   boundAgentId: null,
@@ -1227,6 +1235,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // count is sticky (see the `session_status` handler) precisely so a
       // trailing idle can't wipe it, so it has to be cleared explicitly here.
       backgroundTaskCount: 0,
+      blockedOn: null,
     }));
 
     // Pin the destination before joining the send chain: a stalled prior
@@ -1375,7 +1384,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // instead of being left on a silent, empty composer.
             set((s) => ({ blocks: [...s.blocks, makeClientErrorBlock(message, code)] }));
           }
-          set({ status: "idle", sessionStatus: "idle", backgroundTaskCount: 0 });
+          set({ status: "idle", sessionStatus: "idle", backgroundTaskCount: 0, blockedOn: null });
         }
       }
     } finally {
@@ -1535,6 +1544,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         status: "idle",
         sessionStatus: "idle",
         backgroundTaskCount: 0,
+        blockedOn: null,
       };
       if (s.activeResponse?.state === "streaming") {
         patch.activeResponse = {
@@ -1550,7 +1560,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // genuinely still running may briefly revert the sidebar dot — the helper's
     // "never fights the poller" contract doesn't hold here. Self-corrects on the
     // real idle event.
-    patchConversationStatusInCache(sessionId, "idle", get().backgroundTaskCount);
+    patchConversationStatusInCache(sessionId, "idle");
     // Mirror the session.status handler: a sub-agent's row lives in its parent's
     // child-sessions list, not the sidebar, so refresh the rail in lockstep.
     const snapshot = queryClient?.getQueryData<Session>(["session", sessionId]);
@@ -1626,6 +1636,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         status: "idle",
         sessionStatus: "idle",
         backgroundTaskCount: 0,
+        blockedOn: null,
         isNativeTerminalSession: false,
         nativeVendorOwnsModel: false,
         boundAgentId: null,
@@ -2309,16 +2320,17 @@ async function bindStream(
   // Always refetch the snapshot on bind. A cached session snapshot can
   // be stale after the agent commits new items while the user is viewing
   // another conversation; reusing it drops messages until a page refresh.
-  // Bind waits for only the newest page. HistoryAutoLoader grows the initial
-  // window after render, and `loadMoreHistory` handles later scroll-up paging.
+  // Bind fetches the whole initial window in one request; nothing loads more
+  // until the reader scrolls up (`loadMoreHistory`).
   // `retry: false` because the most common failure here is "invalid conv
   // id in URL" (not transient).
   if (queryClient === null) {
     throw new Error("chatStore.bindStream: queryClient not initialized");
   }
   try {
-    // Fetch one page here so the newest items can render after one round-trip.
-    // HistoryAutoLoader fetches any additional initial pages after this commit.
+    // One larger page, so opening a session is a single round trip that then
+    // stays still — rather than a small page followed by background growth
+    // the reader sees as the transcript shifting seconds after it settled.
     const [session, page] = await Promise.all([
       queryClient.fetchQuery({
         queryKey: ["session", id],
@@ -2326,7 +2338,7 @@ async function bindStream(
         staleTime: 0,
         retry: false,
       }),
-      fetchSessionItemsPage(id),
+      fetchSessionItemsPage(id, { limit: INITIAL_WINDOW_ITEMS }),
     ]);
     if (get().conversationId !== id) return;
     const items = page.items;
@@ -2592,6 +2604,7 @@ async function bindStream(
         // live SSE edge that set this is long gone, so the count rides in on
         // the snapshot (server keeps it sticky past the trailing PTY `idle`).
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
+        blockedOn: null,
         selectedEffort: effectiveEffort,
         selectedModel:
           catalogWonBindRace && preservedModelValid ? state.selectedModel : effectiveModel,
@@ -2893,8 +2906,11 @@ function captureElicitationIdsByStatus(blocks: AnyBlock[]): {
 
 /**
  * Reconnect fallback when the disconnect gap outran the incremental
- * backfill cap: replace the history window wholesale from a fresh
- * initial-window fetch, exactly as a cold bind would. Pre-gap blocks are
+ * backfill cap: replace the history window wholesale from one fresh window
+ * fetch, exactly as a cold bind does — same size, same single round trip.
+ * The reader did not ask for this either (it fires off a dropped stream), so
+ * paging it in over several requests would shift the transcript under them
+ * for the same reason opening a session used to. Pre-gap blocks are
  * dropped (the fresh window re-covers the newest items; older turns stay
  * reachable via scroll-up, since `oldestItemId` / `hasMoreHistory` are
  * reset alongside) while the live tail the reconnected pump has already
@@ -2916,7 +2932,7 @@ async function rehydrateWindowOnReconnect(
   const generation = get().historyGeneration;
   let fresh: SessionItemsPage;
   try {
-    fresh = await fetchInitialHistoryWindow(id);
+    fresh = await fetchSessionItemsPage(id, { limit: INITIAL_WINDOW_ITEMS });
   } catch {
     return;
   }
@@ -4402,7 +4418,13 @@ export function handleSessionEvent(event: StreamEvent): void {
         // runner's PTY-activity watcher); the client must not second-guess it.
         // The bubble lifecycle below (`status`/`activeResponse`) still defers
         // to response_end, but that is separate from the session-level status.
-        const patch: Partial<ChatState> = { sessionStatus: event.status };
+        const patch: Partial<ChatState> = {
+          sessionStatus: event.status,
+          // Not sticky, unlike the background tally: every edge carries the
+          // current reason (the runner re-attaches it to its own pane edges),
+          // so an absent one means "no longer parked".
+          blockedOn: event.blockedOn ?? null,
+        };
         // The background-shell tally is STICKY. Only the Stop-hook-derived
         // status carries an authoritative count (the forwarder relabels its
         // `idle` to `waiting` and attaches `background_task_count`); the
@@ -4552,11 +4574,7 @@ export function handleSessionEvent(event: StreamEvent): void {
       // chat's "Working…" indicator — the exact desync users hit on a
       // claude-native session (chat clears/sets working instantly while
       // the sidebar dot stays stale).
-      patchConversationStatusInCache(
-        event.conversationId,
-        event.status,
-        useChatStore.getState().backgroundTaskCount,
-      );
+      patchConversationStatusInCache(event.conversationId, event.status);
       // On turn completion, refresh the Agents-rail preview for this
       // conversation. A child (added agent) finishing a turn leaves a stale
       // last_message_preview in its parent's child-sessions list (the runner
@@ -4860,15 +4878,12 @@ export function handleSessionEvent(event: StreamEvent): void {
 function patchConversationStatusInCache(
   conversationId: string,
   sessionStatus: SessionStatus,
-  backgroundTaskCount = 0,
 ): void {
   if (queryClient === null) return;
-  // Mirror the in-chat working indicator: a claude-native session that has
-  // settled to `idle` but still has background shells running must keep the
-  // sidebar spinner lit, exactly as `computeShowsWorking` keeps the chat
-  // indicator visible. `failed` still wins (the count is cleared on failure).
-  const working =
-    sessionStatus === "running" || sessionStatus === "waiting" || backgroundTaskCount > 0;
+  // Background shells outliving a turn do NOT light the row: the server
+  // delivers that turn-end as `idle` (it takes a new message right away), and
+  // the in-chat indicator still reports the shells from the tally.
+  const working = sessionStatus === "running" || sessionStatus === "waiting";
   const listStatus: NonNullable<Conversation["status"]> =
     sessionStatus === "failed" ? "failed" : working ? "running" : "idle";
   queryClient.setQueriesData<InfiniteData<ConversationsPage>>(
