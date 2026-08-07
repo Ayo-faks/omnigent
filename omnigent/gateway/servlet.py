@@ -356,6 +356,17 @@ class GatewayServlet:
                 {"error": f"gateway servlet upstream error: {exc}"}, status_code=502
             )
         self.stats["relayed_requests"] += 1
+        if upstream.status_code in (401, 403):
+            # The workspace rejected the minted bearer — it is dead no matter
+            # what the cache clock says (the CLI can hand out a near-expiry
+            # token). Drop it so the very next request re-mints instead of
+            # failing for the rest of the cache window.
+            self._minter.invalidate(session.profile)
+            _logger.warning(
+                "upstream auth rejection (%s) for profile %r; minted bearer invalidated",
+                upstream.status_code,
+                session.profile,
+            )
         _logger.info(
             "relay %s /%s -> %s (%s, session %s…)",
             request.method,

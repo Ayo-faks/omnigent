@@ -13,12 +13,19 @@ import asyncio
 import configparser
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Re-mint cadence; matches the harness-side seams (claude apiKeyHelper TTL /
-# codex refresh_interval_ms are both 900s).
+# Re-mint cadence CEILING; matches the harness-side seams (claude apiKeyHelper
+# TTL / codex refresh_interval_ms are both 900s). The effective cache window is
+# clamped to the minted token's own remaining lifetime — the CLI returns its
+# cached OAuth token, which can be minutes from expiry.
 _TOKEN_TTL_S = 900.0
+# Serve a token only while it has at least this much life left; below it the
+# cache is skipped so every request re-mints (and the CLI refreshes).
+_EXPIRY_SAFETY_S = 60.0
 _MINT_TIMEOUT_S = 30.0
 
 
@@ -74,12 +81,36 @@ class TokenMinter:
             cached = self._cache.get(profile)
             if cached is not None and cached[1] > time.monotonic():
                 return cached[0]
-            token = await self._mint(profile)
-            self._cache[profile] = (token, time.monotonic() + _TOKEN_TTL_S)
+            token, cache_ttl = await self._mint(profile)
+            if cache_ttl > 0:
+                self._cache[profile] = (token, time.monotonic() + cache_ttl)
+            else:
+                self._cache.pop(profile, None)
             return token
 
-    async def _mint(self, profile: str) -> str:
-        """Mint one token via ``databricks auth token`` (never re-reads a file)."""
+    def invalidate(self, profile: str) -> None:
+        """
+        Drop *profile*'s cached bearer.
+
+        Called by the relay when the workspace rejects the minted bearer
+        (401/403): the cached token is provably dead no matter what its
+        clock says, so the next request must re-mint instead of failing
+        for the rest of the cache window.
+
+        :param profile: ``~/.databrickscfg`` profile name, e.g. ``"oss"``.
+        :returns: None.
+        """
+        self._cache.pop(profile, None)
+
+    async def _mint(self, profile: str) -> tuple[str, float]:
+        """
+        Mint one token via ``databricks auth token`` (never re-reads a file).
+
+        :param profile: ``~/.databrickscfg`` profile name.
+        :returns: ``(token, cache_ttl_seconds)`` — the TTL is the re-mint
+            ceiling clamped to the token's own remaining lifetime, ``0``
+            when the token is too close to expiry to cache.
+        """
         env = {k: v for k, v in os.environ.items() if k != "DATABRICKS_CONFIG_PROFILE"}
         proc = await asyncio.create_subprocess_exec(
             "databricks",
@@ -108,9 +139,45 @@ class TokenMinter:
                 f"(run `databricks auth login --profile {profile}` to re-authenticate)"
             )
         try:
-            token = json.loads(stdout).get("access_token")
+            payload = json.loads(stdout)
         except json.JSONDecodeError:
-            token = None
+            payload = {}
+        token = payload.get("access_token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise RuntimeError(f"databricks auth token returned no access_token for {profile!r}")
-        return token
+        return token, _cache_ttl_for(payload)
+
+
+def _cache_ttl_for(payload: dict) -> float:
+    """
+    Cache window for a minted token: the re-mint ceiling clamped to its life.
+
+    The CLI hands out its *cached* OAuth token, which can be near expiry;
+    a flat cadence served dead bearers for the rest of the window (upstream
+    401 "Invalid Token"). Prefers the CLI's ``expires_in`` seconds, falls
+    back to parsing the RFC3339 ``expiry``, and keeps the plain ceiling when
+    neither is usable.
+
+    :param payload: Decoded ``databricks auth token --output json`` object.
+    :returns: Seconds to cache for; ``0`` disables caching for this token.
+    """
+    remaining: float | None = None
+    expires_in = payload.get("expires_in")
+    if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool):
+        remaining = float(expires_in)
+    if remaining is None:
+        expiry = payload.get("expiry")
+        if isinstance(expiry, str):
+            # Go emits RFC3339 with variable fractional precision and "Z";
+            # normalize to what ``fromisoformat`` accepts on Python 3.9.
+            normalized = re.sub(r"\.(\d{1,6})\d*", lambda m: "." + m.group(1), expiry)
+            normalized = normalized.replace("Z", "+00:00")
+            try:
+                expiry_dt = datetime.fromisoformat(normalized)
+            except ValueError:
+                expiry_dt = None
+            if expiry_dt is not None and expiry_dt.tzinfo is not None:
+                remaining = (expiry_dt - datetime.now(timezone.utc)).total_seconds()
+    if remaining is None:
+        return _TOKEN_TTL_S
+    return max(0.0, min(_TOKEN_TTL_S, remaining - _EXPIRY_SAFETY_S))

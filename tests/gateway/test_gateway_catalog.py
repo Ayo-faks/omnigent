@@ -595,7 +595,7 @@ async def test_token_minter_caches_and_maps_failures(monkeypatch) -> None:
 
     async def fake_mint(self, profile):
         calls.append(profile)
-        return f"tok-{profile}-{len(calls)}"
+        return f"tok-{profile}-{len(calls)}", 900.0
 
     monkeypatch.setattr(TokenMinter, "_mint", fake_mint)
     minter = TokenMinter()
@@ -613,6 +613,80 @@ async def test_token_minter_caches_and_maps_failures(monkeypatch) -> None:
     fresh = TokenMinter()
     with pytest.raises(RuntimeError, match="dead auth"):
         await fresh.bearer("oss")
+
+
+async def test_token_minter_clamps_cache_to_token_lifetime(monkeypatch) -> None:
+    """A near-expiry CLI token is not cached past its death.
+
+    ``databricks auth token`` returns the CLI's *cached* OAuth token, which
+    can be minutes from expiry; a flat cadence served dead bearers for the
+    rest of the window (upstream 401 "Invalid Token"). A zero cache TTL from
+    the expiry clamp must re-mint on every request.
+    """
+    from omnigent.gateway.auth import TokenMinter, _cache_ttl_for
+
+    assert _cache_ttl_for({"expires_in": 3600}) == 900.0
+    assert _cache_ttl_for({"expires_in": 120}) == 60.0
+    assert _cache_ttl_for({"expires_in": 45}) == 0.0
+    assert _cache_ttl_for({"expiry": "2020-01-01T00:00:00.123456789Z"}) == 0.0
+    assert _cache_ttl_for({}) == 900.0
+
+    mints: list[str] = []
+
+    async def short_lived_mint(self, profile):
+        mints.append(profile)
+        return f"tok-{len(mints)}", 0.0
+
+    monkeypatch.setattr(TokenMinter, "_mint", short_lived_mint)
+    minter = TokenMinter()
+    assert await minter.bearer("oss") == "tok-1"
+    assert await minter.bearer("oss") == "tok-2"
+    assert mints == ["oss", "oss"]
+
+
+async def test_proxy_invalidates_bearer_on_upstream_401(monkeypatch, tmp_path) -> None:
+    """An upstream auth rejection drops the cached bearer immediately.
+
+    The cached token is provably dead no matter what its clock says, so the
+    very next request must carry a freshly minted bearer instead of failing
+    for the rest of the cache window.
+    """
+    import httpx as _httpx
+
+    from omnigent.gateway.auth import TokenMinter
+    from omnigent.gateway.servlet import GatewayServlet
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    mints: list[int] = []
+
+    async def counting_mint(self, profile):
+        mints.append(len(mints) + 1)
+        return f"minted-{len(mints)}", 900.0
+
+    monkeypatch.setattr(TokenMinter, "_mint", counting_mint)
+    servlet = GatewayServlet()
+    session = servlet.register_session("oss", "https://ws.example")
+    seen_bearers: list[str] = []
+
+    class _BodyStream(_httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"ok": true}'
+
+    def upstream_handler(request: _httpx.Request) -> _httpx.Response:
+        seen_bearers.append(request.headers.get("authorization", ""))
+        status = 401 if len(seen_bearers) == 1 else 200
+        return _httpx.Response(status, stream=_BodyStream())
+
+    await servlet._client.aclose()
+    servlet._client = _httpx.AsyncClient(transport=_httpx.MockTransport(upstream_handler))
+    transport = _httpx.ASGITransport(app=servlet.build_app())
+    async with _httpx.AsyncClient(transport=transport, base_url="http://sv") as client:
+        first = await client.post(f"/g/{session.token}/v1/responses", json={"x": 1})
+        assert first.status_code == 401
+        second = await client.post(f"/g/{session.token}/v1/responses", json={"x": 2})
+        assert second.status_code == 200
+    assert seen_bearers == ["Bearer minted-1", "Bearer minted-2"]
+    await servlet.aclose()
 
 
 async def test_start_gateway_servlet_lifecycle(monkeypatch, tmp_path) -> None:
