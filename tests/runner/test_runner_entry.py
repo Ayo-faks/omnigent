@@ -21,6 +21,7 @@ from omnigent.runner._entry import (
     _DEFAULT_RUNNER_IDLE_TIMEOUT_S,
     _DEFAULT_RUNNER_THREADPOOL_MAX_WORKERS,
     _agent_cache_dest,
+    _arm_shutdown_watchdog,
     _InitialAuthTokenFactory,
     _install_crash_logging,
     _load_runner_idle_timeout_s_from_config,
@@ -2210,3 +2211,37 @@ def test_agent_cache_dest_normal_id_round_trips(tmp_path: Path) -> None:
     dest = _agent_cache_dest(cache_root, "ag_abc123", "3")
 
     assert dest == cache_root / "ag_abc123-v3"
+
+
+def test_arm_shutdown_watchdog_hard_exits_when_teardown_wedges(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A shutdown that never finishes is forced out by the watchdog.
+
+    Without this backstop a leftover task parked on a future nothing will
+    resolve makes ``asyncio.run``'s final cancel-and-gather sweep wait
+    forever: the runner becomes immortal, holding a half-open tunnel (so the
+    server logs a stream of "runner ... is offline" errors) plus all its RAM.
+    The watchdog runs off the event loop precisely because the loop is what
+    wedges. Uses a tiny grace and an injected exit function so the real
+    ``os._exit`` never fires.
+
+    :param caplog: Pytest log capture fixture.
+    :returns: None.
+    """
+    exit_calls: list[int] = []
+
+    with caplog.at_level(logging.WARNING, logger="omnigent.runner._entry"):
+        thread = _arm_shutdown_watchdog(grace_s=0.01, exit_fn=exit_calls.append)
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert exit_calls == [0], (
+        "a wedged shutdown must be forced out, otherwise the runner never exits"
+    )
+    # os._exit skips the tunnel loop's exit-reason logging, so the watchdog
+    # must explain itself or the wedge leaves no trace in the runner log.
+    assert any(
+        "runner exiting" in record.message and "forcing hard exit" in record.message
+        for record in caplog.records
+    ), f"expected a hard-exit log line, got {[r.message for r in caplog.records]}"

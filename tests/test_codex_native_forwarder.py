@@ -15,6 +15,8 @@ only an already-mirrored value is not re-posted.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2538,3 +2540,99 @@ def test_settle_timeout_tracks_slowest_configured_server(tmp_path: Path) -> None
         '[mcp_servers.off]\ncommand = "y"\nenabled = false\nstartup_timeout_sec = 120\n',
     )
     assert fwd._mcp_startup_settle_timeout_seconds(tmp_path) == 25.0
+
+
+# ── delta coalescer teardown: never park on a future the worker won't resolve ──
+
+
+@pytest.mark.asyncio
+async def test_delta_coalescer_close_returns_when_worker_is_already_gone() -> None:
+    """``close()`` must not park forever when the delta worker is dead.
+
+    ``close()`` enqueues a stop barrier whose future only the worker
+    resolves. On a runner shutdown the worker is already cancelled, so an
+    unbounded ``await`` there never returns — and because the forwarder's
+    cleanup runs under cancellation, ``asyncio.run``'s final task sweep
+    waits on it forever and the runner never exits.
+
+    :returns: None.
+    """
+    coalescer = fwd._OutputTextDeltaCoalescer(_RecordingClient(), "conv_x")  # type: ignore[arg-type]
+    await coalescer.append("hello")
+    worker = coalescer._worker_task
+    assert worker is not None
+    worker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker
+
+    # A dead worker is detected up front, so this resolves promptly rather
+    # than burning the full barrier timeout.
+    await asyncio.wait_for(coalescer.close(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_delta_coalescer_flush_returns_when_worker_is_already_gone() -> None:
+    """``flush()`` is bounded too — the same dead-worker barrier applies.
+
+    ``flush()`` is awaited on the session-rotation and turn-boundary paths,
+    so a stopped worker must not wedge those either.
+
+    :returns: None.
+    """
+    coalescer = fwd._OutputTextDeltaCoalescer(_RecordingClient(), "conv_x")  # type: ignore[arg-type]
+    await coalescer.append("hello")
+    worker = coalescer._worker_task
+    assert worker is not None
+    worker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker
+
+    await asyncio.wait_for(coalescer.flush(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_delta_coalescer_worker_release_barriers_when_cancelled() -> None:
+    """A cancelled worker releases queued barriers so no waiter is stranded.
+
+    This covers the race the timeout alone cannot: a barrier already queued
+    when the worker is cancelled. Its future must be resolved on the way out
+    or the waiter blocks on something nothing will ever complete.
+
+    :returns: None.
+    """
+    coalescer = fwd._OutputTextDeltaCoalescer(_RecordingClient(), "conv_x")  # type: ignore[arg-type]
+    await coalescer.append("hello")
+    worker = coalescer._worker_task
+    assert worker is not None
+
+    # Queue the barrier, then kill the worker before it can drain it — the
+    # ordering a real teardown hits.
+    flush_task = asyncio.create_task(coalescer.flush())
+    await asyncio.sleep(0)
+    worker.cancel()
+
+    await asyncio.wait_for(flush_task, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_delta_coalescer_close_still_flushes_on_a_healthy_shutdown() -> None:
+    """A live worker still drains buffered deltas before ``close()`` returns.
+
+    The teardown bounds must not cost the ordinary case its flush: text
+    buffered when the session ends still has to reach AP.
+
+    :returns: None.
+    """
+    client = _RecordingClient()
+    coalescer = fwd._OutputTextDeltaCoalescer(client, "conv_x")  # type: ignore[arg-type]
+    await coalescer.append("hello")
+
+    await asyncio.wait_for(coalescer.close(), timeout=5)
+
+    deltas = [
+        payload["data"]["delta"]
+        for _url, payload in client.posts
+        if payload.get("data", {}).get("delta")
+    ]
+    assert "hello" in deltas, f"buffered delta was dropped on close; posted {deltas}"
+    assert coalescer._worker_task is None

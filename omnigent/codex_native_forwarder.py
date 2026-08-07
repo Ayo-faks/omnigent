@@ -87,6 +87,11 @@ _REPLAY_POST_TIMEOUT_SECONDS = 5.0
 _REPLAY_DEADLINE_SECONDS = 30.0
 _DELTA_FLUSH_INTERVAL_SECONDS = 0.05
 _DELTA_FLUSH_CHAR_THRESHOLD = 64
+# Upper bound on how long a flush/close barrier waits for the delta worker to
+# acknowledge it. The worker only has to drain its buffer over an already-open
+# HTTP client, so this is generous; it exists so a worker that died without
+# draining its queue can never wedge a teardown path forever.
+_DELTA_BARRIER_TIMEOUT_SECONDS = 10.0
 _EXTERNAL_REASONING_EFFORT_CHANGE_TYPE = "external_reasoning_effort_change"
 # Context-compaction progress edge. Publishes the same
 # ``response.compaction.in_progress`` / ``response.compaction.completed`` SSE
@@ -1151,10 +1156,7 @@ class _OutputTextDeltaCoalescer:
         """
         if self._worker_task is None:
             return
-        loop = asyncio.get_running_loop()
-        done: asyncio.Future[None] = loop.create_future()
-        self._queue.put_nowait(_DeltaFlushBarrier(done=done))
-        await done
+        await self._await_barrier(_DeltaFlushBarrier, "flush")
 
     async def close(self) -> None:
         """
@@ -1162,14 +1164,57 @@ class _OutputTextDeltaCoalescer:
 
         :returns: None after the worker has stopped.
         """
-        if self._worker_task is None:
+        worker_task = self._worker_task
+        if worker_task is None:
+            return
+        self._worker_task = None
+        await self._await_barrier(_DeltaFlushStop, "close", worker_task=worker_task)
+        # The barrier may have timed out or the worker may already be gone;
+        # either way stop waiting on it once it can no longer make progress.
+        if not worker_task.done():
+            worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(worker_task, timeout=_DELTA_BARRIER_TIMEOUT_SECONDS)
+
+    async def _await_barrier(
+        self,
+        barrier: type[_DeltaFlushBarrier] | type[_DeltaFlushStop],
+        operation: str,
+        worker_task: asyncio.Task[None] | None = None,
+    ) -> None:
+        """
+        Queue a barrier and wait, bounded, for the worker to acknowledge it.
+
+        The barrier's future is resolved only by the worker. On a teardown
+        where the worker is already cancelled nothing will ever resolve it,
+        so the wait is bounded rather than indefinite — an unbounded await
+        here wedges ``asyncio.run``'s final task sweep and the runner never
+        exits.
+
+        :param barrier: Queue marker class to enqueue, e.g.
+            :class:`_DeltaFlushStop`.
+        :param operation: Name used in the timeout warning, e.g. ``"close"``.
+        :param worker_task: Worker to probe for liveness; defaults to the
+            live worker. :meth:`close` passes the task it detached.
+        :returns: None once the worker acknowledges or the wait times out.
+        """
+        worker_task = worker_task or self._worker_task
+        if worker_task is not None and worker_task.done():
+            # Nothing will drain the queue, so skip the barrier entirely
+            # instead of paying the full timeout for a known-dead worker.
             return
         loop = asyncio.get_running_loop()
         done: asyncio.Future[None] = loop.create_future()
-        self._queue.put_nowait(_DeltaFlushStop(done=done))
-        await done
-        await self._worker_task
-        self._worker_task = None
+        self._queue.put_nowait(barrier(done=done))
+        try:
+            await asyncio.wait_for(done, timeout=_DELTA_BARRIER_TIMEOUT_SECONDS)
+        except TimeoutError:
+            _logger.warning(
+                "Codex forwarder delta %s timed out after %.1fs waiting for the "
+                "delta worker; abandoning buffered deltas",
+                operation,
+                _DELTA_BARRIER_TIMEOUT_SECONDS,
+            )
 
     def _ensure_worker(self) -> None:
         """
@@ -1184,6 +1229,37 @@ class _OutputTextDeltaCoalescer:
             )
 
     async def _run(self) -> None:
+        """
+        Run the drain loop, releasing queued barriers on the way out.
+
+        :returns: None after a stop marker is processed or the worker is
+            cancelled.
+        """
+        try:
+            await self._drain()
+        finally:
+            # A cancelled/failed worker must release every queued barrier, or
+            # the flush/close awaiting it blocks forever on a future nothing
+            # will resolve.
+            self._abandon_queued_barriers()
+
+    def _abandon_queued_barriers(self) -> None:
+        """
+        Resolve every queued flush/stop barrier so no waiter is left parked.
+
+        :returns: None.
+        """
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if isinstance(item, _DeltaChunk):
+                continue
+            if not item.done.done():
+                item.done.set_result(None)
+
+    async def _drain(self) -> None:
         """
         Drain queued deltas and flush barriers in FIFO order.
 

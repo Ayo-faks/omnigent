@@ -55,6 +55,13 @@ _RUNNER_THREADPOOL_MAX_WORKERS_ENV_VAR = "OMNIGENT_RUNNER_THREADPOOL_MAX_WORKERS
 # finishes cleanly; a tunnel wedged past this is cancelled so shutdown can't
 # hang forever.
 _GRACEFUL_SHUTDOWN_TUNNEL_TIMEOUT_S = 15.0
+# Backstop on the whole shutdown sequence: the teardown awaits plus
+# ``asyncio.run``'s final cancel-and-gather sweep. A leftover task that parks on
+# a future nothing will resolve makes that sweep wait forever, leaving an
+# immortal runner holding a half-open tunnel (the server then logs a steady
+# stream of "runner ... is offline" errors when routing to it). Comfortably above
+# the tunnel drain budget so a healthy shutdown always wins the race.
+_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
 # Re-mint a delegated runner's owner JWT this many seconds before it
 # expires, so a live session's HTTP callbacks never present an expired
 # token. Well under the server-side token TTL.
@@ -1000,6 +1007,54 @@ def _run_parent_death_killer(
     exit_fn(0)
 
 
+def _arm_shutdown_watchdog(
+    *,
+    grace_s: float = _SHUTDOWN_WATCHDOG_GRACE_S,
+    exit_fn: Callable[[int], None] = os._exit,
+) -> threading.Thread:
+    """Hard-exit the runner if graceful shutdown does not finish in time.
+
+    Runs on a daemon thread, NOT the event loop: the wedge this guards
+    against is the loop itself. ``asyncio.run`` ends by cancelling leftover
+    tasks and gathering them, and a task parked on a future nothing will
+    resolve makes that gather wait forever — no event-loop watchdog could
+    fire, and the runner would keep a half-open tunnel and its RAM
+    indefinitely. There is nothing to disarm: the sweep this covers runs
+    after the runner's own teardown, so on a healthy exit the process is
+    already gone and the hard exit never runs.
+
+    :param grace_s: Seconds to allow graceful shutdown before the hard exit,
+        e.g. ``60.0``.
+    :param exit_fn: Hard-exit function, defaults to :func:`os._exit`;
+        injectable so tests can observe it without killing the runner.
+    :returns: The started watchdog thread, so tests can join it.
+    """
+
+    def _watch() -> None:
+        """Hard-exit unless the process exits within the grace window.
+
+        :returns: None.
+        """
+        time.sleep(grace_s)
+        # os._exit skips the exit-reason logging and buffer flushing, so record
+        # the reason and flush first. The file handler flushes per record.
+        _logger.warning(
+            "runner exiting: graceful shutdown did not complete within %.1fs; forcing hard exit",
+            grace_s,
+        )
+        with contextlib.suppress(Exception):
+            sys.stderr.flush()
+        exit_fn(0)
+
+    thread = threading.Thread(
+        target=_watch,
+        name="runner-shutdown-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _runner_workspace_from_env() -> Path | None:
     """Return the optional CLI launch workspace from runner process wiring.
 
@@ -1580,6 +1635,12 @@ async def _run_tunnel_from_env() -> None:
             # cancelled by the finally as a backstop.
             await asyncio.wait({tunnel_task}, timeout=_GRACEFUL_SHUTDOWN_TUNNEL_TIMEOUT_S)
     finally:
+        # Arm the hard-exit backstop before tearing anything down: from here on
+        # a wedged teardown await — or a leftover task that never finishes
+        # asyncio.run's final sweep — must not strand the process forever.
+        # Deliberately never disarmed: the sweep runs after this coroutine
+        # returns, so the watchdog has to outlive it and dies with the process.
+        _arm_shutdown_watchdog()
         # Log why the runner is stopping so the runner log explains the exit.
         # A crash unwinding through here is attributed by sys.excepthook with
         # its traceback, so only record the reason for an orderly shutdown.
