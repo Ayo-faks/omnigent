@@ -19,10 +19,19 @@ from typing import Any
 
 import httpx
 
-# Codex speaks the Responses API; only services declaring this surface are
+from omnigent.codex_model_vocabulary import EXTENDED_CATALOG_MODELS
+
+# Codex speaks the Responses API; services declaring this surface are natively
 # servable through the codex gateway path (name-matching would wrongly admit
 # chat-only models like gpt-oss-*).
 CODEX_API_TYPE = "openai/v1/responses"
+
+# Gateway-translated routing arms: chat-only service ids the gateway serves
+# through the Responses dialect anyway (the api-types declaration is a floor,
+# not a ceiling — probe-verified per arm, reasoning params included). Included
+# only when the workspace actually serves them, and never eligible to be the
+# catalog default.
+_TRANSLATED_ARM_IDS = frozenset(EXTENDED_CATALOG_MODELS.values())
 
 _MODEL_SERVICE_PREFIX = "model-services/"
 _SYSTEM_PREFIX = "system.ai."
@@ -48,6 +57,10 @@ async def fetch_codex_service_ids(
 ) -> list[str]:
     """
     List ``system.ai.*`` ids the workspace serves on Codex's API surface.
+
+    Includes services declaring the Responses dialect natively, plus served
+    translated arms (:data:`_TRANSLATED_ARM_IDS`) the gateway carries through
+    dialect translation.
 
     :param client: Shared async HTTP client.
     :param workspace_host: Workspace origin, e.g. ``"https://x.databricks.com"``.
@@ -75,12 +88,14 @@ async def fetch_codex_service_ids(
         for svc in payload.get("model_services", []):
             if not isinstance(svc, dict):
                 continue
-            api_types = svc.get("supported_api_types")
-            if not isinstance(api_types, list) or CODEX_API_TYPE not in api_types:
-                continue
             name = svc.get("name")
-            if isinstance(name, str) and name:
-                ids.append(name.removeprefix(_MODEL_SERVICE_PREFIX))
+            if not isinstance(name, str) or not name:
+                continue
+            service_id = name.removeprefix(_MODEL_SERVICE_PREFIX)
+            api_types = svc.get("supported_api_types")
+            declares_responses = isinstance(api_types, list) and CODEX_API_TYPE in api_types
+            if declares_responses or service_id in _TRANSLATED_ARM_IDS:
+                ids.append(service_id)
         page_token = payload.get("next_page_token") or None
         if not page_token:
             break
@@ -160,7 +175,7 @@ def build_models_response(
         entry["priority"] = priority
         entry["visibility"] = "list"
         if native is None:
-            entry["display_name"] = slug
+            entry["display_name"] = slug.removeprefix(_SYSTEM_PREFIX)
             entry["description"] = f"Served by the workspace AI Gateway ({service_by_slug[slug]})"
             entry["supported_reasoning_levels"] = [
                 level
