@@ -378,9 +378,7 @@ def test_normalize_relay_model_body_translates_localized_spellings() -> None:
 def test_service_id_for_slug_accepts_localized_spellings() -> None:
     assert service_id_for_slug("databricks-glm-5-2") == "system.ai.glm-5-2"
     assert service_id_for_slug("databricks-gpt-5-6-sol") == "system.ai.gpt-5-6-sol"
-    assert (
-        service_id_for_slug("databricks-claude-opus-4-8") == "databricks-claude-opus-4-8"
-    )
+    assert service_id_for_slug("databricks-claude-opus-4-8") == "databricks-claude-opus-4-8"
 
 
 def test_synthesized_arm_entries_do_not_advertise_code_mode() -> None:
