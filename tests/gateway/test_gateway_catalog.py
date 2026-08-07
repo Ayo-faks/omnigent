@@ -470,3 +470,161 @@ def test_proxy_rejects_dot_segment_traversal(tmp_path, monkeypatch) -> None:
 
     literal = client.get(f"/g/{session.token}/v1/../../api/2.1/secrets")
     assert literal.status_code == 404
+
+
+def _catalog_servlet(monkeypatch, tmp_path):
+    """A servlet with a stubbed inventory + native catalog and no disk state."""
+    import httpx as _httpx
+
+    from omnigent.gateway.servlet import GatewayServlet
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    async def fake_ids(client, workspace_host, bearer):
+        return ["system.ai.glm-5-2", "system.ai.gpt-5-6-sol"]
+
+    monkeypatch.setattr(
+        "omnigent.gateway.servlet.fetch_codex_service_ids",
+        fake_ids,
+    )
+    servlet = GatewayServlet(lambda: _native_catalog())
+
+    async def fake_bearer(self, profile):
+        return f"minted-{profile}"
+
+    monkeypatch.setattr(type(servlet._minter), "bearer", fake_bearer)
+    return servlet, _httpx
+
+
+async def test_models_endpoint_serves_catalog_with_etag(monkeypatch, tmp_path) -> None:
+    """A registered session's /models serves the built catalog; ETag → 304."""
+    import httpx as _httpx
+
+    servlet, _ = _catalog_servlet(monkeypatch, tmp_path)
+    session = servlet.register_session("oss", "https://ws.example")
+    transport = _httpx.ASGITransport(app=servlet.build_app())
+    async with _httpx.AsyncClient(transport=transport, base_url="http://sv") as client:
+        first = await client.get(f"/g/{session.token}/v1/models")
+        assert first.status_code == 200
+        slugs = [m["slug"] for m in first.json()["models"]]
+        assert slugs == ["gpt-5.6-sol", "glm-5-2"]
+        etag = first.headers["etag"]
+        cached = await client.get(f"/g/{session.token}/v1/models", headers={"if-none-match": etag})
+        assert cached.status_code == 304
+        unknown = await client.get("/g/not-a-token/v1/models")
+        assert unknown.status_code == 404
+    await servlet.aclose()
+
+
+async def test_admin_catalog_serves_picker_rows(monkeypatch, tmp_path) -> None:
+    """/admin/catalog returns standard rows + routable ids for the tunnel."""
+    import httpx as _httpx
+
+    servlet, _ = _catalog_servlet(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "omnigent.gateway.servlet.databrickscfg_host_for_profile",
+        lambda profile: "https://ws.example" if profile == "oss" else None,
+    )
+    transport = _httpx.ASGITransport(app=servlet.build_app())
+    async with _httpx.AsyncClient(transport=transport, base_url="http://sv") as client:
+        resp = await client.get(
+            "/admin/catalog",
+            params={"profile": "oss"},
+            headers={"authorization": f"Bearer {servlet.admin_token}"},
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert [row["id"] for row in payload["models"]] == ["gpt-5.6-sol", "glm-5-2"]
+        assert payload["models"][0]["isDefault"] is True
+        assert payload["routable_models"] == ["gpt-5.6-sol", "glm-5-2"]
+        denied = await client.get("/admin/catalog", params={"profile": "oss"})
+        assert denied.status_code == 401
+    await servlet.aclose()
+
+
+async def test_proxy_relays_with_minted_bearer_and_arm_translation(monkeypatch, tmp_path) -> None:
+    """The relay mints a bearer, translates arm slugs, and streams the body."""
+    import json as _json
+
+    import httpx as _httpx
+
+    servlet, _ = _catalog_servlet(monkeypatch, tmp_path)
+    session = servlet.register_session("oss", "https://ws.example")
+    seen: dict[str, object] = {}
+
+    class _BodyStream(_httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"ok": true}'
+
+    def upstream_handler(request: _httpx.Request) -> _httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        seen["accept_encoding"] = request.headers.get("accept-encoding")
+        seen["body"] = _json.loads(request.content)
+        return _httpx.Response(200, stream=_BodyStream(), headers={"x-upstream": "yes"})
+
+    await servlet._client.aclose()
+    servlet._client = _httpx.AsyncClient(transport=_httpx.MockTransport(upstream_handler))
+    transport = _httpx.ASGITransport(app=servlet.build_app())
+    async with _httpx.AsyncClient(transport=transport, base_url="http://sv") as client:
+        resp = await client.post(
+            f"/g/{session.token}/v1/responses",
+            json={"model": "glm-5-2", "stream": False},
+            headers={"accept-encoding": "identity"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert resp.headers["x-upstream"] == "yes"
+    assert seen["url"] == "https://ws.example/ai-gateway/codex/v1/responses"
+    assert seen["auth"] == "Bearer minted-oss"
+    assert seen["accept_encoding"] == "identity"
+    assert seen["body"]["model"] == "system.ai.glm-5-2"
+    await servlet.aclose()
+
+
+async def test_token_minter_caches_and_maps_failures(monkeypatch) -> None:
+    """The minter caches per profile, honors the env override, and fails loud."""
+    from omnigent.gateway.auth import TokenMinter
+
+    calls: list[str] = []
+
+    async def fake_mint(self, profile):
+        calls.append(profile)
+        return f"tok-{profile}-{len(calls)}"
+
+    monkeypatch.setattr(TokenMinter, "_mint", fake_mint)
+    minter = TokenMinter()
+    assert await minter.bearer("oss") == "tok-oss-1"
+    assert await minter.bearer("oss") == "tok-oss-1"
+    assert calls == ["oss"]
+    monkeypatch.setenv("DATABRICKS_BEARER", "static-tok")
+    assert await minter.bearer("anything") == "static-tok"
+    monkeypatch.delenv("DATABRICKS_BEARER")
+
+    async def failing_mint(self, profile):
+        raise RuntimeError("dead auth")
+
+    monkeypatch.setattr(TokenMinter, "_mint", failing_mint)
+    fresh = TokenMinter()
+    with pytest.raises(RuntimeError, match="dead auth"):
+        await fresh.bearer("oss")
+
+
+async def test_start_gateway_servlet_lifecycle(monkeypatch, tmp_path) -> None:
+    """Start binds loopback, publishes state, serves health, and stops clean."""
+    import httpx as _httpx
+
+    from omnigent.gateway.servlet import start_gateway_servlet
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    handle = await start_gateway_servlet(None, port=0)
+    try:
+        state = read_servlet_state()
+        assert state is not None and state.url == handle.url
+        async with _httpx.AsyncClient() as client:
+            health = await client.get(f"{handle.url}/healthz")
+            assert health.status_code == 200
+            assert health.json()["status"] == "ok"
+    finally:
+        await handle.stop()
+    assert read_servlet_state(allow_stale=True) is None
