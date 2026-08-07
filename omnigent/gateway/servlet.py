@@ -291,6 +291,11 @@ class GatewayServlet:
         # Usage attribution: tag relayed traffic unless the client already
         # carries its own tags (starlette lowercases header names).
         headers.setdefault("databricks-ai-gateway-request-tags", '{"source": "omnigent"}')
+        # Byte-faithful relay: never advertise encodings the harness didn't
+        # ask for. Without this, httpx adds its own accept-encoding and the
+        # upstream's compressed error bodies reach a client that can't
+        # decode them (observed: codex rendering a gzip error as garbage).
+        headers.setdefault("accept-encoding", "identity")
         body = await request.body()
         upstream_request = self._client.build_request(
             request.method, url, content=body, headers=headers
