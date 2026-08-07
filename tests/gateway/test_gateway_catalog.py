@@ -487,7 +487,7 @@ def _catalog_servlet(monkeypatch, tmp_path):
         "omnigent.gateway.servlet.fetch_codex_service_ids",
         fake_ids,
     )
-    servlet = GatewayServlet(lambda: _native_catalog())
+    servlet = GatewayServlet(_native_catalog)
 
     async def fake_bearer(self, profile):
         return f"minted-{profile}"
