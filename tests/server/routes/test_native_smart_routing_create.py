@@ -118,7 +118,6 @@ async def _native_wrappers(client: httpx.AsyncClient, db_uri: str) -> dict[str, 
     for harness, agent_name in (
         ("claude-native", "claude-native-ui"),
         ("codex-native", "codex-native-ui"),
-        ("pi-native", "pi-native-ui"),
     ):
         agent_id = generate_agent_id()
         store.create(agent_id, name=agent_name, bundle_location=bundle.bundle_location)
@@ -426,9 +425,7 @@ async def test_router_is_offered_both_native_families(
     routing_client = FakeRoutingClient(RoutingResult(model=GPT_MODEL, rationale="narrow change"))
     created = await _create_smart_routing_session(client, wrappers, routing_client)
     assert created.status_code == 201, created.text
-    # pi-native is in AUTO_NATIVE_ROUTING_HARNESSES but may not be gateway-backed
-    # in this test fixture; assert the two original native families are offered.
-    assert set(routing_client.offered[0]) >= {"claude-native", "codex-native"}
+    assert set(routing_client.offered[0]) == {"claude-native", "codex-native"}
 
 
 async def test_routed_wrapper_gets_terminal_first_labels(
@@ -485,7 +482,7 @@ async def test_smart_routing_session_keeps_cross_harness_subagents(
     assert resp.status_code == 200, resp.text
     # The auto label survives the create, so the spawn is offered both families
     # and may leave the session's own harness family.
-    assert set(spawn_router.offered[0]) >= {"claude-native", "codex-native"}
+    assert set(spawn_router.offered[0]) == {"claude-native", "codex-native"}
     assert resp.json()["harness"] == "codex-native"
 
 
@@ -864,7 +861,7 @@ async def test_native_candidates_impose_no_family_constraint() -> None:
             harness_candidates=AUTO_NATIVE_ROUTING_HARNESSES,
         )
     assert error is None
-    assert set(routing_client.offered[0]) >= {"claude-native", "codex-native"}
+    assert set(routing_client.offered[0]) == {"claude-native", "codex-native"}
     assert harness == "codex-native"
     assert model == GPT_MODEL
 
@@ -922,9 +919,9 @@ def _host(
         # An unreported harness can't be assumed installed.
         (_host({"claude-native": True}), ["claude-native"]),
         # Fails open: a host with no readiness map doesn't disable routing.
-        (_host(None), ["claude-native", "codex-native", "pi-native"]),
+        (_host(None), ["claude-native", "codex-native"]),
         # No host at all fails open the same way.
-        (None, ["claude-native", "codex-native", "pi-native"]),
+        (None, ["claude-native", "codex-native"]),
     ],
 )
 def test_installed_native_harnesses_follows_host_readiness(
@@ -977,9 +974,7 @@ def _host_reporting(gateway: dict[str, bool] | None) -> Host:
         ({"claude-native": True, "codex-native": False}, ["codex-native"]),
         (
             {"claude-native": False, "codex-native": False},
-            # pi-native not in map → not considered ungatewayed; only the two
-            # explicitly-off harnesses are returned.
-            ["claude-native", "codex-native"],
+            AUTO_NATIVE_ROUTING_HARNESSES,
         ),
         # Reversed spellings resolve to the same family.
         ({"native-codex": False}, ["codex-native"]),
@@ -1061,7 +1056,6 @@ async def test_auto_routing_is_refused_when_no_router_can_serve_an_off_gateway_a
 _OFF_GATEWAY_CATALOG = {
     "claude-native": ["claude-opus-4-8"],
     "codex-native": ["gpt-5-5"],
-    "pi-native": ["gpt-5-5"],
 }
 
 
