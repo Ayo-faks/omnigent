@@ -6097,7 +6097,19 @@ function SessionConfigModal({
                 // Routing picks the model (and its effort) per turn, so an
                 // explicit effort is meaningless: the row is frozen and reads as
                 // an em-dash placeholder (Radix shows it for the empty value).
-                value={draftRoutingOn ? "" : (draftEffort ?? EFFORT_SELECT_NONE)}
+                // A sticky cross-session pick can hold an effort outside this
+                // model's ladder (e.g. xhigh from a GPT session shown on a glm
+                // session, whose ladder is low/medium/high) — Radix renders an
+                // empty trigger for a value no item declares, so the row read
+                // as blank. Clamp the DISPLAY to the ladder; the draft stays
+                // untouched so an unchanged save still writes nothing.
+                value={
+                  draftRoutingOn
+                    ? ""
+                    : draftEffort && effortLevels.includes(draftEffort)
+                      ? draftEffort
+                      : EFFORT_SELECT_NONE
+                }
                 onValueChange={(v) => setDraftEffort(v === EFFORT_SELECT_NONE ? null : v)}
                 disabled={draftRoutingOn}
               >

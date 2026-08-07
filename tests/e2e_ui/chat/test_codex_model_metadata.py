@@ -8,7 +8,14 @@ from urllib.parse import urlparse
 from playwright.sync_api import Page, Route, expect
 
 
-def _patch_session_as_codex_native(page: Page, session_id: str) -> list[dict]:
+def _patch_session_as_codex_native(
+    page: Page,
+    session_id: str,
+    *,
+    llm_model: str = "gpt-5.5",
+    reasoning_effort: str = "xhigh",
+    model_options: list[dict] | None = None,
+) -> list[dict]:
     """Patch the browser's session snapshot into a codex-native response.
 
     The server fixture seeds a normal ``hello_world`` session so the page can
@@ -19,6 +26,10 @@ def _patch_session_as_codex_native(page: Page, session_id: str) -> list[dict]:
 
     :param page: Playwright page before navigation.
     :param session_id: Session id to patch, e.g. ``"conv_abc123"``.
+    :param llm_model: Bound model id the snapshot reports.
+    :param reasoning_effort: Session effort the snapshot reports.
+    :param model_options: Codex ``model/list`` rows; ``None`` uses the
+        default gpt-5.5 row.
     :returns: Captured PATCH request bodies.
     """
     latest_payload: dict | None = None
@@ -56,9 +67,9 @@ def _patch_session_as_codex_native(page: Page, session_id: str) -> list[dict]:
             "omnigent.wrapper": "codex-native-ui",
         }
         payload["harness"] = "codex"
-        payload["llm_model"] = "gpt-5.5"
-        payload["reasoning_effort"] = "xhigh"
-        payload["model_options"] = [
+        payload["llm_model"] = llm_model
+        payload["reasoning_effort"] = reasoning_effort
+        payload["model_options"] = model_options or [
             {
                 "id": "gpt-5.5",
                 "model": "databricks-gpt-5-5",
@@ -135,6 +146,81 @@ def test_codex_native_picker_uses_raw_model_metadata(
     expect(effort_row).to_contain_text("xhigh")
     # Codex effort ids render raw (not title-cased) even in the shared Select.
     assert effort_row.evaluate("el => getComputedStyle(el).textTransform") == "none"
+
+
+def test_codex_effort_outside_model_ladder_reads_default(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """An effort the model's ladder doesn't offer renders as Default, not blank.
+
+    A sticky cross-session pick (or a mirrored session effort) can hold a
+    value outside the selected model's ladder — e.g. ``xhigh`` on a translated
+    arm whose ladder is low/medium/high. Radix renders an empty trigger for a
+    value no item declares, so the gear's Effort row read as blank. The value
+    is clamped to the ladder for display only: the trigger reads Default, the
+    ladder options still open, and saving the untouched row writes nothing.
+
+    :param page: Playwright page fixture.
+    :param seeded_session: ``(base_url, session_id)`` for a real server-backed
+        session; the browser snapshot is patched to codex-native.
+    :returns: None.
+    """
+    base_url, session_id = seeded_session
+    patch_bodies = _patch_session_as_codex_native(
+        page,
+        session_id,
+        llm_model="glm-5-2",
+        reasoning_effort="xhigh",
+        model_options=[
+            {
+                "id": "glm-5-2",
+                "model": "system.ai.glm-5-2",
+                "displayName": "glm-5-2",
+                "defaultReasoningEffort": "medium",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low"},
+                    {"reasoningEffort": "medium"},
+                    {"reasoningEffort": "high"},
+                ],
+                "isDefault": True,
+            }
+        ],
+    )
+
+    page.goto(f"{base_url}/c/{session_id}")
+
+    expect(page.get_by_test_id("composer-model-effort-label")).to_contain_text(
+        "glm-5-2", timeout=15_000
+    )
+    page.get_by_test_id("composer-config-gear").click()
+    expect(page.get_by_test_id("composer-config-modal")).to_be_visible()
+
+    # The trigger reads Default instead of rendering blank.
+    effort_trigger = page.get_by_test_id("composer-config-effort")
+    expect(effort_trigger).to_contain_text("Default")
+
+    # The clamp is display-only: saving the untouched row writes nothing.
+    page.get_by_role("button", name="Save").click()
+    expect(page.get_by_test_id("composer-config-modal")).to_be_hidden()
+    assert not any("reasoning_effort" in body for body in patch_bodies)
+
+    # The row still functions: the ladder opens (no xhigh — it's the model's
+    # own ladder) and an explicit pick writes through.
+    page.get_by_test_id("composer-config-gear").click()
+    expect(page.get_by_test_id("composer-config-modal")).to_be_visible()
+    effort_trigger.click()
+    for level in ("low", "medium", "high"):
+        expect(page.locator(f'[role="option"][data-effort-level="{level}"]')).to_be_visible()
+    expect(page.locator('[role="option"][data-effort-level="xhigh"]')).to_have_count(0)
+    page.locator('[role="option"][data-effort-level="medium"]').click()
+    expect(effort_trigger).to_contain_text("medium")
+    page.get_by_role("button", name="Save").click()
+    expect(page.get_by_test_id("composer-config-modal")).to_be_hidden()
+    expect(page.get_by_test_id("composer-model-effort-label")).to_contain_text(
+        "medium", timeout=10_000
+    )
+    assert any(body.get("reasoning_effort") == "medium" for body in patch_bodies)
 
 
 def test_codex_native_plan_mode_toggle_uses_codex_session_patch(
