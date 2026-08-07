@@ -303,3 +303,52 @@ def test_service_id_for_slug_inverts_codex_slug() -> None:
         "system.ai.gpt-oss-120b",
     ):
         assert service_id_for_slug(codex_slug(service_id)) == service_id
+
+
+def test_newest_mainline_slug_by_version_never_alphabetical() -> None:
+    from omnigent.gateway.catalog import newest_mainline_slug
+
+    assert (
+        newest_mainline_slug(["system.ai.gpt-5", "system.ai.gpt-5-5", "system.ai.gpt-5-6-luna"])
+        == "gpt-5.6-luna"
+    )
+    # Non-GPT and non-mainline ids are never candidates.
+    assert newest_mainline_slug(["system.ai.glm-5-2", "system.ai.gpt-oss-120b"]) is None
+    assert newest_mainline_slug([]) is None
+
+
+def test_servlet_client_fails_open_without_state(tmp_path, monkeypatch) -> None:
+    from omnigent.gateway.client import fetch_servlet_codex_slugs
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    assert fetch_servlet_codex_slugs("oss") is None
+    assert fetch_servlet_codex_slugs(None) is None
+
+
+def test_servlet_client_reads_routable_slugs(tmp_path, monkeypatch) -> None:
+    from omnigent.gateway import client as gateway_client
+    from omnigent.gateway.state import ServletState
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    (tmp_path / ".databrickscfg").write_text("[oss]\nhost = https://ws.example\n")
+    write_servlet_state(
+        ServletState(url="http://127.0.0.1:6768", admin_token="tok", pid=os.getpid())
+    )
+    seen: dict[str, object] = {}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"models": [], "routable_models": ["gpt-5.6-sol", "glm-5-2", 7]}
+
+    def _get(url, params=None, headers=None, timeout=None):
+        seen.update({"url": url, "params": params, "headers": headers})
+        return _Resp()
+
+    monkeypatch.setattr(gateway_client.httpx, "get", _get)
+    assert gateway_client.fetch_servlet_codex_slugs("oss") == ["gpt-5.6-sol", "glm-5-2"]
+    assert seen["url"] == "http://127.0.0.1:6768/admin/catalog"
+    assert seen["params"] == {"profile": "oss", "workspace_host": "https://ws.example"}
+    assert seen["headers"] == {"authorization": "Bearer tok"}
