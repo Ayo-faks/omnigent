@@ -732,12 +732,12 @@ def create_hosts_router(
         result = await _host_model_options_result(request, host_id, harness)
         models = result.get("models")
         routable = result.get("routable_models")
-        return {
-            "models": models if isinstance(models, list) else [],
-            "routable_models": (
+        return HostModelOptionsLegacyResponse(
+            models=[m for m in models if isinstance(m, dict)] if isinstance(models, list) else [],
+            routable_models=(
                 [m for m in routable if isinstance(m, str)] if isinstance(routable, list) else []
             ),
-        }
+        )
 
     @router.get(
         "/hosts/{host_id}/model-options",
@@ -761,12 +761,16 @@ def create_hosts_router(
         result = await _host_model_options_result(request, host_id, harness)
         models = result.get("models")
         routable = result.get("routable_models")
-        return {
-            "models": _standard_model_rows(models if isinstance(models, list) else []),
-            "routable_models": (
-                [m for m in routable if isinstance(m, str)] if isinstance(routable, list) else []
-            ),
-        }
+        return HostModelOptionsResponse.model_validate(
+            {
+                "models": _standard_model_rows(models if isinstance(models, list) else []),
+                "routable_models": (
+                    [m for m in routable if isinstance(m, str)]
+                    if isinstance(routable, list)
+                    else []
+                ),
+            }
+        )
 
     @router.post("/hosts/{host_id}/runners")
     async def launch_runner(

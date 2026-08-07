@@ -2427,9 +2427,7 @@ class HostProcess:
             )
             _logger.info("gateway servlet listening at %s", self._gateway_servlet.url)
         except Exception:
-            _logger.exception(
-                "gateway servlet failed to start; sessions use the direct gateway"
-            )
+            _logger.exception("gateway servlet failed to start; sessions use the direct gateway")
         backoff = _RECONNECT_BASE_S
         try:
             while True:
@@ -2501,9 +2499,10 @@ class HostProcess:
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
-            if getattr(self, "_gateway_servlet", None) is not None:
+            servlet = getattr(self, "_gateway_servlet", None)
+            if servlet is not None:
                 with contextlib.suppress(Exception):
-                    await self._gateway_servlet.stop()
+                    await servlet.stop()
                 self._gateway_servlet = None
             if self._reaper_task is not None:
                 self._reaper_task.cancel()
