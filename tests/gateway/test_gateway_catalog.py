@@ -14,6 +14,7 @@ from omnigent.gateway.catalog import (
     dumps_catalog,
     picker_options,
     routable_models,
+    service_id_for_slug,
 )
 from omnigent.gateway.state import (
     ServletState,
@@ -103,8 +104,17 @@ def test_build_models_response_orders_and_enriches() -> None:
     options = picker_options(response)
     assert options[0] == {
         "id": "gpt-5.6-sol",
+        "model": "system.ai.gpt-5-6-sol",
         "displayName": "GPT-5.6 Sol",
         "isDefault": True,
+        "description": "Databricks AI Gateway (system.ai.gpt-5-6-sol)",
+        "defaultReasoningEffort": "medium",
+        "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"},
+            {"reasoningEffort": "medium"},
+            {"reasoningEffort": "high"},
+            {"reasoningEffort": "xhigh"},
+        ],
     }
     assert all("isDefault" not in option for option in options[1:])
     assert routable_models(response) == slugs
@@ -254,7 +264,18 @@ def test_glm_arm_row_is_verbatim_and_never_default() -> None:
     ]
     options = picker_options(response)
     assert options[0]["isDefault"] is True and options[0]["id"] == "gpt-5.6-sol"
-    assert options[1] == {"id": "glm-5-2", "displayName": "glm-5-2"}
+    assert options[1] == {
+        "id": "glm-5-2",
+        "model": "system.ai.glm-5-2",
+        "displayName": "glm-5-2",
+        "description": "Databricks AI Gateway (system.ai.glm-5-2)",
+        "defaultReasoningEffort": "medium",
+        "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"},
+            {"reasoningEffort": "medium"},
+            {"reasoningEffort": "high"},
+        ],
+    }
 
 
 def test_normalize_relay_model_body_translates_bare_arms() -> None:
@@ -266,3 +287,19 @@ def test_normalize_relay_model_body_translates_bare_arms() -> None:
     assert _json.loads(out)["model"] == "system.ai.glm-5-2"
     for untouched in (b'{"model": "gpt-5.6-sol"}', b"not json", b"{}"):
         assert normalize_relay_model_body(untouched) == untouched
+
+
+def test_service_id_for_slug_inverts_codex_slug() -> None:
+    """Every served id round-trips slug -> service id (the row's ``model``)."""
+    for service_id in (
+        "system.ai.gpt-5-6-sol",
+        "system.ai.gpt-5-5",
+        "system.ai.gpt-5-5-pro",
+        "system.ai.gpt-5",
+        "system.ai.gpt-5-mini",
+        "system.ai.gpt-5-4-nano",
+        "system.ai.gpt-5-3-codex",
+        "system.ai.glm-5-2",
+        "system.ai.gpt-oss-120b",
+    ):
+        assert service_id_for_slug(codex_slug(service_id)) == service_id
