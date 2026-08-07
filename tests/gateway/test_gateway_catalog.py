@@ -58,6 +58,8 @@ def _native_catalog() -> dict:
                 "priority": 0,
                 "visibility": "list",
                 "base_instructions": "instr",
+                "tool_mode": "code_mode_only",
+                "multi_agent_version": "v2",
             },
             {
                 "slug": "gpt-5.5",
@@ -352,3 +354,49 @@ def test_servlet_client_reads_routable_slugs(tmp_path, monkeypatch) -> None:
     assert seen["url"] == "http://127.0.0.1:6768/admin/catalog"
     assert seen["params"] == {"profile": "oss", "workspace_host": "https://ws.example"}
     assert seen["headers"] == {"authorization": "Bearer tok"}
+
+
+def test_normalize_relay_model_body_translates_localized_spellings() -> None:
+    """``databricks-``-localized ids resolve to the same service on the wire.
+
+    Orchestrator surfaces predating the servlet hand out ``databricks-glm-5-2``;
+    a session pinned with that spelling must still run. Claude-style localized
+    ids stay untouched — they never route through the codex servlet.
+    """
+    import json as _json
+
+    from omnigent.gateway.catalog import normalize_relay_model_body
+
+    out = normalize_relay_model_body(b'{"model": "databricks-glm-5-2"}')
+    assert _json.loads(out)["model"] == "system.ai.glm-5-2"
+    out = normalize_relay_model_body(b'{"model": "databricks-gpt-5-4"}')
+    assert _json.loads(out)["model"] == "system.ai.gpt-5-4"
+    untouched = b'{"model": "databricks-claude-opus-4-8"}'
+    assert normalize_relay_model_body(untouched) == untouched
+
+
+def test_service_id_for_slug_accepts_localized_spellings() -> None:
+    assert service_id_for_slug("databricks-glm-5-2") == "system.ai.glm-5-2"
+    assert service_id_for_slug("databricks-gpt-5-6-sol") == "system.ai.gpt-5-6-sol"
+    assert (
+        service_id_for_slug("databricks-claude-opus-4-8") == "databricks-claude-opus-4-8"
+    )
+
+
+def test_synthesized_arm_entries_do_not_advertise_code_mode() -> None:
+    """Arm entries must not clone GPT's Code Mode markers.
+
+    ``tool_mode: code_mode_only`` / ``multi_agent_version: v2`` declare the
+    trained-in GPT grammar; advertising them for a translated arm makes codex
+    withhold the classic JSON tool set, leaving the model unable to run shell
+    or MCP tools.
+    """
+    response = build_models_response(
+        ["system.ai.glm-5-2", "system.ai.gpt-5-6-sol"], _native_catalog()
+    )
+    assert response is not None
+    by_slug = {m["slug"]: m for m in response["models"]}
+    assert by_slug["glm-5-2"]["tool_mode"] is None
+    assert by_slug["glm-5-2"]["multi_agent_version"] is None
+    # Native entries keep their own metadata untouched.
+    assert by_slug["gpt-5.6-sol"]["tool_mode"] == _native_catalog()["models"][0]["tool_mode"]

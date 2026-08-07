@@ -1972,3 +1972,40 @@ def test_ucode_codex_default_prefers_agent_pin_then_newest(
     assert codex_native_app_server._ucode_codex_default("oss") == "gpt-5.6-terra"
 
     assert codex_native_app_server._ucode_codex_default("missing-profile") is None
+
+
+def test_build_codex_native_server_canonicalizes_localized_explicit_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``databricks-``-localized explicit model pins as the codex slug.
+
+    Orchestrators picking from pre-servlet catalog surfaces send
+    ``databricks-glm-5-2``; codex has metadata (and the gateway a route)
+    only for the bare arm slug, so the pin, composer, and wire must all
+    see ``glm-5-2``.
+    """
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._find_codex_cli",
+        lambda: sys.executable,
+    )
+    _write_oss_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._gateway_servlet_session",
+        lambda profile: ("http://127.0.0.1:6768/g/T/v1", "printf %s T"),
+    )
+
+    app_server = build_codex_native_server(
+        socket_path=tmp_path / "codex.sock",
+        codex_home=tmp_path / "codex-home",
+        cwd=tmp_path,
+        model="databricks-glm-5-2",
+        profile="oss",
+        bridge_dir=tmp_path / "bridge",
+        ap_server_url=None,
+        ap_auth_headers={},
+    )
+    assert app_server.pinned_model == "glm-5-2"
+    assert any('model="glm-5-2"' in o for o in app_server.config_overrides)
+    # The arm pin also forces Code Mode off so codex serves JSON tools.
+    assert any("features.code_mode=false" in o for o in app_server.config_overrides)

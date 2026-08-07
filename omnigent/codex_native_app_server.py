@@ -1935,6 +1935,14 @@ def build_codex_native_server(
         # per-user cache can shadow newer bundled data, so it must never
         # outrank a live-discovered source).
         resolved_model = model
+        if resolved_model is not None:
+            # Canonicalize whatever spelling the caller sent (bare slug,
+            # ``system.ai.*`` id, or a ``databricks-``-localized id from an
+            # older catalog surface) to the slug codex natively knows, so
+            # the pin, the composer, and the wire all agree.
+            from omnigent.gateway.catalog import codex_slug, service_id_for_slug
+
+            resolved_model = codex_slug(service_id_for_slug(resolved_model))
         if resolved_model is None and servlet_session is not None:
             resolved_model = _gateway_catalog_default(gateway_base_url)
         if resolved_model is None:

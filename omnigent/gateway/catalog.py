@@ -54,7 +54,14 @@ def normalize_relay_model_body(body: bytes) -> bytes:
     """
     try:
         payload = json.loads(body)
-        full = EXTENDED_CATALOG_MODELS.get(payload.get("model"))
+        model = payload.get("model")
+        full = EXTENDED_CATALOG_MODELS.get(model)
+        if full is None and isinstance(model, str) and model.startswith(_DATABRICKS_LOCAL_PREFIX):
+            # Localized ids from pre-servlet catalog surfaces
+            # (``databricks-glm-5-2``): resolve them too, so sessions pinned
+            # with that spelling still run.
+            resolved = service_id_for_slug(model)
+            full = resolved if resolved != model else None
         if full is None:
             return body
         payload["model"] = full
@@ -64,6 +71,9 @@ def normalize_relay_model_body(body: bytes) -> bytes:
 
 
 _MODEL_SERVICE_PREFIX = "model-services/"
+# Localized spelling some catalog surfaces use for gateway-served models
+# (``databricks-glm-5-2``); accepted on input, never emitted.
+_DATABRICKS_LOCAL_PREFIX = "databricks-"
 _SYSTEM_PREFIX = "system.ai."
 # Mainline GPT service ids (``gpt-<major>[-<minor>][-<suffix>]``) convert to
 # the dotted OpenAI slug (``gpt-5.6-sol``); anything else stays verbatim —
@@ -161,6 +171,10 @@ def service_id_for_slug(slug: str) -> str:
     id), so UI surfaces can highlight the running model without re-deriving
     spellings.
 
+    Also accepts the ``databricks-``-localized spellings older catalog
+    surfaces hand to orchestrators (``databricks-glm-5-2``), so a model id
+    picked from any feed resolves to the same service.
+
     :param slug: Catalog slug, e.g. ``"gpt-5.6-sol"`` or ``"glm-5-2"``.
     :returns: The service id, e.g. ``"system.ai.gpt-5-6-sol"``; verbatim
         (non-mainline, non-arm) ids return unchanged.
@@ -168,6 +182,13 @@ def service_id_for_slug(slug: str) -> str:
     full_arm = EXTENDED_CATALOG_MODELS.get(slug)
     if full_arm is not None:
         return full_arm
+    if slug.startswith(_DATABRICKS_LOCAL_PREFIX):
+        stripped = slug.removeprefix(_DATABRICKS_LOCAL_PREFIX)
+        localized_arm = EXTENDED_CATALOG_MODELS.get(stripped)
+        if localized_arm is not None:
+            return localized_arm
+        if _MAINLINE_SERVICE_RE.fullmatch(stripped):
+            return f"{_SYSTEM_PREFIX}{stripped}"
     match = _MAINLINE_SLUG_RE.fullmatch(slug)
     if match is None:
         return slug
@@ -264,6 +285,15 @@ def build_models_response(
             entry["default_reasoning_level"] = "medium"
             entry["availability_nux"] = None
             entry["upgrade"] = None
+            # A cloned ``code_mode_only`` tool mode / ``v2`` multi-agent
+            # version declare GPT's trained-in Code Mode grammar, which makes
+            # codex withhold the classic JSON tool set entirely — a
+            # translated arm cannot speak that grammar and ends up unable to
+            # run shell or MCP tools. Nulling both (codex's values for
+            # models without Code Mode) restores standard JSON function
+            # tools.
+            entry["tool_mode"] = None
+            entry["multi_agent_version"] = None
         models.append(entry)
     return {"models": models}
 
