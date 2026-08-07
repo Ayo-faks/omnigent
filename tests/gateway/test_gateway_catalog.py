@@ -60,6 +60,7 @@ def _native_catalog() -> dict:
                 "base_instructions": "instr",
                 "tool_mode": "code_mode_only",
                 "multi_agent_version": "v2",
+                "use_responses_lite": True,
             },
             {
                 "slug": "gpt-5.5",
@@ -397,6 +398,10 @@ def test_synthesized_arm_entries_do_not_advertise_code_mode() -> None:
     assert by_slug["glm-5-2"]["tool_mode"] is None
     assert by_slug["glm-5-2"]["multi_agent_version"] is None
     assert by_slug["glm-5-2"]["supports_search_tool"] is False
+    # The lite Responses wire omits the JSON tools array from app-server
+    # turns entirely — the fourth GPT-only protocol marker arms must drop.
+    assert by_slug["glm-5-2"]["use_responses_lite"] is False
+    assert by_slug["gpt-5.6-sol"]["use_responses_lite"] is True
     # Native entries keep their own metadata untouched.
     assert by_slug["gpt-5.6-sol"]["tool_mode"] == _native_catalog()["models"][0]["tool_mode"]
 

@@ -299,6 +299,13 @@ def build_models_response(
             # discovered on demand) — another GPT-only protocol an arm
             # cannot drive. Off ⇒ direct tools stay in the request.
             entry["supports_search_tool"] = False
+            # ``use_responses_lite`` switches app-server turns onto the lite
+            # Responses wire, which omits the JSON ``tools`` array from the
+            # request entirely (tool specs travel out-of-band — a hosted
+            # OpenAI protocol). GPT models survive on their trained-in
+            # grammar; an arm gets no tools at all. The classic wire keeps
+            # tools in-body, which arms drive correctly.
+            entry["use_responses_lite"] = False
         models.append(entry)
     return {"models": models}
 
