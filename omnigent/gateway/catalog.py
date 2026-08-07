@@ -152,6 +152,30 @@ def codex_slug(service_id: str) -> str:
     return f"gpt-{version}{suffix or ''}"
 
 
+def service_id_for_slug(slug: str) -> str:
+    """
+    Invert :func:`codex_slug`: the ``system.ai.*`` service id a slug routes to.
+
+    Standard picker rows carry both the settable token (``id`` — the slug
+    codex accepts) and the wire model it resolves to (``model`` — the service
+    id), so UI surfaces can highlight the running model without re-deriving
+    spellings.
+
+    :param slug: Catalog slug, e.g. ``"gpt-5.6-sol"`` or ``"glm-5-2"``.
+    :returns: The service id, e.g. ``"system.ai.gpt-5-6-sol"``; verbatim
+        (non-mainline, non-arm) ids return unchanged.
+    """
+    full_arm = EXTENDED_CATALOG_MODELS.get(slug)
+    if full_arm is not None:
+        return full_arm
+    match = _MAINLINE_SLUG_RE.fullmatch(slug)
+    if match is None:
+        return slug
+    major, minor, suffix = match.groups()
+    version = major if minor is None else f"{major}-{minor}"
+    return f"{_SYSTEM_PREFIX}gpt-{version}{suffix or ''}"
+
+
 def _slug_sort_key(slug: str) -> tuple[int, int, int, str]:
     """Order mainline GPT slugs newest-first; non-mainline ids last, alpha."""
     match = _MAINLINE_SLUG_RE.fullmatch(slug)
@@ -236,8 +260,16 @@ def picker_options(models_response: dict[str, Any]) -> list[dict[str, object]]:
     """
     Web-picker rows for a built catalog (first entry is the default).
 
+    Rows use the standard picker contract — the server's
+    ``NativeModelOption`` field names, i.e. the same shape the in-session
+    gear already renders from codex ``model/list`` — so both picker surfaces
+    share one row schema: ``id`` (the settable slug), ``model`` (the
+    ``system.ai.*`` service id it resolves to), the display name, the
+    routing description, and the entry's real effort ladder.
+
     :param models_response: Output of :func:`build_models_response`.
-    :returns: ``[{"id", "displayName", "isDefault"?}, ...]``.
+    :returns: Standard picker rows in catalog order; only the first carries
+        ``isDefault``.
     """
     options: list[dict[str, object]] = []
     for index, entry in enumerate(models_response.get("models", [])):
@@ -245,13 +277,31 @@ def picker_options(models_response: dict[str, Any]) -> list[dict[str, object]]:
         if not isinstance(slug, str) or not slug:
             continue
         display = entry.get("display_name")
-        options.append(
-            {
-                "id": slug,
-                "displayName": display if isinstance(display, str) and display else slug,
-                **({"isDefault": True} if index == 0 else {}),
-            }
-        )
+        row: dict[str, object] = {
+            "id": slug,
+            "model": service_id_for_slug(slug),
+            "displayName": display if isinstance(display, str) and display else slug,
+        }
+        if index == 0:
+            row["isDefault"] = True
+        description = entry.get("description")
+        if isinstance(description, str) and description:
+            row["description"] = description
+        default_effort = entry.get("default_reasoning_level")
+        if isinstance(default_effort, str) and default_effort:
+            row["defaultReasoningEffort"] = default_effort
+        efforts: list[dict[str, str]] = []
+        for level in entry.get("supported_reasoning_levels", []):
+            if not isinstance(level, dict) or not isinstance(level.get("effort"), str):
+                continue
+            effort_row = {"reasoningEffort": level["effort"]}
+            level_description = level.get("description")
+            if isinstance(level_description, str) and level_description:
+                effort_row["description"] = level_description
+            efforts.append(effort_row)
+        if efforts:
+            row["supportedReasoningEfforts"] = efforts
+        options.append(row)
     return options
 
 
