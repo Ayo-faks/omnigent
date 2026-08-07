@@ -176,7 +176,7 @@ def build_models_response(
         entry["visibility"] = "list"
         if native is None:
             entry["display_name"] = slug.removeprefix(_SYSTEM_PREFIX)
-            entry["description"] = f"Served by the workspace AI Gateway ({service_by_slug[slug]})"
+            entry["description"] = f"Databricks AI Gateway ({service_by_slug[slug]})"
             entry["supported_reasoning_levels"] = [
                 level
                 for level in template.get("supported_reasoning_levels", [])
