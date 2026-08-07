@@ -82,6 +82,7 @@ import {
   useBrainHarnessLabels,
 } from "@/lib/agentLabels";
 import { useConversations } from "@/hooks/useConversations";
+import { useHostModelOptions } from "@/hooks/useHosts";
 import { usePermissions } from "@/hooks/usePermissions";
 import type { NativeModelOption, SandboxStatus, Session, SessionStatus } from "@/lib/types";
 import { usePromptHistory } from "@/hooks/usePromptHistory";
@@ -1103,9 +1104,25 @@ export function ChatPage() {
     document.title = showsWorking ? `● ${base}` : base;
   }, [activeConv?.title, subAgentTabTitle, showsWorking, urlConvId]);
 
-  const codexModelOptions = useChatStore((s) => s.codexModelOptions);
+  const storeCodexModelOptions = useChatStore((s) => s.codexModelOptions);
   const selectedModel = useChatStore((s) => s.selectedModel);
+  const sessionModelOverride = useChatStore((s) => s.sessionModelOverride);
   const llmModel = useChatStore((s) => s.llmModel);
+  // A fresh codex session has no model_options until the runner pushes
+  // codex's live catalog, seconds after launch — which hid the Effort row
+  // and let the ladder fall back to the wrong (default) model's efforts.
+  // The host's pre-launch catalog serves the same NativeModelOption rows
+  // instantly (and is usually already cached from the new-chat picker), so
+  // seed the pickers from it until the session snapshot lands; the runner
+  // rows stay authoritative once present. Must run before the hydration
+  // gates below — they return early, and hooks may not be conditional.
+  const hostModelOptionsSeed = useHostModelOptions(
+    (activeSession?.labels?.["omnigent.wrapper"] ?? activeConv?.labels?.["omnigent.wrapper"]) ===
+      "codex-native-ui" && storeCodexModelOptions.length === 0
+      ? (activeSession?.hostId ?? activeConv?.host_id ?? null)
+      : null,
+    "codex-native",
+  );
 
   // Loading + error gates for `/c/:id` hydration.
   if (urlConvId) {
@@ -1207,10 +1224,15 @@ export function ChatPage() {
     labels: activeSession ? (activeSession.labels ?? {}) : (activeConv?.labels ?? {}),
   };
   const modelPickerKind = modelPickerKindForConv(capabilitySource);
+  const codexModelOptions =
+    storeCodexModelOptions.length > 0 ? storeCodexModelOptions : (hostModelOptionsSeed.data ?? []);
   const effortLevels = effortLevelsForConv(
     capabilitySource,
     codexModelOptions,
-    selectedModel ?? llmModel,
+    // Session-applied model first: the sticky cross-session pick and the
+    // late-mirrored llmModel can both be stale/absent on a fresh session,
+    // and resolving against them borrowed the default row's ladder.
+    sessionModelOverride ?? selectedModel ?? llmModel,
   );
   const showEffort = shouldShowEffortPicker(capabilitySource) && effortLevels.length > 0;
 

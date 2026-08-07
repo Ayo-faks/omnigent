@@ -12,9 +12,11 @@ def _patch_session_as_codex_native(
     page: Page,
     session_id: str,
     *,
-    llm_model: str = "gpt-5.5",
+    llm_model: str | None = "gpt-5.5",
     reasoning_effort: str = "xhigh",
     model_options: list[dict] | None = None,
+    host_id: str | None = None,
+    model_override: str | None = None,
 ) -> list[dict]:
     """Patch the browser's session snapshot into a codex-native response.
 
@@ -29,7 +31,10 @@ def _patch_session_as_codex_native(
     :param llm_model: Bound model id the snapshot reports.
     :param reasoning_effort: Session effort the snapshot reports.
     :param model_options: Codex ``model/list`` rows; ``None`` uses the
-        default gpt-5.5 row.
+        default gpt-5.5 row, ``[]`` simulates a fresh session whose runner
+        has not pushed the catalog yet.
+    :param host_id: Optional host binding to expose on the snapshot.
+    :param model_override: Optional pinned model to expose on the snapshot.
     :returns: Captured PATCH request bodies.
     """
     latest_payload: dict | None = None
@@ -69,24 +74,32 @@ def _patch_session_as_codex_native(
         payload["harness"] = "codex"
         payload["llm_model"] = llm_model
         payload["reasoning_effort"] = reasoning_effort
-        payload["model_options"] = model_options or [
-            {
-                "id": "gpt-5.5",
-                "model": "databricks-gpt-5-5",
-                "displayName": "Codex Pretty 5.5",
-                "defaultReasoningEffort": "xhigh",
-                "supportedReasoningEfforts": [
-                    {"reasoningEffort": "low", "description": "Low from Codex"},
-                    {
-                        "reasoningEffort": "xhigh",
-                        "description": "Raw xhigh from Codex",
-                        "codexOnly": True,
-                    },
-                ],
-                "isDefault": True,
-                "vendorMetadata": {"source": "codex"},
-            }
-        ]
+        if host_id is not None:
+            payload["host_id"] = host_id
+        if model_override is not None:
+            payload["model_override"] = model_override
+        payload["model_options"] = (
+            [
+                {
+                    "id": "gpt-5.5",
+                    "model": "databricks-gpt-5-5",
+                    "displayName": "Codex Pretty 5.5",
+                    "defaultReasoningEffort": "xhigh",
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "low", "description": "Low from Codex"},
+                        {
+                            "reasoningEffort": "xhigh",
+                            "description": "Raw xhigh from Codex",
+                            "codexOnly": True,
+                        },
+                    ],
+                    "isDefault": True,
+                    "vendorMetadata": {"source": "codex"},
+                }
+            ]
+            if model_options is None
+            else model_options
+        )
         latest_payload = dict(payload)
         route.fulfill(
             status=200,
@@ -222,6 +235,76 @@ def test_codex_effort_outside_model_ladder_reads_default(
         "medium", timeout=10_000
     )
     assert any(body.get("reasoning_effort") == "medium" for body in patch_bodies)
+
+
+def test_codex_gear_seeds_effort_ladder_from_host_catalog(
+    page: Page,
+    seeded_session: tuple[str, str],
+) -> None:
+    """The gear's model/effort options appear before the runner's catalog.
+
+    A fresh codex session carries no ``model_options`` until the runner
+    pushes codex's live catalog seconds after launch — which hid the Effort
+    row entirely, then let the ladder resolve against the wrong (default)
+    model. The page now seeds the pickers from the host's pre-launch
+    ``model-options`` API and resolves the ladder against the session's
+    pinned model, so a glm session shows glm's ladder immediately and an
+    out-of-ladder sticky effort reads Default.
+
+    :param page: Playwright page fixture.
+    :param seeded_session: ``(base_url, session_id)`` for a real server-backed
+        session; the browser snapshot is patched to codex-native.
+    :returns: None.
+    """
+    base_url, session_id = seeded_session
+    glm_row = {
+        "id": "glm-5-2",
+        "model": "system.ai.glm-5-2",
+        "displayName": "glm-5-2",
+        "defaultReasoningEffort": "medium",
+        "supportedReasoningEfforts": [
+            {"reasoningEffort": "low"},
+            {"reasoningEffort": "medium"},
+            {"reasoningEffort": "high"},
+        ],
+        "isDefault": True,
+    }
+    seed_hits: list[str] = []
+
+    def handle_host_options(route: Route) -> None:
+        seed_hits.append(route.request.url)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"models": [glm_row], "routable_models": ["glm-5-2"]}),
+        )
+
+    page.route("**/v1/hosts/hostseed/model-options*", handle_host_options)
+    _patch_session_as_codex_native(
+        page,
+        session_id,
+        llm_model=None,
+        reasoning_effort="xhigh",
+        model_options=[],
+        host_id="hostseed",
+        model_override="glm-5-2",
+    )
+
+    page.goto(f"{base_url}/c/{session_id}")
+
+    page.get_by_test_id("composer-config-gear").click()
+    expect(page.get_by_test_id("composer-config-modal")).to_be_visible()
+    # The Effort row exists immediately (it used to be hidden until the
+    # runner catalog landed) and reads Default: xhigh is outside glm's
+    # seeded ladder.
+    effort_trigger = page.get_by_test_id("composer-config-effort")
+    expect(effort_trigger).to_be_visible()
+    expect(effort_trigger).to_contain_text("Default")
+    effort_trigger.click()
+    for level in ("low", "medium", "high"):
+        expect(page.locator(f'[role="option"][data-effort-level="{level}"]')).to_be_visible()
+    expect(page.locator('[role="option"][data-effort-level="xhigh"]')).to_have_count(0)
+    assert seed_hits, "the host model-options API was never consulted"
 
 
 def test_codex_native_plan_mode_toggle_uses_codex_session_patch(
