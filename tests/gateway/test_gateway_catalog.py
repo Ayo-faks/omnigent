@@ -37,7 +37,7 @@ from omnigent.gateway.state import (
         ("system.ai.gpt-5-3-codex", "gpt-5.3-codex"),
         # Non-mainline ids stay verbatim (no native Codex metadata exists).
         ("system.ai.gpt-oss-120b", "system.ai.gpt-oss-120b"),
-        ("system.ai.glm-5-2", "system.ai.glm-5-2"),
+        ("system.ai.glm-5-2", "glm-5-2"),
     ],
 )
 def test_codex_slug(service_id: str, expected: str) -> None:
@@ -84,7 +84,7 @@ def test_build_models_response_orders_and_enriches() -> None:
     slugs = [m["slug"] for m in response["models"]]
     # Native-priority order first (sol, 5.5), then unknown mainline
     # newest-first (luna), then non-mainline verbatim ids.
-    assert slugs == ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna", "system.ai.glm-5-2"]
+    assert slugs == ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna", "glm-5-2"]
     assert [m["priority"] for m in response["models"]] == [0, 1, 2, 3]
     sol = response["models"][0]
     assert sol["display_name"] == "GPT-5.6 Sol"
@@ -246,7 +246,7 @@ def test_glm_arm_row_is_verbatim_and_never_default() -> None:
     )
     assert response is not None
     slugs = [m["slug"] for m in response["models"]]
-    assert slugs == ["gpt-5.6-sol", "system.ai.glm-5-2"]
+    assert slugs == ["gpt-5.6-sol", "glm-5-2"]
     glm = response["models"][1]
     assert glm["display_name"] == "glm-5-2"
     assert [lvl["effort"] for lvl in glm["supported_reasoning_levels"]] == [
@@ -256,4 +256,14 @@ def test_glm_arm_row_is_verbatim_and_never_default() -> None:
     ]
     options = picker_options(response)
     assert options[0]["isDefault"] is True and options[0]["id"] == "gpt-5.6-sol"
-    assert options[1] == {"id": "system.ai.glm-5-2", "displayName": "glm-5-2"}
+    assert options[1] == {"id": "glm-5-2", "displayName": "glm-5-2"}
+
+
+def test_normalize_relay_model_body_translates_bare_arms() -> None:
+    from omnigent.gateway.catalog import normalize_relay_model_body
+    import json as _json
+
+    out = normalize_relay_model_body(b'{"model": "glm-5-2", "stream": true}')
+    assert _json.loads(out)["model"] == "system.ai.glm-5-2"
+    for untouched in (b'{"model": "gpt-5.6-sol"}', b"not json", b"{}"):
+        assert normalize_relay_model_body(untouched) == untouched

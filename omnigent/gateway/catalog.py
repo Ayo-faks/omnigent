@@ -33,6 +33,36 @@ CODEX_API_TYPE = "openai/v1/responses"
 # catalog default.
 _TRANSLATED_ARM_IDS = frozenset(EXTENDED_CATALOG_MODELS.values())
 
+# Arm service id -> the bare slug shown to codex (``system.ai.glm-5-2`` ->
+# ``glm-5-2``). The relay maps the bare spelling back before forwarding
+# (:func:`normalize_relay_model_body`) because the gateway only resolves
+# bare slugs for mainline GPT.
+_ARM_BARE_BY_ID = {full: bare for bare, full in EXTENDED_CATALOG_MODELS.items()}
+
+
+def normalize_relay_model_body(body: bytes) -> bytes:
+    """
+    Rewrite a relayed request's bare arm model spelling to its service id.
+
+    The one deliberate exception to the byte-faithful relay: codex speaks the
+    bare arm slug the catalog shows (``glm-5-2``); the gateway resolves only
+    the ``system.ai.*`` spelling. Anything unparsable or unrelated passes
+    through untouched.
+
+    :param body: Raw request body bytes.
+    :returns: The body with ``model`` translated, or the original bytes.
+    """
+    try:
+        payload = json.loads(body)
+        full = EXTENDED_CATALOG_MODELS.get(payload.get("model"))
+        if full is None:
+            return body
+        payload["model"] = full
+        return json.dumps(payload).encode("utf-8")
+    except Exception:  # noqa: BLE001 — never let normalization break the relay
+        return body
+
+
 _MODEL_SERVICE_PREFIX = "model-services/"
 _SYSTEM_PREFIX = "system.ai."
 # Mainline GPT service ids (``gpt-<major>[-<minor>][-<suffix>]``) convert to
@@ -110,6 +140,9 @@ def codex_slug(service_id: str) -> str:
     :returns: ``"gpt-5.6-sol"`` for mainline GPT ids; the id verbatim
         otherwise.
     """
+    bare_arm = _ARM_BARE_BY_ID.get(service_id)
+    if bare_arm is not None:
+        return bare_arm
     tail = service_id.removeprefix(_SYSTEM_PREFIX)
     match = _MAINLINE_SERVICE_RE.fullmatch(tail)
     if match is None:
