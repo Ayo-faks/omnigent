@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -513,21 +514,28 @@ async def _serve_on(app: Starlette, port: int) -> tuple[uvicorn.Server, asyncio.
         access_log=False,
         lifespan="off",
     )
+    # Bind here rather than inside uvicorn: a busy port then surfaces as a
+    # catchable RuntimeError instead of uvicorn's SystemExit killing the
+    # daemon before the next candidate port is tried.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as exc:
+        sock.close()
+        raise RuntimeError(f"gateway servlet could not bind port {port}: {exc}") from exc
+    bound_port = sock.getsockname()[1]
     server = uvicorn.Server(config)
-    task = asyncio.create_task(server.serve(), name="gateway-servlet")
+    task = asyncio.create_task(server.serve(sockets=[sock]), name="gateway-servlet")
     deadline = time.monotonic() + _START_TIMEOUT_S
     while not server.started:
         if task.done():
-            raise RuntimeError(f"gateway servlet failed to bind port {port}: {task.exception()!r}")
+            exc = task.exception()
+            raise RuntimeError(f"gateway servlet failed to start on port {bound_port}: {exc!r}")
         if time.monotonic() > deadline:
             task.cancel()
-            raise RuntimeError(f"gateway servlet did not start in time on port {port}")
+            raise RuntimeError(f"gateway servlet did not start in time on port {bound_port}")
         await asyncio.sleep(0.02)
-    sockets = server.servers[0].sockets if server.servers else []
-    if not sockets:
-        task.cancel()
-        raise RuntimeError("gateway servlet bound no socket")
-    return server, task, sockets[0].getsockname()[1]
+    return server, task, bound_port
 
 
 async def start_gateway_servlet(
