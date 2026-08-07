@@ -1769,6 +1769,57 @@
         "title": "HeartbeatEvent",
         "type": "object"
       },
+      "HostModelOptionsLegacyResponse": {
+        "description": "Legacy host model-options envelope: rows in the host's own shape.",
+        "properties": {
+          "models": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "routable_models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Routable Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models",
+          "routable_models"
+        ],
+        "title": "HostModelOptionsLegacyResponse",
+        "type": "object"
+      },
+      "HostModelOptionsResponse": {
+        "description": "Standard host model-options envelope (`NativeModelOption` rows).",
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/NativeModelOption"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "routable_models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Routable Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models",
+          "routable_models"
+        ],
+        "title": "HostModelOptionsResponse",
+        "type": "object"
+      },
       "ImportItemInput": {
         "description": "One normalized existing Omnigent item received from the CLI.",
         "properties": {
@@ -7752,9 +7803,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Host Model Options V1 Hosts  Host Id  Harnesses  Harness  Model Options Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/HostModelOptionsLegacyResponse"
                 }
               }
             },
@@ -7808,9 +7857,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Host Model Options By Harness V1 Hosts  Host Id  Model Options Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/HostModelOptionsResponse"
                 }
               }
             },

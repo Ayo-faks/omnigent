@@ -400,3 +400,74 @@ def test_synthesized_arm_entries_do_not_advertise_code_mode() -> None:
     assert by_slug["glm-5-2"]["multi_agent_version"] is None
     # Native entries keep their own metadata untouched.
     assert by_slug["gpt-5.6-sol"]["tool_mode"] == _native_catalog()["models"][0]["tool_mode"]
+
+
+def test_admin_register_rejects_mismatched_workspace_host(tmp_path, monkeypatch) -> None:
+    """The minted-bearer destination is always the profile's own host.
+
+    A caller-supplied ``workspace_host`` is only accepted when it matches the
+    ``~/.databrickscfg`` resolution — anything else would let a loopback
+    caller aim minted credentials at an attacker-chosen origin.
+    """
+    from starlette.testclient import TestClient
+
+    from omnigent.gateway.servlet import GatewayServlet
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "omnigent.gateway.servlet.databrickscfg_host_for_profile",
+        lambda profile: "https://real.example" if profile == "oss" else None,
+    )
+    servlet = GatewayServlet()
+    client = TestClient(servlet.build_app())
+    auth = {"authorization": f"Bearer {servlet.admin_token}"}
+
+    ok = client.post("/admin/sessions", json={"profile": "oss"}, headers=auth)
+    assert ok.status_code == 200
+
+    matching = client.post(
+        "/admin/sessions",
+        json={"profile": "oss", "workspace_host": "https://real.example/"},
+        headers=auth,
+    )
+    assert matching.status_code == 200
+
+    hostile = client.post(
+        "/admin/sessions",
+        json={"profile": "oss", "workspace_host": "https://evil.example"},
+        headers=auth,
+    )
+    assert hostile.status_code == 400
+
+    unknown = client.post("/admin/sessions", json={"profile": "nope"}, headers=auth)
+    assert unknown.status_code == 400
+
+    catalog_hostile = client.get(
+        "/admin/catalog",
+        params={"profile": "oss", "workspace_host": "https://evil.example"},
+        headers=auth,
+    )
+    assert catalog_hostile.status_code == 400
+
+
+def test_proxy_rejects_dot_segment_traversal(tmp_path, monkeypatch) -> None:
+    """``..`` segments must not walk the token off the codex surface.
+
+    httpx normalizes dot segments when building the upstream request, so an
+    unchecked path could reach arbitrary same-origin workspace APIs with the
+    minted bearer.
+    """
+    from starlette.testclient import TestClient
+
+    from omnigent.gateway.servlet import GatewayServlet
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    servlet = GatewayServlet()
+    session = servlet.register_session("oss", "https://ws.example")
+    client = TestClient(servlet.build_app())
+
+    encoded = client.get(f"/g/{session.token}/v1/%2e%2e/%2e%2e/api/2.1/secrets")
+    assert encoded.status_code == 404
+
+    literal = client.get(f"/g/{session.token}/v1/../../api/2.1/secrets")
+    assert literal.status_code == 404

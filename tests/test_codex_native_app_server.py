@@ -1956,11 +1956,13 @@ def test_ucode_codex_default_prefers_agent_pin_then_newest(
     ucode_dir.mkdir()
     # The state path is bound at import time, so patch the module constant.
     monkeypatch.setattr("omnigent.onboarding.ucode_state._STATE_PATH", ucode_dir / "state.json")
+    # ucode stores gateway-localized ids (``databricks-gpt-5-5`` form);
+    # system.ai.* spellings must resolve identically.
     state = {
         "workspaces": {
             "https://ws.example": {
-                "codex_models": ["system.ai.gpt-5-5", "system.ai.gpt-5-6-terra"],
-                "agents": {"codex": {"model": "system.ai.gpt-5-6-luna"}},
+                "codex_models": ["databricks-gpt-5-5", "databricks-gpt-5-6-terra"],
+                "agents": {"codex": {"model": "databricks-gpt-5-6-luna"}},
             }
         }
     }
@@ -1968,6 +1970,13 @@ def test_ucode_codex_default_prefers_agent_pin_then_newest(
     assert codex_native_app_server._ucode_codex_default("oss") == "gpt-5.6-luna"
 
     state["workspaces"]["https://ws.example"]["agents"] = {}
+    (ucode_dir / "state.json").write_text(_json.dumps(state), encoding="utf-8")
+    assert codex_native_app_server._ucode_codex_default("oss") == "gpt-5.6-terra"
+
+    state["workspaces"]["https://ws.example"]["codex_models"] = [
+        "system.ai.gpt-5-5",
+        "system.ai.gpt-5-6-terra",
+    ]
     (ucode_dir / "state.json").write_text(_json.dumps(state), encoding="utf-8")
     assert codex_native_app_server._ucode_codex_default("oss") == "gpt-5.6-terra"
 

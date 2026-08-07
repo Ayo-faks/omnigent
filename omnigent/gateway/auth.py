@@ -12,12 +12,9 @@ from __future__ import annotations
 import asyncio
 import configparser
 import json
-import logging
 import os
 import time
 from pathlib import Path
-
-_logger = logging.getLogger(__name__)
 
 # Re-mint cadence; matches the harness-side seams (claude apiKeyHelper TTL /
 # codex refresh_interval_ms are both 900s).
@@ -64,6 +61,8 @@ class TokenMinter:
         :raises RuntimeError: When minting fails (dead auth); the caller
             surfaces this as a 502 with the real cause.
         """
+        # Test/dev escape hatch. Profile-blind by design: it overrides every
+        # profile, so it is only correct on single-workspace hosts.
         env_bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
         if env_bearer:
             return env_bearer
@@ -98,6 +97,7 @@ class TokenMinter:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_MINT_TIMEOUT_S)
         except TimeoutError:
             proc.kill()
+            await proc.wait()
             raise RuntimeError(
                 f"databricks auth token timed out for profile {profile!r}"
             ) from None

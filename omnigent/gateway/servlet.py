@@ -209,7 +209,30 @@ class GatewayServlet:
         )
 
     def _admin_authorized(self, request: Request) -> bool:
-        return request.headers.get("authorization") == f"Bearer {self.admin_token}"
+        supplied = request.headers.get("authorization") or ""
+        return secrets.compare_digest(supplied, f"Bearer {self.admin_token}")
+
+    def _workspace_host_for(self, profile: str, claimed: str | None) -> str | None:
+        """
+        Resolve *profile*'s workspace host, refusing mismatched claims.
+
+        A minted bearer must only ever travel to the profile's own
+        ``~/.databrickscfg`` host — honoring a caller-supplied origin would
+        turn the servlet into a credential-exfiltration relay.
+
+        :param profile: ``~/.databrickscfg`` profile name.
+        :param claimed: Optional host the caller sent; must match the
+            resolved host when present.
+        :returns: The resolved host, or ``None`` when unresolvable or
+            contradicted by *claimed*.
+        """
+        resolved = databrickscfg_host_for_profile(profile)
+        if not isinstance(resolved, str) or not resolved.startswith("http"):
+            return None
+        resolved = resolved.rstrip("/")
+        if claimed and claimed.rstrip("/") != resolved:
+            return None
+        return resolved
 
     async def _admin_register(self, request: Request) -> Response:
         if not self._admin_authorized(request):
@@ -222,17 +245,23 @@ class GatewayServlet:
         if not isinstance(profile, str) or not profile:
             return JSONResponse({"error": "profile required"}, status_code=400)
         # The payload is a pointer into shared host config: the profile name.
-        # The host is resolved here from ~/.databrickscfg (an explicit
-        # workspace_host is still honored for forward compatibility).
-        workspace_host = body.get("workspace_host")
-        if not isinstance(workspace_host, str) or not workspace_host:
-            workspace_host = databrickscfg_host_for_profile(profile)
-        if not isinstance(workspace_host, str) or not workspace_host.startswith("http"):
+        # The host is always resolved here from ~/.databrickscfg; a claimed
+        # workspace_host is only accepted when it matches the resolution.
+        claimed = body.get("workspace_host")
+        workspace_host = self._workspace_host_for(
+            profile, claimed if isinstance(claimed, str) else None
+        )
+        if workspace_host is None:
             return JSONResponse(
-                {"error": f"no workspace host resolvable for profile {profile!r}"},
+                {
+                    "error": (
+                        f"no workspace host resolvable for profile {profile!r} "
+                        "(or the claimed workspace_host does not match it)"
+                    )
+                },
                 status_code=400,
             )
-        session = self.register_session(profile, workspace_host.rstrip("/"))
+        session = self.register_session(profile, workspace_host)
         self.stats["sessions_registered"] += 1
         _logger.info(
             "gateway session registered (%s… -> %s, profile %r)",
@@ -246,9 +275,21 @@ class GatewayServlet:
         if not self._admin_authorized(request):
             return JSONResponse({"error": "admin token required"}, status_code=401)
         profile = request.query_params.get("profile") or ""
-        workspace_host = (request.query_params.get("workspace_host") or "").rstrip("/")
-        if not profile or not workspace_host:
-            return JSONResponse({"error": "profile and workspace_host required"}, status_code=400)
+        if not profile:
+            return JSONResponse({"error": "profile required"}, status_code=400)
+        workspace_host = self._workspace_host_for(
+            profile, request.query_params.get("workspace_host")
+        )
+        if workspace_host is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"no workspace host resolvable for profile {profile!r} "
+                        "(or the claimed workspace_host does not match it)"
+                    )
+                },
+                status_code=400,
+            )
         options = await self.catalog_options(profile=profile, workspace_host=workspace_host)
         if options is None:
             return JSONResponse({"error": "catalog unavailable"}, status_code=503)
@@ -274,6 +315,11 @@ class GatewayServlet:
         if session is None:
             return JSONResponse({"error": "unknown gateway session"}, status_code=404)
         path = request.path_params["path"]
+        if ".." in path.split("/"):
+            # httpx normalizes dot segments, so a crafted path could walk the
+            # session token out of the /ai-gateway/codex/v1 surface and reach
+            # arbitrary same-origin workspace APIs with the minted bearer.
+            return JSONResponse({"error": "invalid path"}, status_code=404)
         try:
             bearer = await self._minter.bearer(session.profile)
         except RuntimeError as exc:
@@ -317,11 +363,6 @@ class GatewayServlet:
             session.workspace_host,
             session.token[:6],
         )
-        response_headers = {
-            key: value
-            for key, value in upstream.headers.items()
-            if key.lower() not in _HOP_BY_HOP and key.lower() != "content-length"
-        }
 
         async def stream() -> Any:
             # Raw (undecoded) chunks so Content-Encoding stays end-to-end;
@@ -332,9 +373,15 @@ class GatewayServlet:
             finally:
                 await upstream.aclose()
 
-        return StreamingResponse(
-            stream(), status_code=upstream.status_code, headers=response_headers
-        )
+        response = StreamingResponse(stream(), status_code=upstream.status_code)
+        # multi_items + raw_headers keep repeated headers (e.g. Set-Cookie)
+        # intact — a dict comprehension would collapse them to the last value.
+        response.raw_headers = [
+            (key.encode("latin-1"), value.encode("latin-1"))
+            for key, value in upstream.headers.multi_items()
+            if key.lower() not in _HOP_BY_HOP and key.lower() != "content-length"
+        ]
+        return response
 
     # -------------------------------------------------------------- catalog
 
@@ -513,13 +560,14 @@ async def start_gateway_servlet(
         if prior is not None:
             prior_port = _port_of(prior.url)
             if _pid_alive(prior.pid) and prior.pid != os.getpid():
-                _logger.error(
-                    "gateway servlet state at %s is owned by live pid %d; "
-                    "not contending for its port",
-                    prior.url,
-                    prior.pid,
+                # A second daemon must not fight the first for its port —
+                # and must not overwrite the shared state file either, which
+                # would redirect new registrations away from the live owner.
+                raise RuntimeError(
+                    f"gateway servlet already running at {prior.url} "
+                    f"(pid {prior.pid}); refusing to start a second one"
                 )
-            elif prior_port is not None:
+            if prior_port is not None:
                 candidates.append(prior_port)
         if DEFAULT_GATEWAY_PORT not in candidates:
             candidates.append(DEFAULT_GATEWAY_PORT)

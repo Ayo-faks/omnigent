@@ -52,7 +52,11 @@ from omnigent.server.auth import AuthProvider
 from omnigent.server.host_registry import HostConnection, HostRegistry
 from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._host_launch import resolve_host_launch
-from omnigent.server.schemas import SessionGitOptions
+from omnigent.server.schemas import (
+    HostModelOptionsLegacyResponse,
+    HostModelOptionsResponse,
+    SessionGitOptions,
+)
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.host_store import HostStore, host_is_live
 from omnigent.stores.permission_store import PermissionStore
@@ -715,7 +719,7 @@ def create_hosts_router(
         request: Request,
         host_id: str,
         harness: str,
-    ) -> dict[str, Any]:
+    ) -> HostModelOptionsLegacyResponse:
         """Return pre-launch model choices resolved by the selected host.
 
         A preview of the host's ambient default catalog, not a binding
@@ -735,12 +739,16 @@ def create_hosts_router(
             ),
         }
 
-    @router.get("/hosts/{host_id}/model-options")
+    @router.get(
+        "/hosts/{host_id}/model-options",
+        response_model_exclude_defaults=True,
+        response_model_exclude_none=True,
+    )
     async def get_host_model_options_by_harness(
         request: Request,
         host_id: str,
         harness: str = Query(..., description="Harness name, e.g. 'codex-native'."),
-    ) -> dict[str, Any]:
+    ) -> HostModelOptionsResponse:
         """Pre-launch model choices for *harness*, in the standard row shape.
 
         The query-parameter successor to

@@ -1816,7 +1816,11 @@ def _ucode_codex_default(profile: str) -> str | None:
     """
     try:
         from omnigent.gateway.auth import databrickscfg_host_for_profile
-        from omnigent.gateway.catalog import codex_slug, newest_mainline_slug
+        from omnigent.gateway.catalog import (
+            codex_slug,
+            newest_mainline_slug,
+            service_id_for_slug,
+        )
         from omnigent.onboarding.ucode_state import read_ucode_state
 
         workspace_url = databrickscfg_host_for_profile(profile)
@@ -1825,10 +1829,12 @@ def _ucode_codex_default(profile: str) -> str | None:
         state = read_ucode_state(workspace_url)
         if state is None:
             return None
+        # ucode stores gateway-localized ids (``databricks-gpt-5-5``);
+        # service_id_for_slug canonicalizes any spelling before slugging.
         agent_state = state.agent("codex")
         if agent_state is not None and agent_state.model:
-            return codex_slug(agent_state.model)
-        return newest_mainline_slug(list(state.codex_models))
+            return codex_slug(service_id_for_slug(agent_state.model))
+        return newest_mainline_slug([service_id_for_slug(m) for m in state.codex_models])
     except Exception:  # noqa: BLE001 — default resolution is best-effort by design
         _logger.info("ucode codex default unavailable; trying the bundled catalog")
         return None
