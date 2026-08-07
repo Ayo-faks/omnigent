@@ -186,6 +186,7 @@ import {
   MODEL_SELECT_DEFAULT,
   MODEL_SELECT_SMART,
   RoutingModelSelect,
+  effortWithinLevels,
 } from "@/components/HarnessConfigControls";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import type { ServerInfo } from "@/lib/capabilities";
@@ -5459,6 +5460,7 @@ export function Composer({
               <ComposerModelEffortLabel
                 showModels={showModels}
                 showEffort={showEffort}
+                effortLevels={effortLevels}
                 modelPickerKind={modelPickerKind}
                 codexModelOptions={codexModelOptions}
                 costRoutingEligible={costRoutingEligible}
@@ -6097,18 +6099,14 @@ function SessionConfigModal({
                 // Routing picks the model (and its effort) per turn, so an
                 // explicit effort is meaningless: the row is frozen and reads as
                 // an em-dash placeholder (Radix shows it for the empty value).
-                // A sticky cross-session pick can hold an effort outside this
-                // model's ladder (e.g. xhigh from a GPT session shown on a glm
-                // session, whose ladder is low/medium/high) — Radix renders an
-                // empty trigger for a value no item declares, so the row read
-                // as blank. Clamp the DISPLAY to the ladder; the draft stays
-                // untouched so an unchanged save still writes nothing.
+                // An out-of-ladder sticky pick clamps to the Default sentinel
+                // (Radix renders an empty trigger for a value no item
+                // declares); the draft stays untouched so an unchanged save
+                // still writes nothing.
                 value={
                   draftRoutingOn
                     ? ""
-                    : draftEffort && effortLevels.includes(draftEffort)
-                      ? draftEffort
-                      : EFFORT_SELECT_NONE
+                    : (effortWithinLevels(draftEffort, effortLevels) ?? EFFORT_SELECT_NONE)
                 }
                 onValueChange={(v) => setDraftEffort(v === EFFORT_SELECT_NONE ? null : v)}
                 disabled={draftRoutingOn}
@@ -6242,6 +6240,7 @@ function ComposerConfigGear({
     harnessLabel,
     showModels,
     showEffort,
+    effortLevels,
     modelPickerKind,
     codexModelOptions,
     costRoutingEligible,
@@ -6322,6 +6321,7 @@ function useSessionConfigSummary({
   harnessLabel,
   showModels,
   showEffort,
+  effortLevels,
   modelPickerKind,
   codexModelOptions,
   costRoutingEligible,
@@ -6329,6 +6329,7 @@ function useSessionConfigSummary({
   harnessLabel: string | null;
   showModels: boolean;
   showEffort: boolean;
+  effortLevels: readonly string[];
   modelPickerKind: NativeModelPickerKind | null;
   codexModelOptions: readonly NativeModelOption[];
   costRoutingEligible: boolean;
@@ -6349,7 +6350,10 @@ function useSessionConfigSummary({
   // Suppress Effort while routing is on: the router picks the model and its
   // effort per turn, so a pinned effort doesn't apply and would mislead.
   if (showEffort && !routingOn) {
-    const effortValue = formatStatusEffortLabel(selectedEffort, modelPickerKind === "codex");
+    const effortValue = formatStatusEffortLabel(
+      effortWithinLevels(selectedEffort, effortLevels),
+      modelPickerKind === "codex",
+    );
     rows.push({ label: "Effort", value: effortValue ?? "Default" });
   }
   return rows;
@@ -6481,6 +6485,7 @@ function useResolvedComposerModel(
 function ComposerModelEffortLabel({
   showModels,
   showEffort,
+  effortLevels,
   modelPickerKind,
   codexModelOptions,
   costRoutingEligible,
@@ -6488,6 +6493,7 @@ function ComposerModelEffortLabel({
 }: {
   showModels: boolean;
   showEffort: boolean;
+  effortLevels: readonly string[];
   modelPickerKind: NativeModelPickerKind | null;
   codexModelOptions: readonly NativeModelOption[];
   costRoutingEligible: boolean;
@@ -6509,9 +6515,12 @@ function ComposerModelEffortLabel({
       </span>
     );
   }
+  // Out-of-ladder sticky picks clamp away (the session effectively runs the
+  // model's default), so the label never names an effort this model can't run.
+  const clampedEffort = effortWithinLevels(selectedEffort, effortLevels);
   const effortLabel =
-    showEffort && selectedEffort
-      ? formatStatusEffortLabel(selectedEffort, modelPickerKind === "codex")
+    showEffort && clampedEffort
+      ? formatStatusEffortLabel(clampedEffort, modelPickerKind === "codex")
       : null;
   // SDK/bundle sessions (no native picker) still surface their resolved model
   // in the label even though the gear modal has no Model dropdown for them —

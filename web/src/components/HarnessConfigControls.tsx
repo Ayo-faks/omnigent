@@ -23,6 +23,26 @@ export const EFFORT_SELECT_NONE = "__none__";
 // no effort can apply. Rendered as the Select's placeholder (value "").
 export const EFFORT_UNAVAILABLE_PLACEHOLDER = "—";
 
+/**
+ * Clamp an effort pick to the ladder the current model actually offers.
+ *
+ * The sticky cross-session pick (or a mirrored session effort) can hold a
+ * value outside the selected model's ladder — e.g. ``xhigh`` from a GPT
+ * session shown on a glm session whose ladder is low/medium/high. Callers
+ * render ``null`` as the harness default ("Default" row value, no effort in
+ * the composer label) instead of a value the session can't actually run.
+ *
+ * @param effort - The sticky/live effort pick, or null/undefined when unset.
+ * @param levels - The current model's effort ladder.
+ * @returns The effort when the ladder offers it, else ``null``.
+ */
+export function effortWithinLevels(
+  effort: string | null | undefined,
+  levels: readonly string[],
+): string | null {
+  return effort != null && levels.includes(effort) ? effort : null;
+}
+
 /** One entry in the Model row's harness-model list. */
 export interface RoutingModelOption {
   id: string;

@@ -190,9 +190,10 @@ def test_codex_effort_outside_model_ladder_reads_default(
 
     page.goto(f"{base_url}/c/{session_id}")
 
-    expect(page.get_by_test_id("composer-model-effort-label")).to_contain_text(
-        "glm-5-2", timeout=15_000
-    )
+    label = page.get_by_test_id("composer-model-effort-label")
+    expect(label).to_contain_text("glm-5-2", timeout=15_000)
+    # The bottom bar must not name an effort the model can't run either.
+    expect(label).not_to_contain_text("xhigh")
     page.get_by_test_id("composer-config-gear").click()
     expect(page.get_by_test_id("composer-config-modal")).to_be_visible()
 
