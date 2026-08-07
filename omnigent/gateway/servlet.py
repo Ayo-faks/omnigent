@@ -45,6 +45,7 @@ from omnigent.gateway.catalog import (
     catalog_etag,
     dumps_catalog,
     fetch_codex_service_ids,
+    normalize_relay_model_body,
     picker_options,
     routable_models,
 )
@@ -296,7 +297,7 @@ class GatewayServlet:
         # upstream's compressed error bodies reach a client that can't
         # decode them (observed: codex rendering a gzip error as garbage).
         headers.setdefault("accept-encoding", "identity")
-        body = await request.body()
+        body = normalize_relay_model_body(await request.body())
         upstream_request = self._client.build_request(
             request.method, url, content=body, headers=headers
         )
