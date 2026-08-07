@@ -88,9 +88,7 @@ def test_build_models_response_orders_and_enriches() -> None:
     assert [m["priority"] for m in response["models"]] == [0, 1, 2, 3]
     sol = response["models"][0]
     assert sol["display_name"] == "GPT-5.6 Sol"
-    assert sol["description"] == (
-        "Databricks AI Gateway (system.ai.gpt-5-6-sol) — Latest frontier agentic coding model."
-    )
+    assert sol["description"] == "Databricks AI Gateway (system.ai.gpt-5-6-sol)"
     luna = response["models"][2]
     # Synthesized entry: template clone with a clamped effort ladder.
     assert luna["display_name"] == "gpt-5.6-luna"
