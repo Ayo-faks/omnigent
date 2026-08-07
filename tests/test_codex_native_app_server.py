@@ -1874,6 +1874,10 @@ def test_build_codex_native_server_falls_back_without_servlet(
         lambda profile: None,
     )
     monkeypatch.setattr(
+        "omnigent.codex_native_app_server._ucode_codex_default",
+        lambda profile: None,
+    )
+    monkeypatch.setattr(
         "omnigent.model_catalog.resolve_catalog_model",
         lambda name, family: types.SimpleNamespace(model_id="databricks-gpt-test"),
     )
@@ -1890,3 +1894,81 @@ def test_build_codex_native_server_falls_back_without_servlet(
     )
     assert app_server.pinned_model == "databricks-gpt-test"
     assert any('model="databricks-gpt-test"' in o for o in app_server.config_overrides)
+
+
+def test_build_codex_native_server_prefers_ucode_state_over_bundled_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    With no servlet, the launch default comes from ucode's discovered state —
+    the bundled/cached catalog is a true last resort and must not be
+    consulted when live-discovered data exists.
+    """
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._find_codex_cli",
+        lambda: sys.executable,
+    )
+    _write_oss_profile(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._gateway_servlet_session",
+        lambda profile: None,
+    )
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server._ucode_codex_default",
+        lambda profile: "gpt-5.6-luna",
+    )
+
+    def _must_not_run(name: str, family: str) -> None:
+        raise AssertionError("the bundled catalog must not outrank ucode state")
+
+    monkeypatch.setattr("omnigent.model_catalog.resolve_catalog_model", _must_not_run)
+
+    app_server = build_codex_native_server(
+        socket_path=tmp_path / "codex.sock",
+        codex_home=tmp_path / "codex-home",
+        cwd=tmp_path,
+        model=None,
+        profile="oss",
+        bridge_dir=tmp_path / "bridge",
+        ap_server_url=None,
+        ap_auth_headers={},
+    )
+    assert app_server.pinned_model == "gpt-5.6-luna"
+    assert any('model="gpt-5.6-luna"' in override for override in app_server.config_overrides)
+
+
+def test_ucode_codex_default_prefers_agent_pin_then_newest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ucode's own pinned choice wins; else newest mainline GPT; slug spelling."""
+    import json as _json
+
+    from omnigent import codex_native_app_server
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    # databrickscfg_host_for_profile reads ~/.databrickscfg (Path.home()).
+    (tmp_path / ".databrickscfg").write_text(
+        "[oss]\nhost = https://ws.example\n", encoding="utf-8"
+    )
+    ucode_dir = tmp_path / ".ucode"
+    ucode_dir.mkdir()
+    # The state path is bound at import time, so patch the module constant.
+    monkeypatch.setattr("omnigent.onboarding.ucode_state._STATE_PATH", ucode_dir / "state.json")
+    state = {
+        "workspaces": {
+            "https://ws.example": {
+                "codex_models": ["system.ai.gpt-5-5", "system.ai.gpt-5-6-terra"],
+                "agents": {"codex": {"model": "system.ai.gpt-5-6-luna"}},
+            }
+        }
+    }
+    (ucode_dir / "state.json").write_text(_json.dumps(state), encoding="utf-8")
+    assert codex_native_app_server._ucode_codex_default("oss") == "gpt-5.6-luna"
+
+    state["workspaces"]["https://ws.example"]["agents"] = {}
+    (ucode_dir / "state.json").write_text(_json.dumps(state), encoding="utf-8")
+    assert codex_native_app_server._ucode_codex_default("oss") == "gpt-5.6-terra"
+
+    assert codex_native_app_server._ucode_codex_default("missing-profile") is None

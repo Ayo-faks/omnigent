@@ -1800,6 +1800,40 @@ def _gateway_catalog_default(base_url: str) -> str | None:
         return None
 
 
+def _ucode_codex_default(profile: str) -> str | None:
+    """
+    Launch default from ucode's discovered state, as the slug codex knows.
+
+    The leg between the servlet catalog and the bundled catalog: ucode's
+    ``state.json`` holds the workspace's live-discovered inventory, so it is
+    strictly fresher than anything shipped in a release. Prefers ucode's own
+    pinned choice (``agents.codex.model`` — already "newest served" by its
+    rules), else the newest mainline GPT among ``codex_models``.
+
+    :param profile: Databricks profile from the provider entry.
+    :returns: A slug like ``"gpt-5.6-luna"``, or ``None`` when no usable
+        ucode state exists for the profile's workspace (fail open).
+    """
+    try:
+        from omnigent.gateway.auth import databrickscfg_host_for_profile
+        from omnigent.gateway.catalog import codex_slug, newest_mainline_slug
+        from omnigent.onboarding.ucode_state import read_ucode_state
+
+        workspace_url = databrickscfg_host_for_profile(profile)
+        if workspace_url is None:
+            return None
+        state = read_ucode_state(workspace_url)
+        if state is None:
+            return None
+        agent_state = state.agent("codex")
+        if agent_state is not None and agent_state.model:
+            return codex_slug(agent_state.model)
+        return newest_mainline_slug(list(state.codex_models))
+    except Exception:  # noqa: BLE001 — default resolution is best-effort by design
+        _logger.info("ucode codex default unavailable; trying the bundled catalog")
+        return None
+
+
 def build_codex_native_server(
     *,
     socket_path: Path,
@@ -1896,10 +1930,15 @@ def build_codex_native_server(
             gateway_auth_command = _databricks_codex_auth_command(host, profile)
         # Launch-default resolution: explicit model → the servlet catalog's
         # own default (the live workspace inventory, in the slug spelling
-        # codex has native metadata for) → the bundled/cached catalog.
+        # codex has native metadata for) → ucode's discovered state → the
+        # bundled/cached catalog, demoted to a true last resort (its
+        # per-user cache can shadow newer bundled data, so it must never
+        # outrank a live-discovered source).
         resolved_model = model
         if resolved_model is None and servlet_session is not None:
             resolved_model = _gateway_catalog_default(gateway_base_url)
+        if resolved_model is None:
+            resolved_model = _ucode_codex_default(profile)
         if resolved_model is None:
             resolved_model = model_catalog.resolve_catalog_model(
                 "databricks", family="openai"

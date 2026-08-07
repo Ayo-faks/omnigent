@@ -185,6 +185,28 @@ def _slug_sort_key(slug: str) -> tuple[int, int, int, str]:
     return (0, -int(major), -(int(minor) if minor else 0), suffix or "")
 
 
+def newest_mainline_slug(service_ids: list[str]) -> str | None:
+    """
+    Newest mainline GPT slug served, by parsed version (never alphabetical).
+
+    Mirrors ucode's ``default_model`` rule: only GPT-parseable ids are
+    candidates, so a non-GPT id can never be pinned as a launch default.
+
+    :param service_ids: Served ids in either spelling (``system.ai.*`` or
+        slugs).
+    :returns: e.g. ``"gpt-5.6-luna"``, or ``None`` when nothing parses as
+        mainline GPT.
+    """
+    mainline = [
+        slug
+        for slug in (codex_slug(service_id) for service_id in service_ids)
+        if _MAINLINE_SLUG_RE.fullmatch(slug)
+    ]
+    if not mainline:
+        return None
+    return min(mainline, key=_slug_sort_key)
+
+
 def build_models_response(
     service_ids: list[str],
     native_catalog: dict[str, Any] | None,
