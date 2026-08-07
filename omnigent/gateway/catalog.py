@@ -174,9 +174,17 @@ def build_models_response(
         entry["slug"] = slug
         entry["priority"] = priority
         entry["visibility"] = "list"
-        if native is None:
+        gateway_tag = f"Databricks AI Gateway ({service_by_slug[slug]})"
+        if native is not None:
+            # Native rows keep codex's own description but lead with the
+            # gateway marker so every row declares its routing.
+            native_description = entry.get("description")
+            entry["description"] = (
+                f"{gateway_tag} — {native_description}" if native_description else gateway_tag
+            )
+        else:
             entry["display_name"] = slug.removeprefix(_SYSTEM_PREFIX)
-            entry["description"] = f"Databricks AI Gateway ({service_by_slug[slug]})"
+            entry["description"] = gateway_tag
             entry["supported_reasoning_levels"] = [
                 level
                 for level in template.get("supported_reasoning_levels", [])
