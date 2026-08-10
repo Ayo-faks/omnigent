@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from omnigent.inner.native_attachments import UNRESOLVED_ATTACHMENT_MARKER_PATTERN
+from omnigent.llms.adapters._content import strip_binary_content
 
 # Attachment markers the native executors prepend to prompt text
 # ("[Attached: /tmp/.../x.png]" from claude-native's _content_to_text,
@@ -684,6 +685,13 @@ def parse_item_data(item_type: str, raw: dict[str, Any]) -> ItemData:
 
     Used by store implementations when deserializing from DB.
 
+    A compaction snapshot's ``compacted_messages`` is harness history captured
+    verbatim, so it arrives carrying the full base64 of any pasted image —
+    megabytes per snapshot. Stripping it here covers every producer at once,
+    rather than leaving each new intake route to remember, and also keeps
+    already-bloated rows written before this existed from replaying their
+    payloads back into context.
+
     :param item_type: The item type string, e.g. ``"message"``,
         ``"function_call"``.
     :param raw: The raw dict from the DB ``data`` column.
@@ -693,7 +701,10 @@ def parse_item_data(item_type: str, raw: dict[str, Any]) -> ItemData:
     cls = ITEM_TYPE_TO_DATA_CLS.get(item_type)
     if cls is None:
         raise ValueError(f"unknown item type: {item_type!r}")
-    return cls(**raw)  # type: ignore[return-value]
+    data = cls(**raw)
+    if isinstance(data, CompactionData) and data.compacted_messages:
+        data.compacted_messages = strip_binary_content(data.compacted_messages)
+    return data  # type: ignore[return-value]
 
 
 def _validate_type_matches_data(item_type: str, data: ItemData) -> None:

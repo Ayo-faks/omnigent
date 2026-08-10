@@ -386,3 +386,53 @@ def test_new_item_terminal_command() -> None:
         data=TerminalCommandData(kind="input", input="ls"),
     )
     assert item.type == "terminal_command"
+
+
+def test_parse_item_data_strips_binary_from_compaction_snapshot() -> None:
+    """Compaction snapshots never keep inline binary payloads.
+
+    Stripping lives in ``parse_item_data`` rather than at a single route so
+    that every producer is covered — the events route, the runner-SSE relay,
+    bulk ``/imports``, and ``external_conversation_item`` alike. It also runs
+    on the store's read path, so rows written before this existed stop
+    replaying their payloads back into context.
+    """
+    payload = "iVBORw0KGgo" + "A" * 4000
+
+    data = parse_item_data(
+        "compaction",
+        {
+            "summary": "compacted",
+            "last_item_id": "msg_abc",
+            "token_count": 0,
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": payload,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert isinstance(data, CompactionData)
+    assert data.compacted_messages is not None
+    source = data.compacted_messages[0]["content"][0]["content"][0]["source"]
+    assert payload not in str(data.compacted_messages)
+    assert source["media_type"] == "image/png"
+    assert data.summary == "compacted"

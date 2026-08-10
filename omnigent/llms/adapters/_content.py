@@ -96,6 +96,11 @@ def redact_inline_data_uris(
     return value
 
 
+# Marker written in place of a binary payload that has been cleared.
+BINARY_CONTENT_CLEARED = (
+    "[binary content removed for context management — use file_id to retrieve]"
+)
+
 # Content blocks that carry a raw base64 payload directly under ``data``.
 _BINARY_BLOCK_TYPES = frozenset({"image", "file", "document"})
 
@@ -133,4 +138,25 @@ def redact_binary_payloads(value: _Value, marker: str) -> _Value:
             else redact_binary_payloads(item, marker)
             for key, item in value.items()
         },
+    )
+
+
+def strip_binary_content(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Return *messages* with every inline binary payload replaced by a marker.
+
+    Applied to a compaction snapshot's ``compacted_messages``, which is harness
+    history captured verbatim: without this a conversation containing pasted
+    screenshots persists several MB of base64 per compaction. Both payload
+    shapes are covered — ``data:`` URIs and the raw base64 that provider-native
+    image blocks carry.
+
+    :param messages: Snapshot messages to sanitize; not modified in place.
+    :returns: A copy with binary payloads replaced by the cleared marker.
+    """
+    return redact_binary_payloads(
+        redact_inline_data_uris(
+            messages,
+            lambda _media_type, _payload_length: BINARY_CONTENT_CLEARED,
+        ),
+        BINARY_CONTENT_CLEARED,
     )

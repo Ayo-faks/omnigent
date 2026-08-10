@@ -159,7 +159,6 @@ from omnigent.server.routes._sessions.helpers import (
     _stop_session_via_runner,
     _stream_live_events,
     _wait_for_runner_client,
-    parse_compaction_data,
 )
 from omnigent.server.routes._sessions.orchestration import (
     _best_effort_stop,
@@ -766,7 +765,7 @@ def register_events_routes(
             item = NewConversationItem(
                 type="compaction",
                 response_id=f"compact_{_uuid.uuid4().hex}",
-                data=parse_compaction_data(body.data),
+                data=parse_item_data("compaction", body.data),
             )
             await asyncio.to_thread(
                 conversation_store.append,

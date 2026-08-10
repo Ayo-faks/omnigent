@@ -27,7 +27,7 @@ from omnigent.entities import (
     MessageData,
 )
 from omnigent.llms.adapters._content import (
-    redact_binary_payloads,
+    BINARY_CONTENT_CLEARED,
     redact_inline_data_uris,
 )
 from omnigent.llms.summarize import (
@@ -42,10 +42,9 @@ _logger = logging.getLogger(__name__)
 # Marker written into cleared tool result bodies.
 _TOOL_RESULT_CLEARED = "[Previous tool result cleared — re-call tool if needed]"
 
-# Marker written into cleared binary content block payloads.
-_BINARY_CONTENT_CLEARED = (
-    "[binary content removed for context management — use file_id to retrieve]"
-)
+# Marker written into cleared binary content block payloads. Defined alongside
+# the redactors so the storage and context-management paths agree on the text.
+_BINARY_CONTENT_CLEARED = BINARY_CONTENT_CLEARED
 
 # Default compaction settings when AgentSpec.compaction is None.
 _DEFAULT_TRIGGER_THRESHOLD: float = 0.8
@@ -260,31 +259,6 @@ def _clear_binary_content(
             lambda _media_type, _payload_length: _BINARY_CONTENT_CLEARED,
         )
     return messages
-
-
-def strip_binary_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Return *messages* with every inline binary payload replaced by a marker.
-
-    Applied to a compaction snapshot's ``compacted_messages`` before it is
-    persisted. A snapshot is captured verbatim from harness history, so a
-    conversation with pasted screenshots would otherwise store several MB of
-    base64 per compaction. Both payload shapes are covered: ``data:`` URIs and
-    the raw base64 that provider-native image blocks carry.
-
-    Unlike :func:`_clear_binary_content` there is no recent window to protect —
-    a snapshot is by definition history that has already been compacted away.
-
-    :param messages: Snapshot messages to sanitize; not modified in place.
-    :returns: A copy with binary payloads replaced by the cleared marker.
-    """
-    return redact_binary_payloads(
-        redact_inline_data_uris(
-            messages,
-            lambda _media_type, _payload_length: _BINARY_CONTENT_CLEARED,
-        ),
-        _BINARY_CONTENT_CLEARED,
-    )
 
 
 def _strip_output_annotations(

@@ -45,7 +45,6 @@ from omnigent.cost_plan import (
 from omnigent.db.utils import generate_task_id
 from omnigent.entities import (
     Agent,
-    CompactionData,
     Conversation,
     ConversationItem,
     ErrorData,
@@ -86,7 +85,6 @@ from omnigent.runtime import (
     pending_inputs,
 )
 from omnigent.runtime.agent_cache import AgentCache
-from omnigent.runtime.compaction import strip_binary_content
 from omnigent.runtime.policies.engine import PolicyEngine
 from omnigent.runtime.tool_output import cap_tool_output
 from omnigent.server import presence, session_live_state
@@ -5952,29 +5950,6 @@ class _SessionEventDispatchResult:
     pending_id: str | None
 
 
-def parse_compaction_data(raw: dict[str, Any]) -> CompactionData:
-    """
-    Parse a runner-supplied compaction payload, stripping binary content.
-
-    ``compacted_messages`` is a verbatim snapshot of harness history, so in a
-    session with pasted screenshots it carries the full base64 of every image.
-    Stripping here — at the only two points a snapshot enters the server — keeps
-    multi-MB payloads out of the ``conversation_items.data`` column.
-
-    :param raw: The event's ``data`` payload, e.g.
-        ``{"summary": "...", "last_item_id": "msg_abc", "token_count": 0}``.
-    :returns: Validated :class:`CompactionData` with binary payloads redacted.
-    :raises ValueError: If *raw* is not a valid compaction payload.
-    :raises TypeError: If *raw* holds fields of the wrong type.
-    """
-    data = parse_item_data("compaction", raw)
-    if not isinstance(data, CompactionData):
-        raise TypeError(f"expected CompactionData, got {type(data).__name__}")
-    if data.compacted_messages:
-        data.compacted_messages = strip_binary_content(data.compacted_messages)
-    return data
-
-
 def _extract_persistent_item_from_sse(
     event: dict[str, Any],
     response_id: str | None = None,
@@ -6007,7 +5982,7 @@ def _extract_persistent_item_from_sse(
 
     if evt_type == "compaction":
         try:
-            data = parse_compaction_data(event)
+            data = parse_item_data("compaction", event)
         except (ValueError, TypeError):
             _logger.warning("Failed to parse compaction item from SSE")
             return None
