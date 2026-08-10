@@ -94,3 +94,43 @@ def redact_inline_data_uris(
             {key: redact_inline_data_uris(item, marker) for key, item in value.items()},
         )
     return value
+
+
+# Content blocks that carry a raw base64 payload directly under ``data``.
+_BINARY_BLOCK_TYPES = frozenset({"image", "file", "document"})
+
+# Provider-native source wrapper, e.g. Anthropic's
+# ``{"type": "image", "source": {"type": "base64", "data": "..."}}``.
+_BASE64_SOURCE_TYPE = "base64"
+
+
+def redact_binary_payloads(value: _Value, marker: str) -> _Value:
+    """Recursively replace raw base64 payloads with *marker*.
+
+    Complements :func:`redact_inline_data_uris`, which only matches
+    ``data:*;base64,...`` URI strings. Provider-native blocks instead carry the
+    payload as bare base64 under ``data`` — either directly on an image/file
+    block or nested in a ``{"type": "base64"}`` source wrapper, which itself may
+    sit arbitrarily deep inside a ``tool_result``. Only those two shapes are
+    rewritten, so an unrelated ``data`` key is left alone.
+
+    :param value: Arbitrarily nested dict/list content.
+    :param marker: Replacement text for each redacted payload.
+    :returns: A copy with raw base64 payloads replaced.
+    """
+    if isinstance(value, list):
+        return cast(_Value, [redact_binary_payloads(item, marker) for item in value])
+    if not isinstance(value, dict):
+        return value
+
+    block_type = value.get("type")
+    carries_payload = block_type in _BINARY_BLOCK_TYPES or block_type == _BASE64_SOURCE_TYPE
+    return cast(
+        _Value,
+        {
+            key: marker
+            if key == "data" and carries_payload and isinstance(item, str)
+            else redact_binary_payloads(item, marker)
+            for key, item in value.items()
+        },
+    )

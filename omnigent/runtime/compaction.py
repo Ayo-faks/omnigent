@@ -26,7 +26,10 @@ from omnigent.entities import (
     ConversationItem,
     MessageData,
 )
-from omnigent.llms.adapters._content import redact_inline_data_uris
+from omnigent.llms.adapters._content import (
+    redact_binary_payloads,
+    redact_inline_data_uris,
+)
 from omnigent.llms.summarize import (
     build_summarization_input,
     build_summarization_prompt,
@@ -257,6 +260,31 @@ def _clear_binary_content(
             lambda _media_type, _payload_length: _BINARY_CONTENT_CLEARED,
         )
     return messages
+
+
+def strip_binary_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Return *messages* with every inline binary payload replaced by a marker.
+
+    Applied to a compaction snapshot's ``compacted_messages`` before it is
+    persisted. A snapshot is captured verbatim from harness history, so a
+    conversation with pasted screenshots would otherwise store several MB of
+    base64 per compaction. Both payload shapes are covered: ``data:`` URIs and
+    the raw base64 that provider-native image blocks carry.
+
+    Unlike :func:`_clear_binary_content` there is no recent window to protect —
+    a snapshot is by definition history that has already been compacted away.
+
+    :param messages: Snapshot messages to sanitize; not modified in place.
+    :returns: A copy with binary payloads replaced by the cleared marker.
+    """
+    return redact_binary_payloads(
+        redact_inline_data_uris(
+            messages,
+            lambda _media_type, _payload_length: _BINARY_CONTENT_CLEARED,
+        ),
+        _BINARY_CONTENT_CLEARED,
+    )
 
 
 def _strip_output_annotations(

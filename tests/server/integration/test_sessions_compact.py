@@ -526,3 +526,93 @@ async def test_external_compaction_status_rejects_unknown_status(
     )
     assert resp.status_code == 400, resp.text
     assert "external_compaction_status" in resp.text
+
+
+async def test_compaction_snapshot_persists_without_base64_payloads(
+    client: httpx.AsyncClient,
+) -> None:
+    """
+    A stored compaction snapshot must not retain inline base64 image data.
+
+    ``compacted_messages`` is harness history captured verbatim, so a
+    screenshot-heavy claude-native session used to persist several MB of base64
+    per compaction — unbounded growth over a deployment's life. The snapshot is
+    still readable history afterwards, so the summary and the surrounding
+    message structure must survive the strip.
+    """
+    payload = "iVBORw0KGgoAAAANSUhEUgAAAAE" + "A" * 20_000
+    agent = await create_test_agent(client)
+    sid = await _create_session(client, agent["id"])
+
+    resp = await client.post(
+        f"/v1/sessions/{sid}/events",
+        json={
+            "type": "compaction",
+            "data": {
+                "summary": "[Claude Code compaction — context was compacted in the terminal]",
+                "last_item_id": "msg_boundary_abc123",
+                "model": "unknown",
+                "token_count": 0,
+                "compacted_messages": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_screenshot_01",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "image/png",
+                                            "data": payload,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "I can see the screenshot."}],
+                    },
+                ],
+            },
+        },
+    )
+    assert resp.status_code == 202, resp.text
+
+    items_resp = await client.get(f"/v1/sessions/{sid}/items")
+    assert items_resp.status_code == 200, items_resp.text
+    compaction_items = [i for i in items_resp.json()["data"] if i.get("type") == "compaction"]
+    assert len(compaction_items) == 1, (
+        f"Expected exactly one compaction item; got {len(compaction_items)}."
+    )
+
+    item = compaction_items[0]
+    # to_api_dict spreads CompactionData onto the top level, so the whole item
+    # serialises to the row's payload — nothing below can hide a stray copy.
+    item_json = json.dumps(item)
+    assert payload[:200] not in item_json, (
+        "Compaction snapshot persisted the full base64 image payload verbatim; "
+        "binary content must be stripped before the item reaches the store."
+    )
+    assert len(item_json) < len(payload) // 2, (
+        f"Stored compaction item is {len(item_json):,} bytes — close to the "
+        f"{len(payload):,}-byte payload, so it was not stripped."
+    )
+
+    # Still a usable snapshot: summary intact and the message shape preserved,
+    # with only the payload swapped for a marker.
+    assert item["summary"].startswith("[Claude Code compaction")
+    messages = item["compacted_messages"]
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    source = messages[0]["content"][0]["content"][0]["source"]
+    assert source["media_type"] == "image/png"
+    assert "removed" in source["data"], (
+        f"Expected a clearing marker in place of the payload; got {source['data']!r}."
+    )
+    assert messages[1]["content"][0]["text"] == "I can see the screenshot."
