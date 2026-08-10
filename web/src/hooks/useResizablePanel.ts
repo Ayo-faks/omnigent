@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { beginPanelDrag, endPanelDrag } from "@/lib/panelDragBus";
 import { readPanelSizePreference, writePanelSizePreference } from "@/lib/panelSizePreferences";
 
 const MIN_WIDTH_PX = 320;
@@ -152,6 +153,7 @@ export function useResizablePanel(open: boolean, defaultWidthVw = 50, minWidthPx
       if (!open || !isDesktop) return;
       e.preventDefault();
       dragging.current = true;
+      beginPanelDrag();
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
     },
@@ -191,6 +193,7 @@ export function useResizablePanel(open: boolean, defaultWidthVw = 50, minWidthPx
     function onMouseUp() {
       if (!dragging.current) return;
       dragging.current = false;
+      endPanelDrag();
       persistSharedWidth();
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
@@ -205,6 +208,7 @@ export function useResizablePanel(open: boolean, defaultWidthVw = 50, minWidthPx
       // via Escape while dragging).
       if (dragging.current) {
         dragging.current = false;
+        endPanelDrag();
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       }

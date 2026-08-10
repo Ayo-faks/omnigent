@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { beginPanelDrag, endPanelDrag } from "@/lib/panelDragBus";
 
 export function useResizableColumn(defaultWidth = 176, minWidth = 100, maxWidth = 480) {
   const [width, setWidth] = useState(defaultWidth);
@@ -12,6 +13,7 @@ export function useResizableColumn(defaultWidth = 176, minWidth = 100, maxWidth 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     dragging.current = true;
+    beginPanelDrag();
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, []);
@@ -25,6 +27,7 @@ export function useResizableColumn(defaultWidth = 176, minWidth = 100, maxWidth 
     function onMouseUp() {
       if (!dragging.current) return;
       dragging.current = false;
+      endPanelDrag();
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     }
@@ -35,6 +38,7 @@ export function useResizableColumn(defaultWidth = 176, minWidth = 100, maxWidth 
       window.removeEventListener("mouseup", onMouseUp);
       if (dragging.current) {
         dragging.current = false;
+        endPanelDrag();
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       }

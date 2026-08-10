@@ -6,6 +6,7 @@
 // while the inline panel starts at a compact sidebar width.
 
 import { useCallback, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { beginPanelDrag, endPanelDrag } from "@/lib/panelDragBus";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 
 const MIN_WIDTH_PX = 240;
@@ -183,6 +184,8 @@ export function useResizableInlinePanel(
   // the pointer stream keeps reaching the parent document. Without it, dragging
   // over a cross-origin/sandboxed iframe (e.g. the HTML preview) routes mousemove
   // /mouseup into the frame, the parent never sees mouseup, and the drag sticks.
+  // The native browser view isn't in the DOM and can't be covered, so the drag
+  // is announced too and that view detaches until release.
   const addDragOverlay = useCallback(() => {
     if (overlayRef.current || typeof document === "undefined") return;
     const el = document.createElement("div");
@@ -190,11 +193,14 @@ export function useResizableInlinePanel(
       "position:fixed;inset:0;z-index:2147483647;cursor:col-resize;background:transparent;";
     document.body.appendChild(el);
     overlayRef.current = el;
+    beginPanelDrag();
   }, []);
 
   const removeDragOverlay = useCallback(() => {
-    overlayRef.current?.remove();
+    if (!overlayRef.current) return;
+    overlayRef.current.remove();
     overlayRef.current = null;
+    endPanelDrag();
   }, []);
 
   // Load the active session's saved width into the module store (and re-load

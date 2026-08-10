@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beginPanelDrag, endPanelDrag } from "@/lib/panelDragBus";
 import { BrowserPane } from "./BrowserPane";
 
 // supportsBrowser gates the whole pane. Force it true so the pane renders; the
@@ -265,5 +266,62 @@ describe("BrowserPane toolbar navigation + URL bar", () => {
         { force: true },
       ),
     );
+  });
+});
+
+describe("BrowserPane bounds vs the rail resize handle", () => {
+  /** Activate a view and give the measuring container a non-zero rect (jsdom
+   *  reports all-zero, which syncBounds rejects). */
+  async function renderMeasured(conversationId: string) {
+    let fireCreated: ((p: { conversationId: string }) => void) | undefined;
+    const bridge = installBridge({
+      onBrowserViewCreated: vi.fn((cb: (p: { conversationId: string }) => void) => {
+        fireCreated = cb;
+        return () => {};
+      }),
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 800,
+      y: 40,
+      left: 800,
+      top: 40,
+      right: 1200,
+      bottom: 640,
+      width: 400,
+      height: 600,
+      toJSON: () => ({}),
+    } as DOMRect);
+    render(<BrowserPane conversationId={conversationId} />);
+    await screen.findByRole("textbox", { name: /address bar/i });
+    act(() => fireCreated?.({ conversationId }));
+    await waitFor(() => expect(bridge.browserResize).toHaveBeenCalled());
+    return bridge;
+  }
+
+  function lastBounds(bridge: { browserResize: { mock: { calls: unknown[][] } } }) {
+    const calls = bridge.browserResize.mock.calls;
+    return calls[calls.length - 1][1] as { x: number; width: number };
+  }
+
+  it("insets the left edge so the resize handle is not covered by the native view", async () => {
+    const bridge = await renderMeasured("conv_inset");
+    const bounds = lastBounds(bridge);
+    // Container left is 800; the view must start to the RIGHT of it, leaving the
+    // handle strip hittable, and give back the same px in width.
+    expect(bounds.x).toBeGreaterThan(800);
+    expect(bounds.x + bounds.width).toBe(1200);
+  });
+
+  it("parks the view off-viewport while a drag runs and restores it on release", async () => {
+    const bridge = await renderMeasured("conv_drag");
+    const resting = lastBounds(bridge);
+
+    act(() => beginPanelDrag());
+    // Off the right edge of the viewport: the cursor can cross the rail without
+    // entering the view, so mousemove/mouseup keep reaching the window.
+    expect(lastBounds(bridge).x).toBeGreaterThanOrEqual(window.innerWidth);
+
+    act(() => endPanelDrag());
+    expect(lastBounds(bridge).x).toBe(resting.x);
   });
 });

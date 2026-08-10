@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supportsBrowser } from "@/lib/nativeBridge";
+import { isPanelDragging, onPanelDragChange } from "@/lib/panelDragBus";
 import { normalizeTypedUrl } from "@/lib/normalizeTypedUrl";
 import { cn } from "@/lib/utils";
 
@@ -36,6 +37,11 @@ interface Bounds {
   height: number;
   devicePixelRatio?: number;
 }
+
+/** Renderer px kept clear on the pane's left edge so the rail's resize handle
+ *  (a 4px strip at the same x) stays hittable instead of sitting under the
+ *  native view, which eats every mouse event in its rect. */
+const HANDLE_INSET_PX = 6;
 
 /** Result shape shared by the history-navigation bridge calls. */
 interface NavResult {
@@ -106,6 +112,9 @@ export interface BrowserPaneProps {
 export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastBoundsRef = useRef<Bounds | null>(null);
+  // Read synchronously by syncBounds (which the rAF loop calls), so a ref, not
+  // state: a re-render per drag frame would be wasted work.
+  const draggingRef = useRef(isPanelDragging());
   const browserSupported = supportsBrowser();
   // Whether a native view is attached for THIS conversation — drives when the
   // measuring placeholder mounts (no empty pane on an idle conversation).
@@ -250,15 +259,24 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
   // Measure the placeholder and push bounds to the main process. These are
   // renderer CSS pixels; the main process converts to WebContentsView DIPs
   // using the host zoom factor (they diverge after Cmd+/Cmd- zoom).
+  //
+  // Two adjustments keep the rail's resize handle usable. The native view
+  // swallows every mouse event inside its rect, so (1) the left edge is inset
+  // past the handle strip, else the handle is unhittable wherever the page
+  // paints; and (2) while a resize drag is live the view is parked off the right
+  // of the viewport, else the cursor crossing into it steals mousemove/mouseup
+  // and the drag never ends (a DOM overlay can't cover a non-DOM view).
   const syncBounds = useCallback(
     (force = false) => {
       const bridge = getBridge();
       if (!containerRef.current || !bridge?.browserResize) return;
       const rect = containerRef.current.getBoundingClientRect();
       const bounds: Bounds = {
-        x: Math.round(rect.left),
+        // Parked off the right edge for the duration of a drag; the width stays
+        // real so the page doesn't reflow to 0 and reflow back on release.
+        x: Math.round(draggingRef.current ? window.innerWidth : rect.left + HANDLE_INSET_PX),
         y: Math.round(rect.top),
-        width: Math.round(rect.width),
+        width: Math.round(rect.width - HANDLE_INSET_PX),
         height: Math.round(rect.height),
         devicePixelRatio: window.devicePixelRatio,
       };
@@ -333,6 +351,22 @@ export function BrowserPane({ conversationId, className }: BrowserPaneProps) {
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
+  }, [browserSupported, viewActive, syncBounds]);
+
+  // Park the view off-viewport while a panel resize drag runs, and restore it on
+  // release, so the drag's mouse stream stays with the app window.
+  useEffect(() => {
+    if (!browserSupported || !viewActive) return;
+    const unsubscribe = onPanelDragChange((dragging) => {
+      draggingRef.current = dragging;
+      syncBounds(true);
+    });
+    return () => {
+      unsubscribe();
+      // A drag that outlives this pane (tab switch mid-drag) must not leave the
+      // ref latched — the next mount reads the live bus value anyway.
+      draggingRef.current = false;
+    };
   }, [browserSupported, viewActive, syncBounds]);
 
   // Defense-in-depth against a hung rAF chain: ResizeObserver (size), window

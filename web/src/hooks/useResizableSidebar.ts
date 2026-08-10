@@ -10,6 +10,7 @@
 // the sidebar — so the store is just a persisted, viewport-clamped width.
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { beginPanelDrag, endPanelDrag } from "@/lib/panelDragBus";
 import { readPanelSizePreference, writePanelSizePreference } from "@/lib/panelSizePreferences";
 
 // Default 320px (20rem) — wider than the old fixed ``md:w-64`` (256px) sidebar
@@ -107,6 +108,7 @@ export function useResizableSidebar() {
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     dragging.current = true;
+    beginPanelDrag();
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, []);
@@ -138,6 +140,7 @@ export function useResizableSidebar() {
     function onMouseUp() {
       if (!dragging.current) return;
       dragging.current = false;
+      endPanelDrag();
       persistWidth(storedWidth);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
@@ -150,6 +153,7 @@ export function useResizableSidebar() {
       window.removeEventListener("mouseup", onMouseUp);
       if (dragging.current) {
         dragging.current = false;
+        endPanelDrag();
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       }
