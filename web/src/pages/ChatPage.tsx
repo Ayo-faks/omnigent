@@ -345,8 +345,10 @@ export function collectBubbleMarkdown(items: RenderItem[]): string {
     .trim();
 }
 
-// All chat-column elements must share this width to stay aligned.
-const CHAT_COLUMN_WIDTH = "max-w-3xl min-[1921px]:max-w-4xl min-[2561px]:max-w-5xl";
+// All chat-column elements must share this width to stay aligned. The cap
+// itself (responsive default vs. full-width "wide" mode) lives in the
+// --chat-col-max CSS var — see lib/chatWidthPreferences.ts / index.css.
+const CHAT_COLUMN_WIDTH = "max-w-[var(--chat-col-max)]";
 
 const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 const DISPLAY_MATH_RE = /(^|\n)\s*(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])/;
@@ -3482,7 +3484,7 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
       data-testid="message-bubble"
       data-role="user"
       data-user-message-id={bubble.itemId}
-      className="max-w-[640px]"
+      className="max-w-[var(--chat-user-bubble-max)]"
     >
       {/* w-fit + ml-auto shrink-wrap the row so the author avatar sits
           immediately left of the right-aligned bubble (the bubble's own
@@ -3666,7 +3668,7 @@ function AssistantBubble({
         from="assistant"
         data-testid="message-bubble"
         data-role="assistant"
-        className={isWide ? "max-w-full" : "max-w-3xl"}
+        className={isWide ? "max-w-full" : "max-w-[var(--chat-assistant-bubble-max)]"}
       >
         {/* A fold-only bubble takes w-full at the ordinary max-w-3xl cap
             rather than shrink-wrapping to the summary row's ~110px, which

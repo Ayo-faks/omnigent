@@ -41,6 +41,7 @@ import {
 import {
   ArchiveRestoreIcon,
   AlertTriangleIcon,
+  AlignCenterIcon,
   CheckIcon,
   KeyRoundIcon,
   LaptopMinimalIcon,
@@ -51,6 +52,7 @@ import {
   PanelRightCloseIcon,
   PanelRightIcon,
   PlusIcon,
+  StretchHorizontalIcon,
   SunIcon,
   Trash2Icon,
   UserCogIcon,
@@ -137,6 +139,13 @@ import {
   writeWorkspacePanelDefault,
   type WorkspacePanelDefault,
 } from "@/lib/workspacePanelPreferences";
+import {
+  applyChatWidth,
+  CHAT_WIDTH_DEFAULT,
+  type ChatWidth,
+  readChatWidth,
+  writeChatWidth,
+} from "@/lib/chatWidthPreferences";
 import { readDefaultBaseBranch, writeDefaultBaseBranch } from "@/lib/baseBranchPreferences";
 import {
   DEFAULT_HIDE_UNCONFIGURED_HARNESSES,
@@ -283,6 +292,15 @@ const workspacePanelCards: {
 }[] = [
   { value: "open", label: "Open", icon: PanelRightIcon },
   { value: "collapsed", label: "Collapsed", icon: PanelRightCloseIcon },
+];
+
+const chatWidthCards: {
+  value: ChatWidth;
+  label: string;
+  icon: typeof AlignCenterIcon;
+}[] = [
+  { value: "standard", label: "Standard", icon: AlignCenterIcon },
+  { value: "wide", label: "Wide", icon: StretchHorizontalIcon },
 ];
 
 /**
@@ -572,6 +590,37 @@ function WorkspacePanelDefaultControl() {
   );
 }
 
+/** Chat column width: the readable centered column, or full available width. */
+function ChatWidthControl() {
+  const [value, setValue] = useState(() => readChatWidth());
+  const labelId = useId();
+  const choose = useCallback((next: ChatWidth) => {
+    setValue(next);
+    writeChatWidth(next);
+    applyChatWidth(next);
+  }, []);
+  return (
+    <ThemeSubsection
+      labelId={labelId}
+      title="Chat width"
+      helper="Standard keeps a centered, readable column. Wide lets the chat and composer fill the available width."
+    >
+      <CardRadioGroup<ChatWidth>
+        labelledBy={labelId}
+        value={value}
+        onSelect={choose}
+        className="grid grid-cols-2 gap-3"
+        cardClassName="items-center gap-2 p-4"
+        items={chatWidthCards.map((card) => ({
+          value: card.value,
+          testId: `chat-width-${card.value}`,
+          body: iconCardBody(card.icon, card.label),
+        }))}
+      />
+    </ThemeSubsection>
+  );
+}
+
 function ColorThemeControl() {
   // Render each chip in the currently-resolved mode so it matches the app now.
   const { resolvedTheme } = useTheme();
@@ -846,6 +895,9 @@ function AppearanceSection() {
 
     writeWorkspacePanelDefault(WORKSPACE_PANEL_DEFAULT);
 
+    writeChatWidth(CHAT_WIDTH_DEFAULT);
+    applyChatWidth(CHAT_WIDTH_DEFAULT);
+
     writeHideUnconfiguredHarnesses(DEFAULT_HIDE_UNCONFIGURED_HARNESSES);
 
     applyDesktopUiFontSize(UI_FONT_SIZE_DEFAULT);
@@ -869,6 +921,7 @@ function AppearanceSection() {
           "omnigent:ui-theme-palette",
           "omnigent:custom-theme",
           "omnigent:default-workspace-panel",
+          "omnigent:chat-width",
           "omnigent:hide-unconfigured-harnesses",
         ]) {
           window.localStorage.removeItem(key);
@@ -911,6 +964,8 @@ function AppearanceSection() {
         {!isEmbedded && <ColorThemeControl />}
 
         <WorkspacePanelDefaultControl />
+
+        <ChatWidthControl />
 
         <HideUnconfiguredHarnessesControl />
 

@@ -152,6 +152,16 @@
   --composer-shadow: 0 0 12px -6px rgb(0 0 0 / 12%);
   --composer-shadow-focus: 0 0 20px -6px rgb(0 0 0 / 12%);
 
+  /* Chat column + bubble widths (see Appearance settings /
+   * lib/chatWidthPreferences.ts). ChatPage reads these via
+   * `max-w-[var(--chat-col-max)]` etc. Standard mode is the readable centered
+   * column, stepping up on ultrawide screens (media queries below, scoped to
+   * :not([data-chat-width="wide"])); wide mode overrides all three below to
+   * fill the width, holding bubbles to 80% so prose stays legible. */
+  --chat-col-max: 48rem; /* 3xl */
+  --chat-user-bubble-max: 640px;
+  --chat-assistant-bubble-max: 48rem;
+
   /* User-controlled UI font family (see Appearance settings /
    * lib/uiFontPreferences.ts). Deliberately left unset here so the `html` rule's
    * `var(--ui-font-family, var(--font-sans))` falls back to the system stack;
@@ -304,6 +314,30 @@
   --sidebar-ring: #2272b4;
   --sidebar-active: color-mix(in srgb, var(--sidebar-foreground) 7%, var(--sidebar));
   --sidebar-active-foreground: var(--sidebar-foreground);
+}
+
+/* Standard chat width steps up on ultrawide screens (matches the old
+ * max-w-3xl/4xl/5xl ramp). Scoped to non-wide so wide mode keeps its full
+ * width. Assistant bubbles deliberately don't grow — long prose stays
+ * readable — so only the column widens. */
+@media (min-width: 1921px) {
+  :root:not([data-chat-width="wide"]) {
+    --chat-col-max: 56rem; /* 4xl */
+  }
+}
+@media (min-width: 2561px) {
+  :root:not([data-chat-width="wide"]) {
+    --chat-col-max: 64rem; /* 5xl */
+  }
+}
+
+/* Wide chat: the column and composer fill the available width; bubbles hold to
+ * 80% of it so user/assistant messages stay easy to discern from full-width
+ * content. */
+:root[data-chat-width="wide"] {
+  --chat-col-max: 100%;
+  --chat-user-bubble-max: 80%;
+  --chat-assistant-bubble-max: 80%;
 }
 
 .dark {

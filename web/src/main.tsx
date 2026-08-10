@@ -22,6 +22,7 @@ import {
   readUiFontSizePx,
 } from "./lib/uiFontPreferences";
 import { applyThemePalette, readThemePalette } from "./lib/themePalette";
+import { applyChatWidth, readChatWidth } from "./lib/chatWidthPreferences";
 import { applyCustomTheme, readCustomTheme } from "./lib/customTheme";
 import { initChatStore } from "./store/chatStore";
 import "katex/dist/katex.min.css";
@@ -77,6 +78,9 @@ if (typeof window !== "undefined") {
 // so the app renders in the chosen theme rather than flashing the brand default.
 applyCustomTheme(readCustomTheme());
 applyThemePalette(readThemePalette());
+
+// Apply the saved chat width (data-chat-width on <html>) before first paint.
+applyChatWidth(readChatWidth());
 
 // Probe /v1/info BEFORE the first render so the route table knows
 // whether to mount accounts routes. The probe is unauthed and the
