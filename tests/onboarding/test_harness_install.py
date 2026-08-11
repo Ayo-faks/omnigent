@@ -13,6 +13,10 @@ import omnigent._platform as _platform
 from omnigent.onboarding import harness_install as hi
 from omnigent.onboarding.provider_config import ANTHROPIC_FAMILY, GEMINI_FAMILY, OPENAI_FAMILY
 
+# Bound before the autouse fixture can stub it, so the probe's own test runs
+# the real implementation.
+_REAL_PREFIX_PROBE = hi._npm_global_prefix_writable
+
 
 @pytest.fixture(autouse=True)
 def _stub_cli_fallback_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -26,6 +30,56 @@ def _stub_cli_fallback_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
     assertion.
     """
     monkeypatch.setattr(_platform, "_cli_fallback_dirs", lambda: ())
+
+
+@pytest.fixture(autouse=True)
+def _writable_npm_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the npm-global-prefix probe writable, and drop its cache.
+
+    ``harness_install_command`` appends ``--prefix ~/.local`` when npm's global
+    prefix is root-owned, so the plain-``-g`` assertions here would flip on a
+    machine with a system Node. The cache is cleared so the tests that *do*
+    exercise the root-owned branch can't leak a verdict into the others.
+    """
+    hi._npm_global_prefix_writable.cache_clear()
+    monkeypatch.setattr(hi, "_npm_global_prefix_writable", lambda: True)
+
+
+def test_install_command_uses_user_prefix_when_global_is_root_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root-owned npm prefix installs into ``~/.local`` rather than EACCES-ing.
+
+    ``sudo npm install -g`` is what the vendor docs warn against, and
+    ``~/.local/bin`` is already on ``resolve_cli_binary``'s ladder, so the
+    freshly-installed CLI still resolves.
+    """
+    monkeypatch.setattr(hi, "_npm_global_prefix_writable", lambda: False)
+    assert hi.harness_install_command(ANTHROPIC_FAMILY) == [
+        "npm",
+        "install",
+        "-g",
+        "--prefix",
+        str(Path.home() / ".local"),
+        "@anthropic-ai/claude-code",
+    ]
+
+
+def test_npm_global_prefix_writable_detects_root_owned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The probe reads ``npm prefix -g`` and reports the dir's writability."""
+    prefix = tmp_path / "usr" / "local"
+    prefix.mkdir(parents=True)
+
+    def _run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert argv == ["npm", "prefix", "-g"]
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{prefix}\n", stderr="")
+
+    monkeypatch.setattr(hi.subprocess, "run", _run)
+    monkeypatch.setattr(hi.os, "access", lambda p, _mode: Path(p) != prefix)
+    assert _REAL_PREFIX_PROBE() is False
+    _REAL_PREFIX_PROBE.cache_clear()
 
 
 @pytest.mark.parametrize(

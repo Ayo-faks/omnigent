@@ -40,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -556,8 +557,35 @@ def harness_cli_installed(key: str) -> bool:
     return resolve_cli_binary(spec.binary) is not None
 
 
+@cache
+def _npm_global_prefix_writable() -> bool:
+    """Whether ``npm install -g`` can write to npm's configured global prefix.
+
+    A system Node install points the global prefix at a root-owned dir
+    (``/usr/local``), where a bare ``npm install -g`` dies with ``EACCES``.
+    Cached because the readiness screens render install hints per family.
+    """
+    try:
+        proc = subprocess.run(
+            ["npm", "prefix", "-g"], check=False, capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # can't tell — keep the plain global install
+    prefix = Path(proc.stdout.strip() or "/")
+    # npm writes bin/ and lib/node_modules under the prefix; permission is
+    # decided by the deepest ancestor that already exists.
+    while not prefix.exists() and prefix != prefix.parent:
+        prefix = prefix.parent
+    return os.access(prefix, os.W_OK)
+
+
 def harness_install_command(key: str) -> list[str]:
     """Return the argv that installs the harness CLI.
+
+    When npm's global prefix is root-owned, the argv targets a user-owned
+    prefix (``~/.local``, already probed by
+    :func:`omnigent._platform.resolve_cli_binary`) instead of failing with
+    ``EACCES`` — ``sudo npm install -g`` is what the vendor docs warn against.
 
     :param key: A harness family or :data:`PI_KEY`.
     :returns: The install command, e.g. ``["npm", "install", "-g",
@@ -576,6 +604,8 @@ def harness_install_command(key: str) -> list[str]:
     package = spec.package
     if package is None:
         raise ValueError(f"{key!r} has no npm package; show its install_hint instead")
+    if not _npm_global_prefix_writable():
+        return ["npm", "install", "-g", "--prefix", str(Path.home() / ".local"), package]
     return ["npm", "install", "-g", package]
 
 
