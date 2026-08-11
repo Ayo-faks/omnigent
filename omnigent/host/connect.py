@@ -2677,6 +2677,9 @@ class HostProcess:
                 # Symmetric with serve.py's runner-side connect().
                 ping_interval=TUNNEL_KEEPALIVE_PING_INTERVAL_S,
                 ping_timeout=TUNNEL_KEEPALIVE_PING_TIMEOUT_S,
+                # websockets>=15 auto-detects the system proxy by default; loopback
+                # tunnels must never be routed through a proxy (macOS issue #1514).
+                proxy=None,
             )
             ws = await ws_cm.__aenter__()
         except (InvalidURI, InvalidStatus) as exc:

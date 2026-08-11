@@ -700,6 +700,9 @@ async def _serve_tunnel_once(
         # Also the runner's only liveness probe for a silently-dead server.
         ping_interval=TUNNEL_KEEPALIVE_PING_INTERVAL_S,
         ping_timeout=TUNNEL_KEEPALIVE_PING_TIMEOUT_S,
+        # websockets>=15 auto-detects the system proxy by default; loopback
+        # tunnels must never be routed through a proxy (macOS issue #1514).
+        proxy=None,
     ) as ws:
         if on_connected is not None:
             on_connected()

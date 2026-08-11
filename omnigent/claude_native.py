@@ -5147,6 +5147,9 @@ def _websocket_connect(
                 additional_headers=handshake_headers,
                 close_timeout=_CLAUDE_ATTACH_WS_CLOSE_TIMEOUT_S,
                 ssl=ssl_ctx,
+                # websockets>=15 auto-detects the system proxy by default; loopback
+                # connections must never be routed through a proxy (macOS issue #1514).
+                proxy=None,
             ),
         )
     except TypeError:

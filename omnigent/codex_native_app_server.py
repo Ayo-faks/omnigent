@@ -476,6 +476,9 @@ class CodexAppServerClient:
                 self._ws_url,
                 max_size=_MAX_WEBSOCKET_MESSAGE_SIZE_BYTES,
                 compression=None,
+                # websockets>=15 auto-detects the system proxy by default; loopback
+                # connections must never be routed through a proxy (macOS issue #1514).
+                proxy=None,
             )
         else:
             self._ws = await websockets.unix_connect(
