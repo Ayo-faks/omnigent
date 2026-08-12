@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import logging
 import os
 import secrets
@@ -663,7 +662,16 @@ def _remote_headers(
     return headers
 
 
-@functools.lru_cache(maxsize=8)
+# Short-lived token cache: (server_url → (token, expiry_monotonic)).
+# CLI startup calls _remote_headers twice in quick succession for the
+# same URL; caching avoids minting a second OAuth token (~1.4s/call).
+# TTL is 60s — short enough that a long-running caller never serves a
+# stale token past the Databricks OAuth TTL (~1h), long enough to cover
+# the full startup sequence.
+_TOKEN_CACHE_TTL_S = 60.0
+_token_cache: dict[str, tuple[str | None, float]] = {}
+
+
 def _stored_databricks_record_token(server_url: str) -> str | None:
     """Mint a workspace token from a stored Databricks Apps record.
 
@@ -673,17 +681,25 @@ def _stored_databricks_record_token(server_url: str) -> str | None:
     that issue many requests should use :class:`_DatabricksTokenAuth`,
     which reuses the SDK config across requests.
 
-    The result is cached per ``server_url`` within the process lifetime.
-    CLI startup calls ``_remote_headers`` twice for the same URL (once in
-    the auth probe, once to build the session headers), so caching avoids
-    minting a fresh OAuth token on every call — the Databricks SDK token
-    mint is ~1.4s per call on a cold process.
+    Results are cached per ``server_url`` for :data:`_TOKEN_CACHE_TTL_S`
+    seconds so rapid successive calls (e.g. the auth probe and the session
+    header build during startup) share one token mint without risking
+    serving an expired token in long-running contexts.
 
     :param server_url: The remote server URL, e.g.
         ``"https://myapp-123.aws.databricksapps.com"``.
     :returns: A bearer token, or ``None`` when no pointer record is
         stored or the workspace credentials don't resolve.
     """
+    import time
+
+    now = time.monotonic()
+    cached = _token_cache.get(server_url)
+    if cached is not None:
+        token, expiry = cached
+        if now < expiry:
+            return token
+
     from omnigent.cli_auth import load_databricks_workspace_host
     from omnigent.inner.databricks_executor import (
         DatabricksAuthError,
@@ -692,12 +708,15 @@ def _stored_databricks_record_token(server_url: str) -> str | None:
 
     workspace_host = load_databricks_workspace_host(server_url)
     if workspace_host is None:
+        _token_cache[server_url] = (None, now + _TOKEN_CACHE_TTL_S)
         return None
     try:
         auth, _host = _resolve_databricks_auth(host=workspace_host)
-        return auth.current_token()
+        token = auth.current_token()
     except (DatabricksAuthError, ImportError, ValueError):
-        return None
+        token = None
+    _token_cache[server_url] = (token, now + _TOKEN_CACHE_TTL_S)
+    return token
 
 
 class _DatabricksTokenAuth(httpx.Auth):
