@@ -1682,6 +1682,7 @@ async def test_prepare_daemon_terminal_reports_progress_steps(
         host_id: str,
         session_id: str,
         workspace: str,
+        fresh: bool = False,
     ) -> str:
         """
         Return the runner id that production should wait on.
