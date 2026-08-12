@@ -662,14 +662,12 @@ def _remote_headers(
     return headers
 
 
-# Short-lived token cache: (server_url → (token, expiry_monotonic)).
-# CLI startup calls _remote_headers twice in quick succession for the
-# same URL; caching avoids minting a second OAuth token (~1.4s/call).
-# TTL is 60s — short enough that a long-running caller never serves a
-# stale token past the Databricks OAuth TTL (~1h), long enough to cover
-# the full startup sequence.
-_TOKEN_CACHE_TTL_S = 60.0
-_token_cache: dict[str, tuple[str | None, float]] = {}
+# Cache the resolved _DatabricksBearerAuth object per server URL so that
+# repeated calls to _remote_headers for the same URL reuse the same SDK
+# Config instance. The SDK's Config.authenticate() caches the OAuth token
+# in memory and only re-runs the CLI shell-out when it nears expiry, so
+# reusing the object is both fast and correct for long-running callers.
+_databricks_auth_cache: dict[str, object] = {}
 
 
 def _stored_databricks_record_token(server_url: str) -> str | None:
@@ -681,25 +679,17 @@ def _stored_databricks_record_token(server_url: str) -> str | None:
     that issue many requests should use :class:`_DatabricksTokenAuth`,
     which reuses the SDK config across requests.
 
-    Results are cached per ``server_url`` for :data:`_TOKEN_CACHE_TTL_S`
-    seconds so rapid successive calls (e.g. the auth probe and the session
-    header build during startup) share one token mint without risking
-    serving an expired token in long-running contexts.
+    The resolved ``_DatabricksBearerAuth`` object is cached per
+    ``server_url`` so repeated calls reuse the same SDK ``Config``
+    instance. The SDK serves the cached OAuth token from memory and only
+    re-runs the Databricks CLI when the token nears expiry, so this is
+    both fast on repeat calls and safe for long-running callers.
 
     :param server_url: The remote server URL, e.g.
         ``"https://myapp-123.aws.databricksapps.com"``.
     :returns: A bearer token, or ``None`` when no pointer record is
         stored or the workspace credentials don't resolve.
     """
-    import time
-
-    now = time.monotonic()
-    cached = _token_cache.get(server_url)
-    if cached is not None:
-        token, expiry = cached
-        if now < expiry:
-            return token
-
     from omnigent.cli_auth import load_databricks_workspace_host
     from omnigent.inner.databricks_executor import (
         DatabricksAuthError,
@@ -708,15 +698,15 @@ def _stored_databricks_record_token(server_url: str) -> str | None:
 
     workspace_host = load_databricks_workspace_host(server_url)
     if workspace_host is None:
-        _token_cache[server_url] = (None, now + _TOKEN_CACHE_TTL_S)
         return None
     try:
-        auth, _host = _resolve_databricks_auth(host=workspace_host)
-        token = auth.current_token()
+        auth = _databricks_auth_cache.get(server_url)
+        if auth is None:
+            auth, _host = _resolve_databricks_auth(host=workspace_host)
+            _databricks_auth_cache[server_url] = auth
+        return auth.current_token()  # type: ignore[union-attr]
     except (DatabricksAuthError, ImportError, ValueError):
-        token = None
-    _token_cache[server_url] = (token, now + _TOKEN_CACHE_TTL_S)
-    return token
+        return None
 
 
 class _DatabricksTokenAuth(httpx.Auth):
