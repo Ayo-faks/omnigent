@@ -848,6 +848,46 @@ async def test_end_to_end_session_load_warm_resume(
 
 
 @pytest.mark.asyncio
+async def test_session_load_failure_resets_prompt_state() -> None:
+    """When session/load fails, _system_prompt_sent is reset so history replays.
+
+    What breaks if this fails: a failed session/load leaves _system_prompt_sent=True,
+    so the text-prefix history is never sent with the fallback session/new.
+    This silently loses context because the new session is truly fresh but doesn't
+    receive the replay that rebuilds it.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._load_session_supported = True
+    ex._session_id = "prior-sess"
+    ex._fresh_process = True
+    ex._system_prompt_sent = True  # Simulate prior state
+
+    calls: list[tuple[str, dict]] = []
+
+    async def capture_rpc(method, params, timeout=30.0):
+        calls.append((method, params))
+        if method == "session/load":
+            return {"error": {"code": -32603, "message": "Session not found"}}
+        # session/new succeeds with a new id
+        return {"result": {"sessionId": "new-sess"}}
+
+    ex._rpc = capture_rpc  # type: ignore[assignment]
+    sid = await ex._ensure_session()
+
+    # Verify the call sequence.
+    assert calls[0][0] == "session/load"
+    assert calls[1][0] == "session/new"
+
+    # After load fails, _system_prompt_sent must be reset so history replay occurs.
+    assert ex._system_prompt_sent is False, (
+        "Failed load must reset _system_prompt_sent so history is replayed"
+    )
+    # New session is created and returned.
+    assert sid == "new-sess"
+    assert ex._session_id == "new-sess"
+
+
+@pytest.mark.asyncio
 async def test_end_to_end_denied_permission(tmp_path: Path) -> None:
     """A denied elicitation still completes the turn (the agent gets a reject)."""
     agent_path = tmp_path / "fake_acp_agent.py"

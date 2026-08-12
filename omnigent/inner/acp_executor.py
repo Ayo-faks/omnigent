@@ -663,7 +663,13 @@ class AcpExecutor(Executor):
                     self._session_id,
                     message,
                 )
-                # Fall through to session/new below if load failed.
+                # Load failed: clear the prior session and reset the prompt state so
+                # history is replayed when we create a new session below. The new
+                # session is truly fresh and must not inherit _system_prompt_sent=True
+                # from the failed load attempt.
+                self._session_id = None
+                self._system_prompt_sent = False
+                # Fall through to session/new below.
             else:
                 # Load succeeded; mark process as no longer fresh and return the session id.
                 # Note: _system_prompt_sent is NOT reset because the loaded session already
