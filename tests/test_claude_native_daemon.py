@@ -269,9 +269,6 @@ def _install_daemon_seam_mocks(
     async def _fake_prepare(**kwargs: Any) -> claude_native.PreparedClaudeTerminal:
         """Capture prepare kwargs and return the canned terminal."""
         captured.update(kwargs)
-        # Invoke ensure_daemon so callers that assert on ensured[] still work.
-        if kwargs.get("ensure_daemon") is not None:
-            kwargs["ensure_daemon"]()
         return prepared
 
     async def _fake_attach(**kwargs: Any) -> claude_native._AttachOutcome:
@@ -288,13 +285,14 @@ def test_run_with_remote_server_routes_through_daemon(
     tmp_path: Path,
 ) -> None:
     """
-    A fresh remote launch ensures the daemon and hands the launch to it.
+    A fresh remote launch routes through _prepare_claude_terminal_via_daemon.
 
-    Proves the CLI no longer spawns the runner itself: it calls
-    ``_ensure_host_daemon`` for the server, then routes the launch
+    Proves the CLI no longer spawns the runner itself: it routes the launch
     through ``_prepare_claude_terminal_via_daemon`` with this host's id,
     the cwd as workspace, and the user's ``claude_args`` (so the runner
-    can apply them).
+    can apply them). Daemon start is handled by ``_ensure_backend`` in
+    ``cli_native.py`` before ``_run_with_remote_server`` is called — not
+    inside ``_run_with_remote_server`` itself.
     """
     spec_path = tmp_path / "claude.yaml"
     spec_path.write_text("name: claude-native-ui\nprompt: hi\n")
@@ -323,8 +321,8 @@ def test_run_with_remote_server_routes_through_daemon(
         claude_args=("--dangerously-skip-permissions",),
     )
 
-    # Daemon ensured for exactly this server URL.
-    assert ensured == ["https://example.com"]
+    # Daemon start is now _ensure_backend's responsibility (called from
+    # cli_native before _run_with_remote_server); not asserted here.
     # The launch was routed through the daemon prepare with this host,
     # the cwd workspace, and the user's args.
     assert captured["host_id"] == "host_1"

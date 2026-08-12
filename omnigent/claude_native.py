@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import json
 import logging
 import os
@@ -38,7 +37,7 @@ from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import FrameType
-from typing import TYPE_CHECKING, Any, Protocol, TextIO, TypeAlias, cast
+from typing import TYPE_CHECKING, Protocol, TextIO, TypeAlias, cast
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -3240,7 +3239,6 @@ async def _prepare_claude_terminal_via_daemon(
     workspace: str,
     startup_profiler: StartupProfiler | None = None,
     startup_progress: RunnerStartupProgress | None = None,
-    ensure_daemon: Callable[[], object] | None = None,
 ) -> PreparedClaudeTerminal:
     """
     Create/resolve a session and bring its terminal up via the daemon.
@@ -3273,12 +3271,6 @@ async def _prepare_claude_terminal_via_daemon(
         marks. ``None`` disables output.
     :param startup_progress: Optional user-visible progress renderer,
         e.g. a handle from :func:`runner_startup_progress`.
-    :param ensure_daemon: Optional zero-argument callable that ensures
-        the host daemon is running (blocking). When provided and
-        *session_id* is ``None``, it runs concurrently with
-        ``POST /v1/sessions`` via ``asyncio.to_thread`` so the ~2s
-        daemon tunnel start is hidden under the ~2s session create.
-        ``None`` skips daemon management (caller already handled it).
     :returns: Prepared terminal details (with tmux coordinates when the
         runner is local, enabling the direct-attach fast path).
     :raises click.ClickException: If any setup step fails.
@@ -3312,7 +3304,7 @@ async def _prepare_claude_terminal_via_daemon(
                 startup_progress=startup_progress,
                 progress_message="Creating Claude session...",
             )
-            coroutines: list[Any] = [
+            session_id, _ = await asyncio.gather(
                 _create_claude_session(
                     client,
                     session_bundle,
@@ -3320,11 +3312,7 @@ async def _prepare_claude_terminal_via_daemon(
                     terminal_launch_args=persist_args or None,
                 ),
                 wait_for_host_online(client, host_id, timeout_s=_DAEMON_HOST_ONLINE_TIMEOUT_S),
-            ]
-            if ensure_daemon is not None:
-                coroutines.append(asyncio.to_thread(ensure_daemon))
-            results = await asyncio.gather(*coroutines)
-            session_id = results[0]
+            )
             _mark_startup_step(
                 startup_profiler,
                 "daemon claude session created and host online",
@@ -3496,7 +3484,6 @@ def _run_with_remote_server(
     :returns: None.
     """
     from omnigent.chat import _bundle_agent, _remote_headers, _server_auth
-    from omnigent.cli import _ensure_host_daemon
     from omnigent.host.identity import load_or_create_host_identity
 
     startup_profiler = startup_profiler or StartupProfiler(name="omnigent claude", enabled=False)
@@ -3584,7 +3571,6 @@ def _run_with_remote_server(
                         workspace=str(Path.cwd().resolve()),
                         startup_profiler=startup_profiler,
                         startup_progress=progress,
-                        ensure_daemon=functools.partial(_ensure_host_daemon, base_url),
                     )
                 )
                 _mark_startup_step(
