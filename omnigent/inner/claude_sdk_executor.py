@@ -91,6 +91,56 @@ logger = logging.getLogger(__name__)
 # producer (Databricks AI gateway or a generic key/gateway provider).
 _GATEWAY_AUTH_REFRESH_MS = 900_000
 
+# Token file written by ``devtools.ai.databricks_auth.auth.get_model_serving_token``
+# and read by the ``apiKeyHelper`` jq command. The Claude SDK runs in headless
+# mode so the managed-settings ``UserPromptSubmit`` hook that normally refreshes
+# this file never fires; we install a Python hook instead.
+_MODEL_SERVING_TOKEN_FILE = pathlib.Path.home() / ".databricks" / "model-serving-token.json"
+# Mirror TOKEN_REFRESH_BUFFER in devtools/ai/databricks_auth/auth.py.
+_TOKEN_REFRESH_BUFFER_S = 1800
+
+
+def _model_serving_token_needs_refresh() -> bool:
+    """Return True if the model-serving token is absent or expiring within the buffer."""
+    if not _MODEL_SERVING_TOKEN_FILE.exists():
+        return False  # nothing to refresh; token was never minted this session
+    try:
+        data = json.loads(_MODEL_SERVING_TOKEN_FILE.read_text())
+        iso = data.get("expires_at", {}).get("__datetime__")
+        if not iso:
+            return True  # unreadable expiry — refresh to be safe
+        from datetime import datetime
+
+        expires = datetime.fromisoformat(iso).timestamp()
+        return (expires - time.time()) < _TOKEN_REFRESH_BUFFER_S
+    except (OSError, ValueError, KeyError, TypeError):
+        return True  # parse failure — refresh to be safe
+
+
+def _maybe_refresh_model_serving_token() -> None:
+    """Call ``isaac auth refresh`` when the model-serving token is close to expiry.
+
+    Mirrors the logic of ``refresh_model_serving_token.sh``. Runs synchronously
+    in a background thread (via ``asyncio.to_thread``) so it doesn't block the
+    event loop. Failures are logged and swallowed so a transient refresh error
+    never aborts a turn.
+    """
+    import subprocess
+
+    if not _model_serving_token_needs_refresh():
+        return
+    try:
+        logger.debug("Gateway token expiring soon; running isaac auth refresh")
+        subprocess.run(
+            ["isaac", "auth", "refresh"],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        logger.warning("Gateway token refresh failed: %s", exc)
+
+
 # Claude Code forwards the ANTHROPIC_CUSTOM_HEADERS value verbatim as
 # request headers. The Databricks AI gateway only serves Claude requests
 # in coding-agent mode when this header is present, so the Databricks
@@ -1975,6 +2025,49 @@ class ClaudeSDKExecutor(Executor):
         hooks["PreToolUse"] = entries
         options.hooks = hooks
 
+    def _install_gateway_token_refresh_hook(
+        self,
+        sdk: _ClaudeSDK,
+        options: Any,  # type: ignore[explicit-any]  # ClaudeAgentOptions
+    ) -> None:
+        """Register a ``UserPromptSubmit`` hook that refreshes the Databricks
+        model-serving OAuth token before each turn.
+
+        The managed-settings ``UserPromptSubmit`` shell hook
+        (``refresh_model_serving_token.sh``) keeps the token file fresh in
+        interactive Claude Code sessions, but the Claude Agent SDK runs in
+        headless mode so those native hook files are never loaded. This
+        installs an equivalent Python callback so long SDK sessions (> ~1 h)
+        don't hit 401s from a stale token that ``apiKeyHelper`` keeps re-reading.
+
+        Only installed when ``_gateway_auth_command`` reads from
+        ``~/.databricks/model-serving-token.json`` (the Isaac AI Gateway path).
+        Other gateway auth commands (e.g. ``databricks auth token --host …``)
+        handle their own refresh and need no help here.
+        """
+        hook_matcher_cls = getattr(sdk, "HookMatcher", None)
+        if hook_matcher_cls is None:
+            return
+        if (
+            not self._gateway_auth_command
+            or str(_MODEL_SERVING_TOKEN_FILE) not in self._gateway_auth_command
+        ):
+            return
+
+        async def refresh_token(
+            payload: Any,  # type: ignore[explicit-any]  # noqa: ARG001
+            tool_use_id: str | None,  # noqa: ARG001
+            context: Any,  # type: ignore[explicit-any]  # noqa: ARG001
+        ) -> dict[str, Any]:  # type: ignore[explicit-any]
+            await asyncio.to_thread(_maybe_refresh_model_serving_token)
+            return {}
+
+        hooks = dict(getattr(options, "hooks", None) or {})
+        entries = list(hooks.get("UserPromptSubmit") or [])
+        entries.append(hook_matcher_cls(hooks=[refresh_token], timeout=35))
+        hooks["UserPromptSubmit"] = entries
+        options.hooks = hooks
+
     async def _can_use_tool_for_permission(
         self,
         tool_name: str,
@@ -2412,6 +2505,7 @@ class ClaudeSDKExecutor(Executor):
             options.can_use_tool = self._can_use_tool_gate
 
         self._install_subagent_router_hook(sdk, options, model)
+        self._install_gateway_token_refresh_hook(sdk, options)
 
         # Log the full configuration for debugging
         logger.info(
