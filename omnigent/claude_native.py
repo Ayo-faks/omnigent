@@ -3380,27 +3380,30 @@ async def _prepare_claude_terminal_via_daemon(
             startup_progress=startup_progress,
             detail=f"runner={runner_id}",
         )
-        _mark_startup_step(
-            startup_profiler,
-            "waiting for runner online",
-            startup_progress=startup_progress,
-            progress_message="Waiting for runner...",
-        )
-        await wait_for_runner_online(client, runner_id, timeout_s=_DAEMON_RUNNER_ONLINE_TIMEOUT_S)
-        _mark_startup_step(
-            startup_profiler,
-            "daemon runner online",
-            startup_progress=startup_progress,
-        )
         if reattached:
+            # Resume: runner must be online before we ask it to ensure the
+            # terminal (the POST goes to the runner via the server relay).
+            _mark_startup_step(
+                startup_profiler,
+                "waiting for runner online",
+                startup_progress=startup_progress,
+                progress_message="Waiting for runner...",
+            )
+            await wait_for_runner_online(
+                client, runner_id, timeout_s=_DAEMON_RUNNER_ONLINE_TIMEOUT_S
+            )
+            _mark_startup_step(
+                startup_profiler,
+                "daemon runner online",
+                startup_progress=startup_progress,
+            )
             # Resume onto an already-online daemon runner reuses it without
             # re-running the session-start auto-create, so a runner whose
             # terminal was torn down (e.g. after a ``-p`` one-shot) comes
             # back terminal-less and the wait below would time out. Ask the
             # runner to ensure the claude terminal: idempotent (returns the
             # live one if present) and otherwise auto-creates it with cold
-            # resume so history is restored. A fresh launch already creates
-            # it on session-start, so this is only needed when reattaching.
+            # resume so history is restored.
             _mark_startup_step(
                 startup_profiler,
                 "ensuring resumed terminal on runner",
@@ -3413,15 +3416,37 @@ async def _prepare_claude_terminal_via_daemon(
                 "resumed terminal ensure requested",
                 startup_progress=startup_progress,
             )
-        _mark_startup_step(
-            startup_profiler,
-            "waiting for claude terminal ready",
-            startup_progress=startup_progress,
-            progress_message="Starting Claude terminal...",
-        )
-        terminal_id = await _wait_for_claude_terminal_ready(
-            client, session_id, timeout_s=_DAEMON_TERMINAL_READY_TIMEOUT_S
-        )
+            _mark_startup_step(
+                startup_profiler,
+                "waiting for claude terminal ready",
+                startup_progress=startup_progress,
+                progress_message="Starting Claude terminal...",
+            )
+            terminal_id = await _wait_for_claude_terminal_ready(
+                client, session_id, timeout_s=_DAEMON_TERMINAL_READY_TIMEOUT_S
+            )
+        else:
+            # Fresh launch: the runner auto-creates the terminal on session-start,
+            # so runner-online and terminal-ready are sequential from the runner's
+            # side but independent from the CLI's perspective — the terminal poll
+            # returns None (404) until the runner creates it. Run both concurrently:
+            # wait_for_runner_online provides the fail-fast dead-runner signal;
+            # _wait_for_claude_terminal_ready drives to completion. The gather
+            # propagates any runner failure immediately, cancelling the terminal wait.
+            _mark_startup_step(
+                startup_profiler,
+                "waiting for runner online and claude terminal ready",
+                startup_progress=startup_progress,
+                progress_message="Starting Claude terminal...",
+            )
+            _, terminal_id = await asyncio.gather(
+                wait_for_runner_online(
+                    client, runner_id, timeout_s=_DAEMON_RUNNER_ONLINE_TIMEOUT_S
+                ),
+                _wait_for_claude_terminal_ready(
+                    client, session_id, timeout_s=_DAEMON_TERMINAL_READY_TIMEOUT_S
+                ),
+            )
         _mark_startup_step(
             startup_profiler,
             "claude terminal ready",

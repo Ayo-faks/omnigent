@@ -1785,7 +1785,6 @@ async def test_prepare_daemon_terminal_reports_progress_steps(
     assert updates == [
         "Creating Claude session...",
         "Starting runner...",
-        "Waiting for runner...",
         "Starting Claude terminal...",
         "Claude terminal ready.",
     ]
