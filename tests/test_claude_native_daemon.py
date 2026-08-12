@@ -269,6 +269,9 @@ def _install_daemon_seam_mocks(
     async def _fake_prepare(**kwargs: Any) -> claude_native.PreparedClaudeTerminal:
         """Capture prepare kwargs and return the canned terminal."""
         captured.update(kwargs)
+        # Invoke ensure_daemon so callers that assert on ensured[] still work.
+        if kwargs.get("ensure_daemon") is not None:
+            kwargs["ensure_daemon"]()
         return prepared
 
     async def _fake_attach(**kwargs: Any) -> claude_native._AttachOutcome:
