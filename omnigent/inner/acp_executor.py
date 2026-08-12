@@ -1026,19 +1026,30 @@ class AcpExecutor(Executor):
 
     @staticmethod
     def _extract_mcp_server_names_from_output(notification: _AcpJsonObject) -> set[str]:
-        """Try to extract MCP server names from a vendor notification payload.
+        """Try to extract MCP server names from a vendor notification envelope.
 
-        Looks for common patterns that indicate MCP server activity. Currently
+        Reads the output notification from the `params` field of a JSON-RPC envelope
+        and looks for common patterns that indicate MCP server activity. Currently
         detects the Devin-style "MCP: <name>" and "Connecting to MCP server
         '<name>'" patterns in output notifications. Returns an empty set if
         no servers are recognized, which is safe (no false positives → no false
         warnings). Vendor-prefixed notifications are inherently vendor-specific,
         so a best-effort extraction is appropriate here.
+
+        Note: Name-based comparison (checking if a reported server name matches a
+        lent server name) has a known false negative: if an agent has a persisted
+        MCP server also called "omnigent" (e.g., from a stale bridge dir), it would
+        be silently treated as lent when it is not. This is acceptable because such
+        collisions are rare and the primary goal is observability of the common case.
         """
         servers: set[str] = set()
+        # Extract params from the JSON-RPC envelope.
+        params = notification.get("params") or {}
+        if not isinstance(params, dict):
+            return servers
         # Check for output notification with channel or message that mentions MCP servers.
-        channel = notification.get("channel") or ""
-        message = notification.get("message") or ""
+        channel = params.get("channel") or ""
+        message = params.get("message") or ""
         text = f"{channel} {message}".lower()
 
         # Pattern: "MCP: <name>" or "mcp: <name>".
