@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import secrets
@@ -662,6 +663,7 @@ def _remote_headers(
     return headers
 
 
+@functools.lru_cache(maxsize=8)
 def _stored_databricks_record_token(server_url: str) -> str | None:
     """Mint a workspace token from a stored Databricks Apps record.
 
@@ -670,6 +672,12 @@ def _stored_databricks_record_token(server_url: str) -> str | None:
     via the Databricks CLI's host-keyed OAuth cache. One-shot — callers
     that issue many requests should use :class:`_DatabricksTokenAuth`,
     which reuses the SDK config across requests.
+
+    The result is cached per ``server_url`` within the process lifetime.
+    CLI startup calls ``_remote_headers`` twice for the same URL (once in
+    the auth probe, once to build the session headers), so caching avoids
+    minting a fresh OAuth token on every call — the Databricks SDK token
+    mint is ~1.4s per call on a cold process.
 
     :param server_url: The remote server URL, e.g.
         ``"https://myapp-123.aws.databricksapps.com"``.
@@ -1488,13 +1496,16 @@ async def _prepare_chat_session_via_daemon(
                 if fork_session_id is not None:
                     fork_result = await sdk.sessions.fork(fork_session_id)
                     session_id = fork_result["id"]
+                    fresh_session = False
                 elif resume_conversation_id is not None:
                     session_id = resume_conversation_id
+                    fresh_session = False
                 else:
                     created = await sdk.sessions.create(
                         bundle, filename="agent.tar.gz", workspace=workspace
                     )
                     session_id = created.id
+                    fresh_session = True
             except ClientOmnigentError as exc:
                 # Any create/fork/resume rejection here is a server-side answer, not
                 # a client bug worth a traceback: a wrong base URL that answers
@@ -1523,7 +1534,11 @@ async def _prepare_chat_session_via_daemon(
             if progress is not None:
                 progress.update(STARTUP_PHASE_LAUNCHING_AGENT)
             runner_id = await launch_or_reuse_daemon_runner(
-                client, host_id=host_id, session_id=session_id, workspace=workspace
+                client,
+                host_id=host_id,
+                session_id=session_id,
+                workspace=workspace,
+                fresh=fresh_session,
             )
             await wait_for_runner_online(
                 client, runner_id, timeout_s=_DAEMON_CHAT_RUNNER_ONLINE_TIMEOUT_S

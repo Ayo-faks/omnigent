@@ -148,6 +148,37 @@ async def test_launch_or_reuse_daemon_runner_clears_stale_binding() -> None:
     assert events.index(("patch", {"runner_id": ""})) < events.index(("launch", None))
 
 
+async def test_launch_or_reuse_daemon_runner_fresh_skips_session_get() -> None:
+    """
+    ``fresh=True`` skips the ``GET /v1/sessions/{id}`` check entirely.
+
+    A session created in the same startup can't have a runner bound yet,
+    so the read is always empty and only adds latency (~2-3s). The fresh
+    path goes straight to ``POST /v1/hosts/{id}/runners``.
+    """
+    gets: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record any GET to sessions and serve the launch endpoint."""
+        if request.method == "GET" and "/sessions/" in request.url.path:
+            gets.append(request.url.path)
+            return httpx.Response(200, json={})
+        if request.method == "POST" and request.url.path == "/v1/hosts/host_1/runners":
+            return httpx.Response(200, json={"runner_id": "runner_new"})
+        return httpx.Response(404, json={})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://e.com"
+    ) as client:
+        runner_id = await daemon_launch.launch_or_reuse_daemon_runner(
+            client, host_id="host_1", session_id="conv_a", workspace="/w", fresh=True
+        )
+
+    assert runner_id == "runner_new"
+    # No GET to /v1/sessions — the binding check was skipped.
+    assert gets == []
+
+
 async def test_create_claude_session_persists_terminal_launch_args() -> None:
     """
     The daemon-flow create persists pass-through args and omits the
