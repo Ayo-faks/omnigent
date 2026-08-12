@@ -958,6 +958,71 @@ os_env:
         self.assertEqual(entry.source.kind, "env")
         self.assertEqual(entry.source.env, "CORP")
 
+    def test_load_agent_def_parses_and_validates_github_code_search(self):
+        """The single-file loader must use the native gate parser unchanged."""
+        config = {
+            "name": "t",
+            "prompt": "hi",
+            "os_env": {
+                "sandbox": {
+                    "type": "linux_bwrap",
+                    "egress_rules": ["GET api.github.com/search/code**"],
+                    "credential_proxy": [
+                        {
+                            "type": "https_bearer",
+                            "target": "API.GitHub.com",
+                            "source": {"command": "gh auth token"},
+                        }
+                    ],
+                    "github_code_search": {
+                        "host": "API.GitHub.com",
+                        "control_header": "X-Omnigent-GitHub-Org",
+                        "organizations": ["Databricks-Eng"],
+                    },
+                }
+            },
+        }
+
+        agent = load_agent_def(config)
+        gate = agent.os_env.sandbox.github_code_search
+        self.assertIsNotNone(gate)
+        self.assertEqual(gate.host, "api.github.com")
+        self.assertEqual(gate.control_header, "x-omnigent-github-org")
+        self.assertEqual(gate.organizations, ("databricks-eng",))
+
+        del config["os_env"]["sandbox"]["credential_proxy"]
+        with self.assertRaisesRegex(ValueError, "https_bearer entry"):
+            load_agent_def(config)
+
+    def test_load_agent_def_rejects_github_gate_on_inherited_terminal(self):
+        """A terminal may not silently inherit a gate it cannot enforce."""
+        config = {
+            "name": "t",
+            "prompt": "hi",
+            "os_env": {
+                "sandbox": {
+                    "type": "linux_bwrap",
+                    "egress_rules": ["GET api.github.com/search/code**"],
+                    "credential_proxy": [
+                        {
+                            "type": "https_bearer",
+                            "target": "api.github.com",
+                            "source": {"command": "gh auth token"},
+                        }
+                    ],
+                    "github_code_search": {
+                        "host": "api.github.com",
+                        "control_header": "X-Org",
+                        "organizations": ["databricks-eng"],
+                    },
+                }
+            },
+            "terminals": {"shell": {"command": "bash", "os_env": "inherit"}},
+        }
+
+        with self.assertRaisesRegex(ValueError, "github_code_search is not supported"):
+            load_agent_def(config)
+
     def test_load_agent_def_rejects_credential_proxy_without_egress_rules(self):
         """``credential_proxy`` without ``egress_rules`` is rejected here too.
 

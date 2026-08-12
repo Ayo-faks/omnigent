@@ -828,6 +828,14 @@ def build_terminal_os_env_spec(
             sandbox=OSEnvSandboxSpec(type="none"),
         )
 
+    effective_sandbox = effective_os_env_spec.sandbox
+    if effective_sandbox is not None and effective_sandbox.github_code_search is not None:
+        raise ValueError(
+            "github_code_search is not supported on terminal sandboxes because the terminal "
+            "proxy cannot securely resolve parent-held credential bindings. Use the agent "
+            "os_env tools instead."
+        )
+
     if cwd_override is not None:
         if not spec.allow_cwd_override:
             raise ValueError("This terminal does not allow cwd overrides")

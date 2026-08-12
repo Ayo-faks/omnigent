@@ -20,6 +20,7 @@ from omnigent.inner.datamodel import (
     CredentialSourceSpec,
     DatabricksProfileBinding,
     DatabricksProxySpec,
+    GitHubCodeSearchSpec,
     OSEnvSandboxSpec,
     OSEnvSpec,
     TerminalEnvSpec,
@@ -240,6 +241,7 @@ def parse(root: Path, *, expand_env: bool = True) -> AgentSpec:
     guardrails = _parse_guardrails(raw.get("guardrails"), expand_env=expand_env)
     os_env = _parse_os_env(raw.get("os_env"))
     terminals = _parse_terminals(raw.get("terminals"))
+    _validate_terminal_github_code_search(terminals, os_env)
     params = raw.get("params", {})
     # Top-level ``async:`` flag gates the LLM-callable async-dispatch
     # builtins (``sys_call_async``, ``sys_read_inbox``,
@@ -900,6 +902,28 @@ def _parse_terminals(
     return terminals or None
 
 
+def _validate_terminal_github_code_search(
+    terminals: dict[str, TerminalEnvSpec] | None,
+    agent_os_env: OSEnvSpec | None,
+) -> None:
+    """Reject a gate that the terminal launch path cannot enforce safely."""
+    for name, terminal in (terminals or {}).items():
+        if isinstance(terminal.os_env, OSEnvSpec):
+            effective_os_env = terminal.os_env
+        elif terminal.os_env in (None, "inherit"):
+            effective_os_env = agent_os_env
+        else:
+            effective_os_env = None
+        sandbox = effective_os_env.sandbox if effective_os_env is not None else None
+        if sandbox is not None and sandbox.github_code_search is not None:
+            raise OmnigentError(
+                f"terminal {name!r}: github_code_search is not supported on terminal "
+                "sandboxes because the terminal proxy cannot securely resolve parent-held "
+                "credential bindings. Use the agent os_env tools instead.",
+                code=ErrorCode.INVALID_INPUT,
+            )
+
+
 def _parse_os_env_sandbox(
     raw: object,
 ) -> OSEnvSandboxSpec | None:
@@ -948,6 +972,7 @@ def _parse_os_env_sandbox(
     mask_paths = _parse_mask_paths(raw.get("mask_paths"))
     env_passthrough = _parse_env_passthrough(raw.get("env_passthrough"))
     egress_rules = _parse_egress_rules(raw.get("egress_rules"))
+    github_code_search = _parse_github_code_search(raw.get("github_code_search"))
     from omnigent.inner.sandbox import _default_sandbox_for_platform, _resolve_sandbox_type
 
     if "type" not in raw:
@@ -992,6 +1017,12 @@ def _parse_os_env_sandbox(
     macos_reason = _credential_proxy_macos_unsupported_reason(credential_proxy, sandbox_type)
     if macos_reason is not None:
         raise OmnigentError(macos_reason, code=ErrorCode.INVALID_INPUT)
+    _validate_github_code_search_dependencies(
+        github_code_search,
+        sandbox_type=sandbox_type,
+        egress_rules=egress_rules,
+        credential_proxy=credential_proxy,
+    )
     allow_private = raw.get("egress_allow_private_destinations", False)
     if not isinstance(allow_private, bool):
         raise OmnigentError(
@@ -1014,6 +1045,7 @@ def _parse_os_env_sandbox(
         egress_rules=egress_rules,
         egress_allow_private_destinations=allow_private,
         credential_proxy=credential_proxy,
+        github_code_search=github_code_search,
     )
 
 
@@ -1308,6 +1340,117 @@ def _parse_egress_rules(raw: object) -> list[str] | None:
             ) from exc
         validated.append(entry)
     return validated
+
+
+_GITHUB_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+_HTTP_HEADER_NAME_RE = re.compile(r"\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
+
+
+class _GitHubCodeSearchModel(BaseModel):  # type: ignore[explicit-any]
+    """Pydantic boundary model for ``sandbox.github_code_search``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str
+    control_header: str
+    organizations: list[str]
+
+    @model_validator(mode="after")
+    def _validate_and_normalize(self) -> _GitHubCodeSearchModel:
+        from omnigent.inner.egress.rules import is_dns_safe_host
+
+        if not is_dns_safe_host(self.host):
+            raise ValueError("host must be an exact DNS-safe hostname")
+        if not _HTTP_HEADER_NAME_RE.fullmatch(self.control_header):
+            raise ValueError("control_header must be a valid HTTP header name")
+        if not self.organizations:
+            raise ValueError("organizations must be a non-empty list")
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for organization in self.organizations:
+            if not _GITHUB_NAME_RE.fullmatch(organization):
+                raise ValueError(
+                    "organizations entries must contain only ASCII letters, "
+                    "digits, '.', '_', or '-'"
+                )
+            organization = organization.lower()
+            if organization in seen:
+                raise ValueError(f"organizations contains duplicate {organization!r}")
+            seen.add(organization)
+            normalized.append(organization)
+
+        self.host = self.host.lower()
+        self.control_header = self.control_header.lower()
+        self.organizations = normalized
+        return self
+
+
+def _parse_github_code_search(raw: object) -> GitHubCodeSearchSpec | None:
+    """Parse and normalize the optional query-aware GitHub code-search gate."""
+    if raw is None:
+        return None
+    try:
+        model = _GitHubCodeSearchModel.model_validate(raw)
+    except ValidationError as exc:
+        raise OmnigentError(
+            f"os_env.sandbox.github_code_search is invalid: {_format_validation_error(exc)}",
+            code=ErrorCode.INVALID_INPUT,
+        ) from exc
+    return GitHubCodeSearchSpec(
+        host=model.host,
+        control_header=model.control_header,
+        organizations=tuple(model.organizations),
+    )
+
+
+def _validate_github_code_search_dependencies(
+    spec: GitHubCodeSearchSpec | None,
+    *,
+    sandbox_type: str,
+    egress_rules: list[str] | None,
+    credential_proxy: CredentialProxySpec | None,
+) -> None:
+    """Require the hardened network, allowlist, and bearer-binding dependencies."""
+    if spec is None:
+        return
+    if sandbox_type not in ("linux_bwrap", "darwin_seatbelt"):
+        raise OmnigentError(
+            "os_env.sandbox.github_code_search requires sandbox.type=linux_bwrap "
+            "or sandbox.type=darwin_seatbelt",
+            code=ErrorCode.INVALID_INPUT,
+        )
+
+    from omnigent.inner.egress.rules import parse_rules
+
+    parsed_rules = parse_rules(egress_rules or [])
+    has_search_rule = any(
+        rule.host_pattern.lower() == spec.host
+        and "GET" in rule.methods
+        and rule.matches("GET", spec.host, "/search/code?q=probe")
+        for rule in parsed_rules
+    )
+    if not has_search_rule:
+        raise OmnigentError(
+            "os_env.sandbox.github_code_search requires an exact-host GET egress rule "
+            f"allowing {spec.host}/search/code and its query string",
+            code=ErrorCode.INVALID_INPUT,
+        )
+
+    binding = next(
+        (
+            entry
+            for entry in (credential_proxy.entries if credential_proxy is not None else [])
+            if entry.host == spec.host
+        ),
+        None,
+    )
+    if binding is None or binding.scheme != "bearer":
+        raise OmnigentError(
+            "os_env.sandbox.github_code_search requires credential_proxy to bind "
+            f"{spec.host!r} with an https_bearer entry",
+            code=ErrorCode.INVALID_INPUT,
+        )
 
 
 # YAML ``credential_proxy[*].type`` values are validated by the

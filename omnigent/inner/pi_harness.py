@@ -75,7 +75,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from omnigent.harness_startup_config import resolve_harness_path
-from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
+from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec, deserialize_os_env_spec
 from omnigent.inner.executor import Executor
 from omnigent.inner.pi_executor import PiExecutor
 from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
@@ -176,16 +176,7 @@ def _resolve_os_env() -> OSEnvSpec:
             )
             payload = None
         if isinstance(payload, dict):
-            sandbox_payload = payload.get("sandbox")
-            sandbox = (
-                OSEnvSandboxSpec(**sandbox_payload) if isinstance(sandbox_payload, dict) else None
-            )
-            return OSEnvSpec(
-                type=str(payload.get("type", "caller_process")),
-                cwd=payload.get("cwd"),
-                sandbox=sandbox,
-                fork=bool(payload.get("fork", False)),
-            )
+            return deserialize_os_env_spec(payload)
     # Default: enable natives, no sandbox. Matches the simplest
     # working config; operators who want real sandbox enforcement
     # configure ``os_env.sandbox`` explicitly in the spec.

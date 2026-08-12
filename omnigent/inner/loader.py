@@ -6,9 +6,11 @@ import importlib
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias
 
 import yaml
+
+from omnigent.errors import OmnigentError
 
 from .datamodel import (
     AgentDef,
@@ -320,9 +322,15 @@ def _parse_agent_def(
     # combination at parse time rather than silently accept a spec
     # that's only as strong as the LLM lets it be.
     for term_name, term_spec in agent.terminals.items():
+        effective_sandbox = _effective_terminal_sandbox(term_spec, agent.os_env)
+        if effective_sandbox is not None and effective_sandbox.github_code_search is not None:
+            raise ValueError(
+                f"terminal {term_name!r}: github_code_search is not supported on terminal "
+                "sandboxes because the terminal proxy cannot securely resolve parent-held "
+                "credential bindings. Use the agent os_env tools instead."
+            )
         if not term_spec.allow_sandbox_override:
             continue
-        effective_sandbox = _effective_terminal_sandbox(term_spec, agent.os_env)
         if effective_sandbox is not None and effective_sandbox.egress_rules:
             raise ValueError(
                 f"terminal {term_name!r}: allow_sandbox_override=true is "
@@ -753,114 +761,20 @@ def _parse_os_env_sandbox_spec(data: YamlData | str | bool | None) -> OSEnvSandb
         return OSEnvSandboxSpec(type="none")
     if not isinstance(data, dict):
         raise TypeError("os_env.sandbox must be a string, false, or mapping")
-    from .sandbox import _default_sandbox_for_platform, _resolve_sandbox_type
-
-    if "type" not in data:
-        sandbox_type = _default_sandbox_for_platform().type
-    else:
-        raw_type = data["type"]
-        if raw_type is not None and not isinstance(raw_type, str):
-            raise TypeError("os_env.sandbox.type must be a string or null")
-        sandbox_type = _resolve_sandbox_type(raw_type)
-    egress_rules = data.get("egress_rules")
-    # Mirror the Omnigent parser's hard reject of ``egress_rules`` paired with
-    # a backend that cannot enforce them at spawn time. Without this
-    # check the loader would happily accept a YAML that declares an
-    # egress allow-list on ``none``, where the
-    # MITM proxy is never wired up — the rules would sit in the spec
-    # object as inert decoration while ``curl`` reaches the open
-    # internet, looking exactly like the bug class fixed in
-    # ``terminal._clone_sandbox_spec``.
-    if egress_rules and sandbox_type not in ("linux_bwrap", "darwin_seatbelt"):
-        raise ValueError(
-            "os_env.sandbox.egress_rules requires sandbox.type=linux_bwrap "
-            "(Linux) or sandbox.type=darwin_seatbelt (macOS) for hard "
-            "network enforcement: those backends restrict network access "
-            "at spawn time so the MITM proxy is the only egress path. "
-            f"Got sandbox.type={sandbox_type!r}."
-        )
     allow_private = data.get("egress_allow_private_destinations", False)
     if not isinstance(allow_private, bool):
         raise TypeError(
             "os_env.sandbox.egress_allow_private_destinations must be a "
             f"boolean, got {type(allow_private).__name__}"
         )
-    # Secretless credential proxy. Reuse the single canonical parser
-    # (``omnigent.spec.parser._parse_credential_proxy``) rather than a
-    # second copy so the single-file omnigent-YAML path and the
-    # bundle/config.yaml path can never drift — a duplicated parser here
-    # is exactly what silently dropped ``credential_proxy`` on this path
-    # before. Lazy-imported to avoid an import-time cycle with the spec
-    # layer (which imports inner.datamodel). The two cross-field guards
-    # below mirror the spec parser so an inert credential_proxy (no
-    # hardened backend / no egress rules) is rejected on both paths.
-    from omnigent.spec.parser import (
-        _credential_proxy_macos_unsupported_reason,
-        _parse_credential_proxy,
-    )
+    from omnigent.spec.parser import _parse_os_env_sandbox
 
-    credential_proxy = _parse_credential_proxy(data.get("credential_proxy"))
-    if credential_proxy is not None and sandbox_type not in ("linux_bwrap", "darwin_seatbelt"):
-        raise ValueError(
-            "os_env.sandbox.credential_proxy requires sandbox.type=linux_bwrap "
-            "(Linux) or sandbox.type=darwin_seatbelt (macOS) so credentials are "
-            "bound to a hardened helper boundary. "
-            f"Got sandbox.type={sandbox_type!r}."
-        )
-    if credential_proxy is not None and not egress_rules:
-        raise ValueError(
-            "os_env.sandbox.credential_proxy requires os_env.sandbox.egress_rules: "
-            "the MITM egress proxy is what swaps the synthetic placeholder for the "
-            "real credential and rejects placeholder leaks, so it must be active."
-        )
-    macos_reason = _credential_proxy_macos_unsupported_reason(credential_proxy, sandbox_type)
-    if macos_reason is not None:
-        raise ValueError(macos_reason)
-    # Defer the absent-field defaults to the dataclass so there is a single
-    # source of truth: re-stating literals here (e.g. ``"warn"``, ``50000``)
-    # silently drifts the moment the OSEnvSandboxSpec defaults change. An
-    # explicit YAML ``null`` is treated the same as a missing key.
-    fields = OSEnvSandboxSpec.__dataclass_fields__
-    max_entries_raw = data.get("cwd_hidden_scan_max_entries")
-    overflow_raw = data.get("cwd_hidden_scan_overflow")
-    recursive_raw = data.get("cwd_hidden_scan_recursive")
-    mask_paths_raw = data.get("mask_paths")
-    return OSEnvSandboxSpec(
-        type=sandbox_type,
-        read_paths=data.get("read_paths"),
-        write_paths=(
-            list(data["write_paths"])
-            if "write_paths" in data and data.get("write_paths") is not None
-            else None
-        ),
-        write_files=(
-            list(data["write_files"])
-            if "write_files" in data and data.get("write_files") is not None
-            else None
-        ),
-        allow_network=data.get("allow_network", True),
-        cwd_allow_hidden=data.get("cwd_allow_hidden"),
-        cwd_hidden_scan_max_entries=(
-            int(max_entries_raw)
-            if max_entries_raw is not None
-            else cast(int, fields["cwd_hidden_scan_max_entries"].default)
-        ),
-        cwd_hidden_scan_overflow=(
-            str(overflow_raw)
-            if overflow_raw is not None
-            else cast(str, fields["cwd_hidden_scan_overflow"].default)
-        ),
-        cwd_hidden_scan_recursive=(
-            bool(recursive_raw)
-            if recursive_raw is not None
-            else cast(bool, fields["cwd_hidden_scan_recursive"].default)
-        ),
-        mask_paths=list(mask_paths_raw) if mask_paths_raw is not None else None,
-        env_passthrough=data.get("env_passthrough"),
-        egress_rules=egress_rules,
-        egress_allow_private_destinations=allow_private,
-        credential_proxy=credential_proxy,
-    )
+    try:
+        sandbox = _parse_os_env_sandbox(data)
+    except OmnigentError as exc:
+        raise ValueError(str(exc)) from exc
+    assert sandbox is not None
+    return sandbox
 
 
 def load_agent_def_from_path(path_str: str) -> AgentDef:

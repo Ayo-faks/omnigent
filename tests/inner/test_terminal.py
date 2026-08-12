@@ -14,7 +14,12 @@ from types import SimpleNamespace
 import pytest
 
 import omnigent.inner.terminal as terminal_mod
-from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec, TerminalEnvSpec
+from omnigent.inner.datamodel import (
+    GitHubCodeSearchSpec,
+    OSEnvSandboxSpec,
+    OSEnvSpec,
+    TerminalEnvSpec,
+)
 from omnigent.inner.terminal import (
     TERMINAL_TRANSPORT_CONTROL,
     TERMINAL_TRANSPORT_PTY,
@@ -26,6 +31,25 @@ from omnigent.inner.terminal import (
     resolve_terminal_transport,
 )
 from omnigent.runner.identity import RUNNER_TUNNEL_BINDING_TOKEN_ENV_VAR
+
+
+def test_terminal_start_rejects_inherited_github_code_search() -> None:
+    parent = OSEnvSpec(
+        sandbox=OSEnvSandboxSpec(
+            type="linux_bwrap",
+            github_code_search=GitHubCodeSearchSpec(
+                host="api.github.com",
+                control_header="x-org",
+                organizations=("databricks-eng",),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="github_code_search is not supported"):
+        terminal_mod.build_terminal_os_env_spec(
+            TerminalEnvSpec(command="bash", os_env="inherit"),
+            parent_os_env_spec=parent,
+        )
 
 
 def _write_transport_config(config_home: Path, value: str | None) -> None:

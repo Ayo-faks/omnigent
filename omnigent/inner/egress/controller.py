@@ -43,6 +43,7 @@ from pathlib import Path
 
 from omnigent._platform import IS_WINDOWS
 from omnigent.inner.credential_proxy import CredentialRewriteRule
+from omnigent.inner.datamodel import GitHubCodeSearchSpec
 from omnigent.inner.egress.ca import ensure_ca, ensure_ca_bundle
 from omnigent.inner.egress.proxy import EgressProxy
 from omnigent.inner.egress.rules import parse_rules
@@ -129,6 +130,7 @@ def start_egress_proxy(
     allow_private_destinations: bool,
     require_auth: bool,
     credential_rewrites: Sequence[CredentialRewriteRule] | None = None,
+    github_code_search: GitHubCodeSearchSpec | None = None,
 ) -> EgressProxyHandle:
     """Start the parent-side MITM egress proxy.
 
@@ -156,6 +158,7 @@ def start_egress_proxy(
         injection by default, plus synthetic-placeholder swap for entries
         that opted into ``inject_env`` (secretless ``credential_proxy``
         support).
+    :param github_code_search: Optional query-aware GitHub code-search gate.
     :returns: A live :class:`EgressProxyHandle`. Caller must invoke
         :meth:`EgressProxyHandle.stop` on cleanup.
     :raises OSError: On Windows, where the L7 egress proxy (a Unix-socket
@@ -213,6 +216,7 @@ def start_egress_proxy(
         # it (no out-of-band channel through tmux).
         auth_token=auth_token,
         credential_rewrites=list(credential_rewrites or []),
+        github_code_search=github_code_search,
     )
 
     loop = asyncio.new_event_loop()

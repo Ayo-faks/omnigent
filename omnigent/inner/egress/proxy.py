@@ -31,6 +31,7 @@ import functools
 import hmac
 import ipaddress
 import logging
+import re
 import socket
 import ssl
 from dataclasses import dataclass
@@ -38,12 +39,13 @@ from email.message import Message
 from email.parser import BytesParser
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit
 
 from omnigent.inner.credential_proxy import (
     SYNTHETIC_CREDENTIAL_PREFIX,
     CredentialRewriteRule,
 )
+from omnigent.inner.datamodel import GitHubCodeSearchSpec
 from omnigent.inner.egress.certs import HostCertCache
 from omnigent.inner.egress.rules import (
     EgressRule,
@@ -77,6 +79,14 @@ _CREDENTIAL_INJECTION_FORBIDDEN_METHODS = frozenset({"TRACE", "OPTIONS"})
 # answer directly once it reaches zero; the header is ignored on every
 # other method.
 _MAX_FORWARDS_METHODS = frozenset({"TRACE", "OPTIONS"})
+_GITHUB_SEARCH_PARAMS = frozenset({"q", "page", "per_page", "sort", "order"})
+_GITHUB_OWNERSHIP_QUALIFIER_RE = re.compile(
+    r"(?<![A-Za-z0-9_.])(?:org|user|repo)\s*:",
+    re.IGNORECASE,
+)
+_GITHUB_BOOLEAN_OPERATOR_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:OR|NOT)(?![A-Za-z0-9_])",
+)
 
 
 def _parse_http_headers(headers_raw: bytes) -> Message:
@@ -119,6 +129,15 @@ class _AuthRewriteResult:
 
     headers: bytes
     error: str | None
+
+
+@dataclass(frozen=True)
+class _GitHubSearchGateResult:
+    """Sanitized GitHub code-search request or a private denial reason."""
+
+    path: str
+    headers: bytes
+    error: str | None = None
 
 
 # S2 (security): CSP-internal endpoints that present as globally
@@ -219,6 +238,7 @@ class EgressProxy:
         block_private_destinations: bool = True,
         auth_token: str | None = None,
         credential_rewrites: list[CredentialRewriteRule] | None = None,
+        github_code_search: GitHubCodeSearchSpec | None = None,
     ) -> None:
         self._rules = rules
         self._cert_cache = HostCertCache(ca_cert_path, ca_key_path)
@@ -239,6 +259,7 @@ class EgressProxy:
             self._upstream_ssl_ctx = ssl.create_default_context()
         self._block_private_destinations = block_private_destinations
         self._auth_token = auth_token
+        self._github_code_search = github_code_search
         # Two indexes over the rewrite rules:
         #
         # - ``_cred_by_host``: the swap-on-access path. For a request to a
@@ -474,8 +495,16 @@ class EgressProxy:
             await self._send_forbidden(writer, "host contains forbidden character")
             return
 
+        if self._is_github_search_host(host) and port != 443:
+            logger.warning("BLOCKED-GITHUB-SEARCH CONNECT %s — HTTPS port required", host)
+            await self._send_generic_forbidden(writer)
+            return
+
         if not check_host(self._rules, host):
-            await self._send_forbidden(writer, f"Host {host!r} not allowed")
+            if self._is_github_search_host(host):
+                await self._send_generic_forbidden(writer)
+            else:
+                await self._send_forbidden(writer, f"Host {host!r} not allowed")
             return
 
         # S2 (security): destination check must run BEFORE the MITM
@@ -608,12 +637,37 @@ class EgressProxy:
             inner_headers = self._parse_header_dict(inner_headers_raw)
 
             if not check_request(self._rules, inner_method, host, inner_path):
-                logger.warning("BLOCKED %s https://%s%s", inner_method, host, inner_path)
-                msg = f"{inner_method} https://{host}{inner_path} denied by policy"
-                await self._send_forbidden(tls_writer, msg)
+                if self._is_github_search_host(host):
+                    logger.warning(
+                        "BLOCKED-GITHUB-SEARCH %s %s — base policy denied request",
+                        inner_method,
+                        host,
+                    )
+                    await self._send_generic_forbidden(tls_writer)
+                else:
+                    logger.warning("BLOCKED %s https://%s%s", inner_method, host, inner_path)
+                    msg = f"{inner_method} https://{host}{inner_path} denied by policy"
+                    await self._send_forbidden(tls_writer, msg)
                 return
 
-            logger.info("ALLOW %s https://%s%s", inner_method, host, inner_path)
+            gate = self._apply_github_search_gate(
+                method=inner_method,
+                host=host,
+                path=inner_path,
+                headers_raw=inner_headers_raw,
+            )
+            if gate.error is not None:
+                logger.warning("BLOCKED-GITHUB-SEARCH %s %s — %s", inner_method, host, gate.error)
+                await self._send_generic_forbidden(tls_writer)
+                return
+            inner_path = gate.path
+            inner_headers_raw = gate.headers
+            inner_headers = self._parse_header_dict(inner_headers_raw)
+
+            if self._is_github_search_host(host):
+                logger.info("ALLOW %s https://%s/search/code", inner_method, host)
+            else:
+                logger.info("ALLOW %s https://%s%s", inner_method, host, inner_path)
 
             # Forward a request line re-serialized from the parsed
             # method/path rather than the raw ``inner_first`` bytes, so
@@ -716,8 +770,13 @@ class EgressProxy:
             method=method, host=host, headers_raw=headers_raw
         )
         if rewrite.error is not None:
+            log_path = "/search/code" if self._is_github_search_host(host) else path
             logger.warning(
-                "BLOCKED-CREDENTIAL %s https://%s%s — %s", method, host, path, rewrite.error
+                "BLOCKED-CREDENTIAL %s https://%s%s — %s",
+                method,
+                host,
+                log_path,
+                rewrite.error,
             )
             await self._send_forbidden(client_writer, rewrite.error)
             return
@@ -759,13 +818,14 @@ class EgressProxy:
                 # (EOF vs. specific exception, request bytes sent) to
                 # diagnose flaky upstreams from the captured logs.
                 cause = type(relay_exc).__name__ if relay_exc else "EOF"
+                log_path = "/search/code" if self._is_github_search_host(host) else path
                 logger.warning(
                     "Upstream %s:%d closed without response "
                     "(method=%s path=%s, request_bytes=%d, cause=%s)",
                     host,
                     port,
                     method,
-                    path,
+                    log_path,
                     len(request_line) + len(headers_raw) + len(body),
                     cause,
                 )
@@ -831,6 +891,11 @@ class EgressProxy:
                 url,
             )
             await self._send_forbidden(writer, "host contains forbidden character")
+            return
+
+        if self._is_github_search_host(host):
+            logger.warning("BLOCKED-GITHUB-SEARCH %s %s — cleartext HTTP denied", method, host)
+            await self._send_generic_forbidden(writer)
             return
 
         if not check_request(self._rules, method, host, path):
@@ -1136,6 +1201,139 @@ class EgressProxy:
             await writer.drain()
         except Exception:  # noqa: BLE001 — response write is best-effort
             pass
+
+    @staticmethod
+    async def _send_generic_forbidden(writer: asyncio.StreamWriter) -> None:
+        """Send a denial without reflecting query or header details."""
+        body = b"403 Forbidden\r\n"
+        resp = (
+            b"HTTP/1.1 403 Forbidden\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            b"Connection: close\r\n"
+            b"\r\n" + body
+        )
+        try:
+            writer.write(resp)
+            await writer.drain()
+        except Exception:  # noqa: BLE001 — response write is best-effort
+            pass
+
+    def _is_github_search_host(self, host: str) -> bool:
+        spec = self._github_code_search
+        return spec is not None and host.lower() == spec.host
+
+    def _apply_github_search_gate(
+        self,
+        *,
+        method: str,
+        host: str,
+        path: str,
+        headers_raw: bytes,
+    ) -> _GitHubSearchGateResult:
+        """Validate and scope one configured GitHub code-search request."""
+        spec = self._github_code_search
+        if spec is None or host.lower() != spec.host:
+            return _GitHubSearchGateResult(path=path, headers=headers_raw)
+        if method.upper() != "GET":
+            return _GitHubSearchGateResult(path=path, headers=headers_raw, error="method denied")
+
+        try:
+            parsed = urlsplit(path)
+        except ValueError:
+            return _GitHubSearchGateResult(path=path, headers=headers_raw, error="malformed path")
+        if parsed.scheme or parsed.netloc or parsed.path != "/search/code" or "#" in path:
+            return _GitHubSearchGateResult(path=path, headers=headers_raw, error="path denied")
+
+        try:
+            params = self._parse_github_search_query(parsed.query)
+        except ValueError:
+            return _GitHubSearchGateResult(path=path, headers=headers_raw, error="query denied")
+
+        msg = _parse_http_headers(headers_raw)
+        host_headers = msg.get_all("Host", [])
+        if len(host_headers) != 1:
+            return _GitHubSearchGateResult(
+                path=path,
+                headers=headers_raw,
+                error="host header denied",
+            )
+        inner_host = host_headers[0].strip().lower()
+        if inner_host not in (spec.host, f"{spec.host}:443"):
+            return _GitHubSearchGateResult(
+                path=path,
+                headers=headers_raw,
+                error="host header denied",
+            )
+        organizations = msg.get_all(spec.control_header, [])
+        if len(organizations) != 1:
+            return _GitHubSearchGateResult(
+                path=path,
+                headers=headers_raw,
+                error="organization header denied",
+            )
+        organization = organizations[0].strip().lower()
+        if organization not in spec.organizations:
+            return _GitHubSearchGateResult(
+                path=path,
+                headers=headers_raw,
+                error="organization denied",
+            )
+
+        query = next(value for name, value in params if name == "q").strip()
+        if not 1 <= len(query) <= 256:
+            return _GitHubSearchGateResult(path=path, headers=headers_raw, error="query denied")
+        if _GITHUB_OWNERSHIP_QUALIFIER_RE.search(query):
+            return _GitHubSearchGateResult(
+                path=path,
+                headers=headers_raw,
+                error="qualifier denied",
+            )
+        if _GITHUB_BOOLEAN_OPERATOR_RE.search(query):
+            return _GitHubSearchGateResult(path=path, headers=headers_raw, error="operator denied")
+
+        del msg[spec.control_header]
+        del msg["Authorization"]
+        del msg["Host"]
+        msg["Host"] = spec.host
+        scoped_params = [
+            (name, f"{query} org:{organization}" if name == "q" else value)
+            for name, value in params
+        ]
+        scoped_path = "/search/code?" + urlencode(scoped_params)
+        return _GitHubSearchGateResult(
+            path=scoped_path,
+            headers=msg.as_bytes(policy=email.policy.HTTP),
+        )
+
+    @staticmethod
+    def _parse_github_search_query(query: str) -> list[tuple[str, str]]:
+        """Strictly parse the small GitHub code-search query vocabulary."""
+        for index, char in enumerate(query):
+            if char != "%":
+                continue
+            escape = query[index + 1 : index + 3]
+            if len(escape) != 2 or any(ch not in "0123456789abcdefABCDEF" for ch in escape):
+                raise ValueError("invalid percent escape")
+        params = parse_qsl(
+            query,
+            keep_blank_values=True,
+            strict_parsing=True,
+            encoding="utf-8",
+            errors="strict",
+            max_num_fields=len(_GITHUB_SEARCH_PARAMS),
+            separator="&",
+        )
+        seen: set[str] = set()
+        for name, value in params:
+            if name not in _GITHUB_SEARCH_PARAMS or name in seen:
+                raise ValueError("unsupported or duplicate parameter")
+            if any(ord(char) < 0x20 or ord(char) == 0x7F for char in name + value):
+                raise ValueError("ASCII control in query")
+            seen.add(name)
+        if "q" not in seen:
+            raise ValueError("missing q")
+        return params
 
     async def _rewrite_authorization_async(
         self, *, method: str, host: str, headers_raw: bytes

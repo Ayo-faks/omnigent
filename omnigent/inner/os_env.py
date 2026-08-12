@@ -34,7 +34,7 @@ from .credential_proxy import (
     MaterializedFile,
     prepare_credential_proxy_runtime,
 )
-from .datamodel import CredentialProxySpec, OSEnvSpec
+from .datamodel import CredentialProxySpec, GitHubCodeSearchSpec, OSEnvSpec
 from .sandbox import (
     ContainmentHandle,
     SandboxPolicy,
@@ -362,6 +362,7 @@ class _HelperProcessClient:
         start_in_scratch: bool = False,
         egress_rules: list[str] | None = None,
         egress_allow_private_destinations: bool = False,
+        github_code_search: GitHubCodeSearchSpec | None = None,
     ) -> None:
         self.cwd = cwd
         self.shell_path = shell_path
@@ -369,6 +370,7 @@ class _HelperProcessClient:
         self.start_in_scratch = start_in_scratch
         self._egress_rules = egress_rules
         self._egress_allow_private_destinations = egress_allow_private_destinations
+        self._github_code_search = github_code_search
         # S4 (security): per-helper Proxy-Authorization token,
         # generated in :meth:`_start_egress_proxy_locked` and read by
         # the config-FD writer in :meth:`_start_locked`. ``None``
@@ -765,6 +767,7 @@ class _HelperProcessClient:
             allow_private_destinations=self._egress_allow_private_destinations,
             require_auth=True,
             credential_rewrites=credential_rewrites,
+            github_code_search=self._github_code_search,
         )
 
         # S4 (security): hold the controller refs on the client so
@@ -832,6 +835,7 @@ class CallerProcessOSEnvironment(OSEnvironment):
     _start_in_scratch: bool = False
     _egress_rules: list[str] | None = None
     _egress_allow_private_destinations: bool = False
+    _github_code_search: GitHubCodeSearchSpec | None = None
 
     def __post_init__(self) -> None:
         self._helper = _HelperProcessClient(
@@ -841,6 +845,7 @@ class CallerProcessOSEnvironment(OSEnvironment):
             start_in_scratch=self._start_in_scratch,
             egress_rules=self._egress_rules,
             egress_allow_private_destinations=self._egress_allow_private_destinations,
+            github_code_search=self._github_code_search,
         )
 
     async def read(
@@ -957,6 +962,7 @@ def create_os_environment(spec: OSEnvSpec | None) -> OSEnvironment | None:
     egress_allow_private = (
         spec.sandbox.egress_allow_private_destinations if spec.sandbox else False
     )
+    github_code_search = spec.sandbox.github_code_search if spec.sandbox else None
     return CallerProcessOSEnvironment(
         spec=spec,
         cwd=cwd,
@@ -966,6 +972,7 @@ def create_os_environment(spec: OSEnvSpec | None) -> OSEnvironment | None:
         _start_in_scratch=spec.start_in_scratch,
         _egress_rules=egress_rules,
         _egress_allow_private_destinations=egress_allow_private,
+        _github_code_search=github_code_search,
     )
 
 

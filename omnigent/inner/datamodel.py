@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -506,6 +507,20 @@ class CredentialProxySpec:
     databricks: DatabricksProxySpec | None = None
 
 
+@dataclass(frozen=True)
+class GitHubCodeSearchSpec:
+    """Query-aware GitHub code-search policy for a sandbox.
+
+    :param host: Exact lower-case GitHub API hostname guarded by the policy.
+    :param control_header: Lower-case private header used to select an organization.
+    :param organizations: Non-empty tuple of allowed lower-case organization names.
+    """
+
+    host: str
+    control_header: str
+    organizations: tuple[str, ...]
+
+
 @dataclass
 class OSEnvSandboxSpec:
     """Sandbox configuration for an OS environment."""
@@ -735,6 +750,9 @@ class OSEnvSandboxSpec:
     # credential and rejects placeholder leaks) and a backend that
     # hard-isolates the network (``linux_bwrap`` / ``darwin_seatbelt``).
     credential_proxy: CredentialProxySpec | None = None
+    # Optional query-aware gate for GitHub's code-search endpoint. The
+    # parser requires a matching egress rule and credential host binding.
+    github_code_search: GitHubCodeSearchSpec | None = None
 
 
 @dataclass
@@ -754,6 +772,92 @@ class OSEnvSpec:
     sandbox: OSEnvSandboxSpec | None = None
     fork: bool = False
     start_in_scratch: bool = False
+
+
+def _deserialize_credential_source(value: object) -> CredentialSourceSpec:
+    if isinstance(value, CredentialSourceSpec):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("credential source payload must be a mapping")
+    return CredentialSourceSpec(**dict(value))
+
+
+def _deserialize_credential_proxy(value: object) -> CredentialProxySpec | None:
+    if value is None or isinstance(value, CredentialProxySpec):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("credential_proxy payload must be a mapping")
+
+    entries_raw = value.get("entries", [])
+    if not isinstance(entries_raw, list):
+        raise TypeError("credential_proxy.entries payload must be a list")
+    entries: list[CredentialProxyEntry] = []
+    for raw_entry in entries_raw:
+        if isinstance(raw_entry, CredentialProxyEntry):
+            entries.append(raw_entry)
+            continue
+        if not isinstance(raw_entry, Mapping):
+            raise TypeError("credential_proxy entry payload must be a mapping")
+        entry = dict(raw_entry)
+        entry["source"] = _deserialize_credential_source(entry.get("source"))
+        entries.append(CredentialProxyEntry(**entry))
+
+    databricks_raw = value.get("databricks")
+    databricks: DatabricksProxySpec | None = None
+    if isinstance(databricks_raw, DatabricksProxySpec):
+        databricks = databricks_raw
+    elif databricks_raw is not None:
+        if not isinstance(databricks_raw, Mapping):
+            raise TypeError("credential_proxy.databricks payload must be a mapping")
+        databricks_data = dict(databricks_raw)
+        profiles_raw = databricks_data.get("profiles", [])
+        if not isinstance(profiles_raw, list):
+            raise TypeError("credential_proxy.databricks.profiles payload must be a list")
+        databricks_data["profiles"] = [
+            profile
+            if isinstance(profile, DatabricksProfileBinding)
+            else DatabricksProfileBinding(**dict(profile))
+            for profile in profiles_raw
+            if isinstance(profile, (DatabricksProfileBinding, Mapping))
+        ]
+        if len(databricks_data["profiles"]) != len(profiles_raw):
+            raise TypeError("credential_proxy Databricks profile payload must be a mapping")
+        databricks = DatabricksProxySpec(**databricks_data)
+    return CredentialProxySpec(entries=entries, databricks=databricks)
+
+
+def deserialize_os_env_sandbox_spec(value: object) -> OSEnvSandboxSpec:
+    """Rebuild an OS sandbox spec flattened by ``dataclasses.asdict``."""
+    if isinstance(value, OSEnvSandboxSpec):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("os_env.sandbox payload must be a mapping")
+    payload = dict(value)
+    payload["credential_proxy"] = _deserialize_credential_proxy(payload.get("credential_proxy"))
+    github_raw = payload.get("github_code_search")
+    if github_raw is not None and not isinstance(github_raw, GitHubCodeSearchSpec):
+        if not isinstance(github_raw, Mapping):
+            raise TypeError("github_code_search payload must be a mapping")
+        github_data = dict(github_raw)
+        organizations = github_data.get("organizations")
+        if not isinstance(organizations, (list, tuple)):
+            raise TypeError("github_code_search.organizations payload must be a list")
+        github_data["organizations"] = tuple(organizations)
+        payload["github_code_search"] = GitHubCodeSearchSpec(**github_data)
+    return OSEnvSandboxSpec(**payload)
+
+
+def deserialize_os_env_spec(value: object) -> OSEnvSpec:
+    """Rebuild an OS environment and all nested dataclasses from a mapping."""
+    if isinstance(value, OSEnvSpec):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("os_env payload must be a mapping")
+    payload = dict(value)
+    sandbox_raw = payload.get("sandbox")
+    if sandbox_raw is not None:
+        payload["sandbox"] = deserialize_os_env_sandbox_spec(sandbox_raw)
+    return OSEnvSpec(**payload)
 
 
 @dataclass

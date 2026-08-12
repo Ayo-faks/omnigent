@@ -64,7 +64,11 @@ if TYPE_CHECKING:
     from omnigent.llms.context_window import ModelPricing
 
 from omnigent.inner.bundle_skills import claude_native_skill_args
-from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
+from omnigent.inner.datamodel import (
+    OSEnvSandboxSpec,
+    OSEnvSpec,
+    deserialize_os_env_sandbox_spec,
+)
 from omnigent.inner.hook_scripts.subagent_router import (
     AGENT_TOOL_MATCHER as CLAUDE_SUBAGENT_TOOL_MATCHER,
 )
@@ -4606,7 +4610,7 @@ def _build_tools(config: _JsonObject) -> tuple[dict[str, Tool], Callable[[], Non
     if workspace is not None:
         sandbox_payload = config.get("sandbox")
         sandbox = (
-            OSEnvSandboxSpec(**sandbox_payload)
+            deserialize_os_env_sandbox_spec(sandbox_payload)
             if isinstance(sandbox_payload, dict)
             else OSEnvSandboxSpec(type="none")
         )
