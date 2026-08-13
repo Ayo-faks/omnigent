@@ -1322,6 +1322,7 @@ def _databricks_provider_without_catalog(
         ("system.ai.gemini-3-5-flash", "omnigent-mlflow", "openai-completions"),
         ("databricks-gemini-3-5-flash", "omnigent-completions", "openai-completions"),
         ("databricks-llama-4-maverick", "omnigent-completions", "openai-completions"),
+        ("databricks-deepseek-v3", "omnigent-completions", "openai-completions"),
     ],
 )
 def test_uncataloged_non_claude_model_routed_by_family(
@@ -1345,21 +1346,25 @@ def test_uncataloged_non_claude_model_routed_by_family(
     assert provider.unroutable_model_warning() is None
 
 
-def test_deepseek_is_refused_with_user_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DeepSeek is left unregistered rather than answering ``[object Object]``.
+def test_deepseek_pins_reasoning_effort_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DeepSeek asks the gateway for no reasoning, so Pi gets readable content.
 
-    The gateway streams its reasoning as typed-array ``delta.content``, which Pi
-    concatenates into one ``[object Object]`` per token, and it serves no
-    Responses wire to fall back to ("responses API is not enabled").
+    Its chat surface streams reasoning as typed-array ``delta.content`` that Pi
+    concatenates into ``[object Object]``, and it serves no Responses wire. Pi
+    only sends ``reasoning_effort`` for an entry declaring ``reasoning``, and
+    takes the value from ``thinkingLevelMap``; every level maps to "none" so a
+    user's thinking level cannot put the unreadable channel back.
     """
     provider = _databricks_provider_without_catalog(monkeypatch, "databricks-deepseek-v3")
 
     cfg = provider.to_models_config()
-    assert cfg["providers"]["omnigent"]["models"] == []
-    assert list(cfg["providers"]) == ["omnigent"]
-    warning = provider.unroutable_model_warning()
-    assert warning is not None
-    assert "databricks-deepseek-v3" in warning
+    completions = cfg["providers"]["omnigent-completions"]
+    assert completions["compat"]["supportsReasoningEffort"] is True
+    entry = completions["models"][0]
+    assert entry.get("reasoning") is True
+    assert set(entry["thinkingLevelMap"].values()) == {"none"}
+    assert "off" in entry["thinkingLevelMap"] and "high" in entry["thinkingLevelMap"]
+    assert provider.unroutable_model_warning() is None
 
 
 def test_uncataloged_claude_model_stays_on_primary(monkeypatch: pytest.MonkeyPatch) -> None:
