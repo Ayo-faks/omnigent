@@ -683,6 +683,16 @@ class AcpExecutor(Executor):
         if self._session_id is not None and not self._fresh_process:
             return self._session_id
 
+        # Reaching here means we are creating a genuinely new, empty session:
+        # no prior session, or a fresh process that could not reuse one (no
+        # ``loadSession`` capability, or a load that failed above). Reset the
+        # prompt/session state so ``run_turn`` replays the system prompt + prior
+        # history. Without this, a respawned agent WITHOUT ``loadSession`` keeps
+        # ``_system_prompt_sent=True`` from before the respawn and comes up with
+        # no context — the regression the load-failure branch alone did not cover.
+        self._session_id = None
+        self._system_prompt_sent = False
+
         # Create a new session.
         params: _AcpJsonObject = {
             "cwd": self._cwd,

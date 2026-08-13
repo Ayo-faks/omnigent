@@ -888,6 +888,38 @@ async def test_session_load_failure_resets_prompt_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_capability_respawn_resets_prompt_state() -> None:
+    """A respawned agent WITHOUT loadSession resets _system_prompt_sent so context replays.
+
+    What breaks if this fails: the regression for existing ACP agents (Goose /
+    kilocode / Qwen). On respawn, the no-capability path skips both the load
+    branch and the reuse-return and creates a fresh session/new; if
+    _system_prompt_sent stayed True from before the respawn, run_turn computes
+    fresh_session=False and replays neither the system prompt nor history, so the
+    agent comes up with no context.
+    """
+    ex = AcpExecutor(AcpAgentConfig(command="x"))
+    ex._load_session_supported = False  # existing agent: no warm-resume
+    ex._session_id = "prior-sess"  # had a session before the respawn
+    ex._fresh_process = True  # respawned
+    ex._system_prompt_sent = True  # set on the pre-respawn turn
+
+    async def capture_rpc(method, params, timeout=30.0):
+        assert method == "session/new"  # never attempts load without the capability
+        return {"result": {"sessionId": "new-sess"}}
+
+    ex._rpc = capture_rpc  # type: ignore[assignment]
+    sid = await ex._ensure_session()
+
+    assert sid == "new-sess"
+    assert ex._session_id == "new-sess"
+    # The fresh session must be treated as fresh so run_turn replays context.
+    assert ex._system_prompt_sent is False, (
+        "no-capability respawn must reset _system_prompt_sent so history replays"
+    )
+
+
+@pytest.mark.asyncio
 async def test_end_to_end_denied_permission(tmp_path: Path) -> None:
     """A denied elicitation still completes the turn (the agent gets a reject)."""
     agent_path = tmp_path / "fake_acp_agent.py"
