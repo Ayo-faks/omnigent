@@ -756,6 +756,28 @@ class AcpExecutor(Executor):
         cwd_path = Path(self._cwd)
         claude_dir = cwd_path / ".claude"
         bridge_dir = cwd_path / ".omnigent-hook-relay"
+        hooks_file = claude_dir / "hooks.v1.json"
+
+        # Never clobber a hook config omnigent did not write, and never proceed
+        # as if gating were active when we cannot install ours. If a foreign
+        # hooks.v1.json is already present, warn loudly and skip: the operator's
+        # file stays intact and they are told gating is NOT active for this
+        # session. A config we wrote ourselves (identified by our hook module) is
+        # safe to refresh.
+        if hooks_file.exists():
+            try:
+                existing = hooks_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                existing = ""
+            if "omnigent.acp_tool_use_hook" not in existing:
+                logger.warning(
+                    "acp[%s] %s already exists and was not written by omnigent; "
+                    "leaving it untouched. Omnigent tool-call policy gating is NOT "
+                    "active for this session — remove or merge that file to enable it.",
+                    self._config.name,
+                    hooks_file,
+                )
+                return
 
         # Create directories.
         claude_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -801,7 +823,6 @@ class AcpExecutor(Executor):
             },
         }
 
-        hooks_file = claude_dir / "hooks.v1.json"
         hooks_file.write_text(json.dumps(hook_config, indent=2), encoding="utf-8")
 
         logger.debug(

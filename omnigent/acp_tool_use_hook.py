@@ -21,12 +21,12 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 from omnigent.native_policy_hook import (
     evaluation_response_to_hook_output,
     fail_closed_hook_output,
     hook_payload_to_evaluation_request,
-    policy_hook_reauth,
     post_evaluate_with_retry,
     read_relay_policy_config,
     relay_policy_evaluate_url,
@@ -38,9 +38,13 @@ _logger = logging.getLogger(__name__)
 # here (ACP agents don't have UserPromptSubmit since they manage their own loop).
 _PRE_TOOL_USE = "PreToolUse"
 
-# Env vars for policy-hook routing (set by the ACP executor).
-_AUTH_HEADERS_ENV = "_OMNIGENT_AUTH_HEADERS"
+# Env var for the relay directory (also accepted via ``--relay-dir``).
 _RELAY_DIR_ENV = "_OMNIGENT_RELAY_DIR"
+
+# Read timeout for the policy evaluate POST. Long, because the evaluate endpoint
+# holds the gate open for server-side ASK elicitation (URL-based), mirroring the
+# native-hook timeout.
+_EVALUATE_READ_TIMEOUT_S = 86400.0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,46 +94,48 @@ def main(argv: list[str] | None = None) -> int:
     if not relay_dir:
         return 0
 
-    relay_config = read_relay_policy_config(relay_dir)
+    relay_config = read_relay_policy_config(Path(relay_dir))
     if relay_config is None:
         return 0
 
-    relay_url, _relay_token, _session_id = relay_config
+    relay_url, relay_token, _session_id = relay_config
     evaluate_url = relay_policy_evaluate_url(relay_url)
+    # The relay authenticates with the token from the relay config (the same
+    # shape the native hooks use); no per-request reauth on the relay path.
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {relay_token}",
+    }
 
-    # Build request headers from env (set by executor).
-    headers = {"Content-Type": "application/json"}
-    raw_auth = os.environ.get(_AUTH_HEADERS_ENV, "")
-    if raw_auth:
-        try:
-            extra = json.loads(raw_auth)
-            if isinstance(extra, dict):
-                headers.update({str(k): str(v) for k, v in extra.items()})
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # POST to evaluate endpoint with reauth on 401/403.
-    reauth_handler = policy_hook_reauth(relay_url, headers)
-
-    def retry_reauth() -> dict[str, str] | None:
-        return reauth_handler()
-
-    response = post_evaluate_with_retry(
-        evaluate_url,
-        eval_request,
-        headers,
-        reauth_callback=retry_reauth,
-    )
-
-    if response is None:
-        # Endpoint unreachable or returned non-2xx; fail closed.
+    def _fail_closed() -> int:
         output = fail_closed_hook_output(hook_event)
         if output is not None:
             json.dump(output, sys.stdout)
         return 0
 
-    # Convert evaluation response to hook output format (deny/allow decision).
-    output = evaluation_response_to_hook_output(hook_event, response)
+    resp, api_error = post_evaluate_with_retry(
+        evaluate_url,
+        headers,
+        eval_request,
+        _EVALUATE_READ_TIMEOUT_S,
+        "acp tool-use",
+        reauth=None,
+    )
+    if resp is None:
+        # Endpoint unreachable or non-2xx after retries — fail closed (deny).
+        _logger.warning("acp hook: policy evaluate failed (%s); failing closed", api_error)
+        return _fail_closed()
+    if not resp.content:
+        _logger.warning("acp hook: empty policy response; failing closed")
+        return _fail_closed()
+    try:
+        eval_response = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        _logger.warning("acp hook: malformed policy response; failing closed")
+        return _fail_closed()
+
+    # Convert the evaluation response to hook output (deny/allow decision).
+    output = evaluation_response_to_hook_output(hook_event, eval_response)
     if output is not None:
         json.dump(output, sys.stdout)
     return 0
