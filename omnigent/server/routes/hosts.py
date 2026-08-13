@@ -36,9 +36,9 @@ from omnigent.host.frames import (
     HostInstallHarnessFrame,
     HostLaunchRunnerFrame,
     HostListDirFrame,
-    HostModelOptionsFrame,
     HostStoreSecretFrame,
     encode_host_frame,
+    optional_str_bool_map,
 )
 from omnigent.onboarding.harness_install import (
     ui_credential_configurable_harnesses,
@@ -54,7 +54,7 @@ from omnigent.server.routes._auth_helpers import require_user
 from omnigent.server.routes._host_launch import resolve_host_launch
 from omnigent.server.schemas import SessionGitOptions
 from omnigent.stores import AgentStore, ConversationStore
-from omnigent.stores.host_store import HostStore, host_is_live
+from omnigent.stores.host_store import Host, HostStore, host_is_live
 from omnigent.stores.permission_store import PermissionStore
 
 _logger = logging.getLogger(__name__)
@@ -86,6 +86,31 @@ _INSTALL_HARNESS_TIMEOUT_S = 420.0
 HARNESS_INSTALL_ENABLED_ENV = "OMNIGENT_HARNESS_INSTALL_ENABLED"
 
 
+def _host_absent_error(host: Host) -> OmnigentError:
+    """Classify a "host not on this replica" miss for a host-scoped route.
+
+    Every ``/v1/hosts/{id}/*`` route reaches the host over its live tunnel in
+    the local (this-replica) ``HostRegistry``. When replicas are sharded by
+    host, a request keyed to ``host_id`` can land on a replica that doesn't
+    hold the tunnel — the same wrong-replica case ``RunnerRouter`` handles for
+    runner dispatch (see ``_runner_absent_code``). Tell the two apart using the
+    host record the caller already loaded:
+
+    - still **live** (online + fresh heartbeat) → up on some replica, just not
+      here → :data:`~ErrorCode.WRONG_REPLICA` (400) so the client re-addresses
+      WITHOUT the key.
+    - otherwise → genuinely offline → ``CONFLICT`` (409).
+
+    :param host: The host's persistent record (owner-checked by the caller).
+    :returns: The ``OmnigentError`` to raise; the global handler maps its code
+        to the HTTP status and the ``{"error": {"code": ...}}`` body the
+        client's re-address matches on.
+    """
+    if host_is_live(host):
+        return OmnigentError("host is on another replica", code=ErrorCode.WRONG_REPLICA)
+    return OmnigentError("host is offline", code=ErrorCode.CONFLICT)
+
+
 async def _proxy_model_options(
     *,
     host_registry: HostRegistry,
@@ -93,33 +118,28 @@ async def _proxy_model_options(
     harness: str,
 ) -> dict[str, Any]:
     """Ask a host for the model catalog it would use for a new session."""
-    request_id = secrets.token_hex(8)
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[dict[str, Any]] = loop.create_future()
-    host_conn.pending_model_options[request_id] = future
-    frame = encode_host_frame(
-        HostModelOptionsFrame(request_id=request_id, harness=harness),
-    )
+    from omnigent.server.routes._host_model_options import request_host_model_options
+
     try:
-        try:
-            host_registry.send_text(host_conn, frame)
-        except ConnectionError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"host '{host_conn.host_id}' connection lost",
-            ) from exc
-        try:
-            return await asyncio.wait_for(future, timeout=_MODEL_OPTIONS_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(
-                status_code=504,
-                detail=(
-                    f"host '{host_conn.host_id}' did not resolve model options within "
-                    f"{_MODEL_OPTIONS_TIMEOUT_S:.0f}s"
-                ),
-            ) from exc
-    finally:
-        host_conn.pending_model_options.pop(request_id, None)
+        return await request_host_model_options(
+            host_registry=host_registry,
+            host_conn=host_conn,
+            harness=harness,
+            timeout_s=_MODEL_OPTIONS_TIMEOUT_S,
+        )
+    except ConnectionError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"host '{host_conn.host_id}' connection lost",
+        ) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"host '{host_conn.host_id}' did not resolve model options within "
+                f"{_MODEL_OPTIONS_TIMEOUT_S:.0f}s"
+            ),
+        ) from exc
 
 
 async def _proxy_list_dir(
@@ -274,7 +294,9 @@ async def _proxy_install_harness(
     :param harness: The UI harness identifier to install, e.g. ``"claude"``.
     :returns: Dict with the result fields: ``status`` (``"ok"`` /
         ``"failed"``), ``configured_harnesses`` (the refreshed readiness map or
-        ``None``), ``error`` (string or ``None``).
+        ``None``), ``gateway_inference`` (the refreshed per-harness
+        AI-Gateway-backed inference map or ``None``), ``error`` (string or
+        ``None``).
     :raises HTTPException: 504 on timeout, 502 on connection drop.
     """
     request_id = secrets.token_hex(8)
@@ -334,7 +356,8 @@ async def _proxy_store_secret(
     :param host_registry: Server-side registry; used to enqueue the frame.
     :param host_conn: Live host connection.
     :param frame: The store-secret frame to forward (carries the secret).
-    :returns: Dict with ``status`` / ``configured_harnesses`` / ``error``.
+    :returns: Dict with ``status`` / ``configured_harnesses`` /
+        ``gateway_inference`` / ``error``.
     :raises HTTPException: 504 on timeout, 502 on connection drop.
     """
     request_id = frame.request_id
@@ -563,7 +586,10 @@ def create_hosts_router(
         information for online hosts.
 
         :param request: The incoming request (for auth).
-        :returns: ``{"hosts": [...]}`` with host details.
+        :returns: ``{"hosts": [...]}`` with host details — ``host_id``,
+            ``name``, ``owner``, ``status``, ``sandbox_provider``,
+            ``configured_harnesses``, and ``gateway_inference`` (``None`` when
+            no connected host has reported it to this replica).
         """
         # require_user: unauthenticated callers 401. user_id is None
         # only when auth is disabled entirely — there the single-user
@@ -601,6 +627,11 @@ def create_hosts_router(
                     # user-connectable machines.
                     "sandbox_provider": host.sandbox_provider,
                     "configured_harnesses": host.configured_harnesses,
+                    # Held in memory from the host's connect handshake, not the
+                    # hosts row. ``None`` means this replica has no report yet —
+                    # emitted as-is so a client can tell "unknown" from "not
+                    # gateway-backed".
+                    "gateway_inference": host_registry.gateway_inference(host.host_id),
                 }
             )
         return {"hosts": result}
@@ -612,7 +643,8 @@ def create_hosts_router(
         :param request: The incoming request (for auth).
         :param host_id: Host identifier, e.g.
             ``"host_a1b2c3d4..."``.
-        :returns: Host details dict.
+        :returns: Host details dict — the ``list_hosts`` fields (including
+            ``gateway_inference``, ``None`` when unreported) plus ``runners``.
         :raises HTTPException: 404 if the host does not exist.
         """
         # require_user: with an auth provider configured, an
@@ -639,6 +671,9 @@ def create_hosts_router(
             # server-managed sandbox host (e.g. "modal").
             "sandbox_provider": host.sandbox_provider,
             "configured_harnesses": host.configured_harnesses,
+            # Same semantics as list_hosts: reported on connect and held in
+            # memory, so ``None`` is "no report on this replica yet".
+            "gateway_inference": host_registry.gateway_inference(host.host_id),
             "runners": [],
         }
 
@@ -662,7 +697,7 @@ def create_hosts_router(
             raise HTTPException(status_code=403, detail="not your host")
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         result = await _proxy_model_options(
             host_registry=host_registry,
@@ -1087,7 +1122,7 @@ def create_hosts_router(
 
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         result = await _proxy_list_dir(
             host_registry=host_registry,
@@ -1178,7 +1213,7 @@ def create_hosts_router(
 
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         result = await _proxy_create_dir(
             host_registry=host_registry,
@@ -1231,8 +1266,10 @@ def create_hosts_router(
         :param host_id: Host identifier, e.g. ``"host_a1b2c3d4..."``.
         :param harness: Harness identifier to install, e.g. ``"claude"``.
         :returns: ``{"object": "harness_install", "harness": ...,
-            "configured_harnesses": {...}}`` — the host's refreshed readiness
-            map so the UI can flip the badge without a reconnect.
+            "configured_harnesses": {...}, "gateway_inference": {...} | None}``
+            — the host's refreshed readiness map so the UI can flip the badge
+            without a reconnect, plus its refreshed gateway-inference map
+            (``None`` when the host didn't report one).
         :raises HTTPException: 404 when the feature is disabled or the host is
             unknown, 400 when the harness is not UI-installable, 403 when the
             caller is not the host owner, 409 when the host is offline, 502 on
@@ -1264,7 +1301,7 @@ def create_hosts_router(
 
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         # Coalesce concurrent installs of the same harness FAMILY onto one
         # in-flight request so a double-click (or `codex` + `codex-native`, which
@@ -1299,10 +1336,22 @@ def create_hosts_router(
                 detail=f"host install failed: {result.get('error') or 'unknown error'}",
             )
 
+        # An install can flip gateway backing (a freshly installed CLI now
+        # resolves the workspace gateway), so take the map the host just
+        # recomputed instead of waiting for its next readiness push.
+        # Decoded through the same tolerant reader the tunnel path uses: this
+        # is a host-supplied reply body, so a non-mapping is "unknown", not a
+        # 500 out of ``dict(...)``.
+        installed_gateway = optional_str_bool_map(result, "gateway_inference")
+        if installed_gateway is not None:
+            host_registry.record_gateway_inference(host.host_id, installed_gateway)
+
         return {
             "object": "harness_install",
             "harness": harness,
             "configured_harnesses": result.get("configured_harnesses") or {},
+            # Passed through as-is: ``None`` is "unknown", not "none backed".
+            "gateway_inference": installed_gateway,
         }
 
     @router.post("/hosts/{host_id}/harnesses/{harness}/credential")
@@ -1333,8 +1382,10 @@ def create_hosts_router(
         :param harness: Harness being configured, e.g. ``"claude"``.
         :param body: The credential payload (kind + secret / gateway / adopt).
         :returns: ``{"object": "harness_credential", "harness": ...,
-            "configured_harnesses": {...}}`` — refreshed readiness so the UI can
-            flip the badge without a reconnect.
+            "configured_harnesses": {...}, "gateway_inference": {...} | None}``
+            — refreshed readiness so the UI can flip the badge without a
+            reconnect, plus the refreshed gateway-inference map (``None`` when
+            the host didn't report one).
         :raises HTTPException: 404 when disabled or host unknown, 400 when the
             harness isn't UI-configurable or the body is invalid, 403 when not
             the owner, 409 when offline, 502 on host-side failure, 504 on
@@ -1366,7 +1417,7 @@ def create_hosts_router(
 
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         frame = HostStoreSecretFrame(
             request_id=secrets.token_hex(8),
@@ -1398,10 +1449,20 @@ def create_hosts_router(
                 detail=f"host credential write failed: {result.get('error') or 'unknown error'}",
             )
 
+        # Pointing a family at the workspace gateway is exactly what this write
+        # does, so record the recomputed map now rather than on the host's next
+        # readiness push.
+        # Same tolerant decode as the install route above.
+        written_gateway = optional_str_bool_map(result, "gateway_inference")
+        if written_gateway is not None:
+            host_registry.record_gateway_inference(host.host_id, written_gateway)
+
         return {
             "object": "harness_credential",
             "harness": harness,
             "configured_harnesses": result.get("configured_harnesses") or {},
+            # Passed through as-is: ``None`` is "unknown", not "none backed".
+            "gateway_inference": written_gateway,
         }
 
     @router.get("/hosts/{host_id}/credentials/detected")
@@ -1436,7 +1497,7 @@ def create_hosts_router(
 
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         result = await _proxy_detect_credentials(host_registry=host_registry, host_conn=conn)
         return {
@@ -1492,7 +1553,7 @@ def create_hosts_router(
 
         conn = host_registry.get(host.host_id)
         if conn is None:
-            raise HTTPException(status_code=409, detail="host is offline")
+            raise _host_absent_error(host)
 
         try:
             worktrees = await list_worktrees_on_host(

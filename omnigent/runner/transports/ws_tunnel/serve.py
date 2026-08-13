@@ -17,6 +17,7 @@ import base64
 import binascii
 import contextlib
 import logging
+import os
 import random
 from collections.abc import Awaitable, Callable
 from typing import TypeAlias
@@ -27,6 +28,7 @@ from websockets.exceptions import ConnectionClosedOK, InvalidURI, WebSocketExcep
 
 from omnigent.runner.identity import (
     OMNIGENT_INTERNAL_WS_ORIGIN,
+    RUNNER_SLICE_KEY_ENV_VAR,
     RUNNER_TUNNEL_TOKEN_HEADER,
 )
 from omnigent.runner.transports.ws_tunnel.frames import (
@@ -421,11 +423,16 @@ async def serve_tunnel(
                 if http_status is not None and http_status in _REFRESHABLE_HTTP_STATUSES:
                     http_auth_rejection_streak += 1
                     if http_auth_rejection_streak >= _HTTP_AUTH_REJECTION_FATAL_ATTEMPTS:
+                        login_hint = (
+                            f"run `databricks auth login --host {server_url}` to re-authenticate"
+                            if server_url
+                            else "check remote server authentication"
+                        )
                         raise RuntimeError(
                             f"{RUNNER_TUNNEL_REJECTION_PREFIX}"
                             f"(HTTP {http_status} persisted across "
                             f"{http_auth_rejection_streak} attempts); "
-                            "check remote server authentication"
+                            f"{login_hint}"
                         ) from exc
                     # Invalidate the cached token so the loop-top _refresh_auth_token
                     # fetches a fresh one on the next attempt. The loop-top call is
@@ -666,7 +673,13 @@ async def _serve_tunnel_once(
     from omnigent.cli_auth import databricks_request_headers
 
     headers: dict[str, str] = {"Origin": OMNIGENT_INTERNAL_WS_ORIGIN}
-    headers.update(databricks_request_headers(server_url, bearer_token=auth_token))
+    # Co-locate this runner's tunnel with its host's on one server replica: the
+    # host injects its id at launch. Absent for CLI-local runners (no host), and
+    # the builder only emits the routing header on a host-sharded deployment.
+    host_id = os.environ.get(RUNNER_SLICE_KEY_ENV_VAR)
+    headers.update(
+        databricks_request_headers(server_url, bearer_token=auth_token, host_id=host_id)
+    )
     if tunnel_token:
         headers[RUNNER_TUNNEL_TOKEN_HEADER] = tunnel_token
     # Verifying SSL context from a real CA bundle for wss:// — a bare default

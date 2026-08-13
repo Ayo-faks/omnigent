@@ -62,14 +62,46 @@ const DECLARED_TRACKED_TYPE = /- \[[xX]\]\s*(?:Bug fix|Feature|UI \/ frontend ch
 const TRACKING_REFERENCE =
   /\b(?:part of|related to|towards?|refs?|references?|see(?:\s+also)?)\b[:\s]*(?:https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/(\d+)|(?:[\w.-]+\/[\w.-]+)?#(\d+))/gi;
 
+// Strips text that is being shown rather than asserted: fenced code blocks and
+// blockquoted lines. Without this, a PR that quotes documentation containing
+// "Part of #123" satisfies its own rule, which happened on the first live run.
+function assertedText(body) {
+  return (body ?? "")
+    .replace(/```[\s\S]*?(?:```|$)/g, "")
+    .replace(/~~~[\s\S]*?(?:~~~|$)/g, "")
+    .split("\n")
+    .filter((line) => !/^\s*>/.test(line))
+    .join("\n");
+}
+
 // Issue numbers a body claims to be working towards, deduped and in order.
 function trackingReferences(body) {
   const seen = [];
-  for (const m of (body ?? "").matchAll(TRACKING_REFERENCE)) {
+  for (const m of assertedText(body).matchAll(TRACKING_REFERENCE)) {
     const n = Number(m[1] ?? m[2]);
     if (n && !seen.includes(n)) seen.push(n);
   }
   return seen;
+}
+
+// Resolve one reference: is it an OPEN, non-draft issue in this repo?
+//
+// Shared so the nudge and the ready-for-review gate cannot drift on what counts.
+//   - a pull request is not a tracking record
+//   - a closed issue is not tracked work
+//   - a draft issue is not agreed work yet
+// Returns false when the number cannot be resolved: unverifiable is not evidence.
+async function resolvesToOpenIssue({ github, core, owner, repo, number }) {
+  try {
+    const { data } = await github.rest.issues.get({ owner, repo, issue_number: number });
+    if (data.pull_request) return false;
+    if (data.state !== "open") return false;
+    if (data.draft) return false;
+    return true;
+  } catch (err) {
+    core?.warning?.(`Could not resolve #${number}: ${err.message}`);
+    return false;
+  }
 }
 
 const QUERY = `
@@ -89,6 +121,29 @@ const QUERY = `
           labels(first: 30) { nodes { name } }
           body
         }
+      }
+    }
+  }
+`;
+
+// The same node shape as QUERY, for one named PR. `state` and `createdAt` are
+// extra: an event can name a PR that has since closed, or one predating the
+// effective date, and neither should be touched.
+const ONE_PR_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        number
+        title
+        state
+        createdAt
+        isDraft
+        additions
+        deletions
+        authorAssociation
+        author { login __typename }
+        labels(first: 30) { nodes { name } }
+        body
       }
     }
   }
@@ -185,28 +240,49 @@ module.exports = async ({ context, github, core }) => {
       core.warning(`Could not load .github/MAINTAINER: ${err.message}`);
     }
 
-    const windowStart = new Date(Date.now() - HOURS_TO_SCAN * MS_PER_HOUR);
-    // Never look further back than the effective date, whichever is later.
-    const cutoff = new Date(
-      Math.max(windowStart.getTime(), new Date(EFFECTIVE_FROM).getTime())
-    );
-    const cutoffString = cutoff.toISOString().replace(/\.\d{3}Z$/, "Z");
-    const searchQuery = `repo:${owner}/${repo} is:pr is:open created:>${cutoffString}`;
-    console.log(`Scanning PRs: ${searchQuery} (enforce=${enforce})`);
-
-    let cursor = null;
-    let hasNextPage = true;
+    // One PR when an event names it, the whole window on the cron sweep. Only the
+    // fetch differs: every decision below runs identically either way, so the
+    // instant path and the sweep can never reach different verdicts.
     const allPRs = [];
-    while (hasNextPage) {
-      const response = await github.graphql(QUERY, { cursor, searchQuery });
-      const { remaining, resetAt } = response.rateLimit;
-      console.log(`Rate limit: ${remaining} remaining, resets at ${resetAt}`);
-      const { nodes, pageInfo } = response.search;
-      hasNextPage = pageInfo.hasNextPage;
-      cursor = pageInfo.endCursor;
-      allPRs.push(...nodes);
+    const single = Number(process.env.PR_NUMBER) || null;
+    if (single) {
+      const resp = await github.graphql(ONE_PR_QUERY, { owner, repo, number: single });
+      const pr = resp.repository.pullRequest;
+      // The effective date still applies: an event on an older PR is not a licence
+      // to reach into the backlog.
+      if (!pr) {
+        console.log(`#${single} not found; nothing to do.`);
+      } else if (new Date(pr.createdAt) < new Date(EFFECTIVE_FROM)) {
+        console.log(`#${single} predates ${EFFECTIVE_FROM}; skipping.`);
+      } else if (pr.state !== "OPEN") {
+        console.log(`#${single} is ${pr.state}; skipping.`);
+      } else {
+        allPRs.push(pr);
+      }
+      console.log(`Checking #${single} (enforce=${enforce})`);
+    } else {
+      const windowStart = new Date(Date.now() - HOURS_TO_SCAN * MS_PER_HOUR);
+      // Never look further back than the effective date, whichever is later.
+      const cutoff = new Date(
+        Math.max(windowStart.getTime(), new Date(EFFECTIVE_FROM).getTime())
+      );
+      const cutoffString = cutoff.toISOString().replace(/\.\d{3}Z$/, "Z");
+      const searchQuery = `repo:${owner}/${repo} is:pr is:open created:>${cutoffString}`;
+      console.log(`Scanning PRs: ${searchQuery} (enforce=${enforce})`);
+
+      let cursor = null;
+      let hasNextPage = true;
+      while (hasNextPage) {
+        const response = await github.graphql(QUERY, { cursor, searchQuery });
+        const { remaining, resetAt } = response.rateLimit;
+        console.log(`Rate limit: ${remaining} remaining, resets at ${resetAt}`);
+        const { nodes, pageInfo } = response.search;
+        hasNextPage = pageInfo.hasNextPage;
+        cursor = pageInfo.endCursor;
+        allPRs.push(...nodes);
+      }
+      console.log(`Found ${allPRs.length} open PRs from the last ${HOURS_TO_SCAN} hours`);
     }
-    console.log(`Found ${allPRs.length} open PRs from the last ${HOURS_TO_SCAN} hours`);
 
     const verdicts = [];
     let flagged = 0;
@@ -237,23 +313,13 @@ module.exports = async ({ context, github, core }) => {
       }
 
       // No closing link, but the body may still name the issue it works towards.
-      // Each candidate is resolved, because "Refs #4147" often points at another
-      // PR, and a PR is not the tracking record this rule is asking for.
+      // Each candidate is resolved: "Refs #4147" often points at another PR, and a
+      // closed or draft issue is not tracked work.
       let tracked = null;
       for (const candidate of trackingReferences(pr.body)) {
-        try {
-          const { data } = await github.rest.issues.get({
-            owner,
-            repo,
-            issue_number: candidate,
-          });
-          if (!data.pull_request) {
-            tracked = candidate;
-            break;
-          }
-        } catch (err) {
-          // A number that doesn't resolve proves nothing either way; try the next.
-          core.warning(`Could not resolve #${candidate} from #${pr.number}: ${err.message}`);
+        if (await resolvesToOpenIssue({ github, core, owner, repo, number: candidate })) {
+          tracked = candidate;
+          break;
         }
       }
       if (tracked) {
@@ -333,5 +399,7 @@ module.exports = async ({ context, github, core }) => {
 // Exported for the offline unit test.
 module.exports.exemptReason = exemptReason;
 module.exports.trackingReferences = trackingReferences;
+module.exports.assertedText = assertedText;
+module.exports.resolvesToOpenIssue = resolvesToOpenIssue;
 module.exports.MARKER = MARKER;
 module.exports.EFFECTIVE_FROM = EFFECTIVE_FROM;

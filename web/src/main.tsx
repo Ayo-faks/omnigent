@@ -3,7 +3,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App.tsx";
-import { PWAUpdateBanner } from "./components/pwa/PWAUpdateBanner";
 import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { ImageLightboxProvider } from "./components/ImageLightbox";
@@ -101,6 +100,7 @@ const bootProbe: Promise<ServerInfo> = Promise.race([
           public_sharing_enabled: true,
           server_version: null,
           smart_routing_enabled: false,
+          smart_routing_sources: { external: false, oss: false },
           harness_install_enabled: false,
           installable_harnesses: [],
           dictation_available: false,
@@ -110,13 +110,13 @@ const bootProbe: Promise<ServerInfo> = Promise.race([
   }),
 ]);
 
-void bootProbe.then((info) => {
-  createRoot(document.getElementById("root")!).render(
+const root = createRoot(document.getElementById("root")!);
+const renderApp = (info: ServerInfo) => {
+  root.render(
     <StrictMode>
       <CapabilitiesProvider info={info}>
         <QueryClientProvider client={queryClient}>
           <ThemeProvider>
-            <PWAUpdateBanner />
             <TooltipProvider>
               <ImageLightboxProvider>
                 <BrowserRouter>
@@ -135,4 +135,16 @@ void bootProbe.then((info) => {
       </CapabilitiesProvider>
     </StrictMode>,
   );
-});
+};
+
+// Paint as soon as the boot probe settles — the real value, or the 1.5s
+// fallback on a slow/missing probe.
+void bootProbe.then(renderApp);
+// Then settle on the real value once it lands. If the 1.5s fallback painted
+// first (slow-but-successful probe), this adopts the real /v1/info and
+// re-renders the same root — so capability-gated UI (e.g. the managed-sandbox
+// host option, accounts routes) isn't pinned off for the tab's lifetime.
+// resolveServerInfo caches, so this shares the boot probe's single fetch, and
+// the real value always resolves no earlier than the fallback, so it never
+// downgrades a real render back to the fallback.
+void resolveServerInfo().then(renderApp);

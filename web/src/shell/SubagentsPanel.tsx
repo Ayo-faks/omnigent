@@ -48,6 +48,7 @@ import { OttoIcon } from "@/components/icons/OttoIcon";
 import { PiIcon } from "@/components/icons/PiIcon";
 import { Button } from "@/components/ui/button";
 import { RunningDot } from "@/components/RunningDot";
+import { shortModelName } from "@/components/CostRoutingControl";
 import { MAX_TREE_DEPTH, useChildSessions, type ChildSessionInfo } from "@/hooks/useChildSessions";
 import { useSession } from "@/hooks/useSession";
 import type { SessionItem } from "@/lib/types";
@@ -75,6 +76,7 @@ import { AddAgentDialog } from "./AddAgentDialog";
 const SESSION_SCOPED_PARAMS = ["file", "diff", "comment", "view"] as const;
 const CODEX_NATIVE_SUBAGENT_WRAPPER = "codex-native-ui-subagent";
 const OPENCODE_NATIVE_SUBAGENT_WRAPPER = "opencode-native-ui-subagent";
+const ANTIGRAVITY_NATIVE_SUBAGENT_WRAPPER = "antigravity-native-ui-subagent";
 // Pi children are scaffold (no wrapper label); the spawn title's agent-type head (``tool``) is the signal.
 const PI_AGENT_NAME = "pi";
 type AgentRowIcon = ComponentType<SVGProps<SVGSVGElement>>;
@@ -410,9 +412,14 @@ function childPrimaryLabel(child: ChildSessionInfo): string {
   // rejects "ui" as a sub-agent name.
   const isUserAdded = child.title?.startsWith("ui:") ?? false;
   const childWrapper = child.labels?.[WRAPPER_LABEL_KEY];
+  // agy joins these rather than taking the generic path below: its child title
+  // is ``"<role>:<cascade id>"``, so the first-colon split puts the ROLE in
+  // ``tool`` and the cascade UUID in the suffix — and the generic path returns
+  // ``session_name ?? suffix``, both of which are that UUID.
   const isNativeSubagent =
     childWrapper === CODEX_NATIVE_SUBAGENT_WRAPPER ||
-    childWrapper === OPENCODE_NATIVE_SUBAGENT_WRAPPER;
+    childWrapper === OPENCODE_NATIVE_SUBAGENT_WRAPPER ||
+    childWrapper === ANTIGRAVITY_NATIVE_SUBAGENT_WRAPPER;
   if (isNativeSubagent && !isUserAdded) {
     return child.tool ?? child.title ?? child.id;
   }
@@ -648,6 +655,17 @@ function SubagentRow({
             )}
             <Icon className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="shrink-0 truncate text-sm font-medium">{primary}</span>
+            {child.routed_model ? (
+              // Model the intelligent router picked for this sub-agent — the
+              // per-subagent half of routing visibility.
+              <span
+                data-testid="subagent-routed-model"
+                title={`Smart routing picked ${child.routed_model}`}
+                className="shrink-0 truncate font-mono text-[10px] text-muted-foreground"
+              >
+                {shortModelName(child.routed_model)}
+              </span>
+            ) : null}
             <span className="flex-1" />
             <StatusIndicator {...status} />
           </div>

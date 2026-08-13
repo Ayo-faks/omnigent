@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import functools
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping
@@ -26,6 +28,7 @@ from websockets.exceptions import InvalidStatus, InvalidURI
 
 from omnigent._platform import IS_POSIX, WINDOWS_ENV_PASSTHROUGH
 from omnigent.env_credentials import env_names_with_omnigent_prefix
+from omnigent.gateway_inference import gateway_inference_map
 from omnigent.harness_aliases import canonicalize_harness
 from omnigent.harness_availability import HARNESS_BINARY_MISSING, HarnessAvailability
 from omnigent.host import HOST_FATAL_EXIT_CODE
@@ -97,6 +100,7 @@ from omnigent.process_logging import (
     PROCESS_LOG_FILE_ENV_VAR,
     child_logging_popen_kwargs,
     configure_process_logging,
+    display_log_path,
     env_truthy,
     open_process_log_file,
     process_log_dir,
@@ -107,6 +111,7 @@ from omnigent.runner.identity import (
     RUNNER_ID_ENV_VAR,
     RUNNER_INITIAL_AUTH_TOKEN_ENV_VAR,
     RUNNER_PARENT_PID_ENV_VAR,
+    RUNNER_SLICE_KEY_ENV_VAR,
     RUNNER_TUNNEL_BINDING_TOKEN_ENV_VAR,
     RUNNER_WORKSPACE_ENV_VAR,
     token_bound_runner_id,
@@ -165,21 +170,6 @@ def _runner_log_dir() -> Path:
         ``<data-dir>/logs/runner``.
     """
     return process_log_dir("runner")
-
-
-def _display_log_path(path: Path) -> str:
-    """Format a log path for display, collapsing the home prefix to ``~``.
-
-    :param path: Absolute path, typically under the user's state dir, e.g.
-        ``Path("/Users/alice/.omnigent/logs/runner/runner-ab12.log")``.
-    :returns: ``"~/.omnigent/..."`` when *path* is under ``$HOME``,
-        otherwise ``str(path)``.
-    """
-    try:
-        return f"~/{path.relative_to(Path.home())}"
-    except ValueError:
-        # Not under $HOME (e.g. an OMNIGENT_DATA_DIR outside home).
-        return str(path)
 
 
 # Max bytes read from the end of a dead runner's log when composing an
@@ -279,7 +269,7 @@ def _runner_exit_error(exit_code: int | None, log_path: Path) -> str:
     message = "runner process exited"
     if exit_code is not None:
         message += f" with code {exit_code}"
-    message += f" (log on host: {_display_log_path(log_path)})"
+    message += f" (log on host: {display_log_path(log_path)})"
     tail = _read_log_tail(log_path)
     if tail.strip():
         lines = tail.strip().splitlines()[-_LOG_TAIL_MAX_LINES:]
@@ -291,14 +281,15 @@ def _url_is_loopback(url: str) -> bool:
     """Whether ``url``'s host is loopback (``127.0.0.1`` / ``localhost`` / ``::1``).
 
     Used to distinguish a daemon-spawned local server (no proxy in
-    front) from a remote deploy behind the Databricks Apps ingress, so
-    the reconnect heuristic only treats an abrupt ``no close frame`` as
-    a benign ingress recycle when there actually IS an ingress.
+    front) from a remote deploy behind the Databricks Apps ingress: the
+    reconnect loop treats an abrupt ``no close frame`` as a benign
+    ingress recycle only when there IS an ingress, and bounds
+    connection-refused retries only when the server is local.
 
     :param url: A server or ws:// URL, e.g. ``"ws://127.0.0.1:49175"``.
     :returns: ``True`` for a loopback host, ``False`` otherwise (incl.
         unparseable URLs — fail toward "remote", the safer default for
-        the recycle heuristic).
+        both reconnect heuristics).
     """
     from urllib.parse import urlparse
 
@@ -308,9 +299,44 @@ def _url_is_loopback(url: str) -> bool:
         return False
 
 
+def _connection_refused(exc: BaseException) -> bool:
+    """Whether *exc* means the target port actively refused the connection.
+
+    Dual-stack connects surface wrapped: asyncio combines per-address
+    failures into ``OSError("Multiple exceptions: ...")`` whose errno is
+    lost (only the ``[Errno N]`` texts survive), or an exception group.
+    A wrapped form counts only when every sub-error is itself refused.
+
+    :param exc: The exception a connect attempt raised.
+    :returns: ``True`` for a connection-refused failure, ``False``
+        otherwise (fail toward "not refused" — the loop keeps retrying).
+    """
+    # BaseExceptionGroup is a 3.11+ builtin (we require 3.12); ruff's pinned
+    # py310 target misflags it as undefined.
+    if isinstance(exc, BaseExceptionGroup):  # noqa: F821
+        return all(_connection_refused(sub) for sub in exc.exceptions)
+    if not isinstance(exc, OSError):
+        return False
+    if exc.errno is not None:
+        return exc.errno == errno.ECONNREFUSED
+    errnos = re.findall(r"\[Errno (\d+)\]", str(exc))
+    return bool(errnos) and all(int(n) == errno.ECONNREFUSED for n in errnos)
+
+
 _RECONNECT_BASE_S = 0.5
 _RECONNECT_CAP_S = 10.0
 _RECONNECT_JITTER = 0.5
+# Consecutive connection-refused failures against a loopback server before the
+# host exits (~5 minutes at the backoff cap). Refused on loopback means no
+# process listens on the port — the local server is gone, not unreachable.
+_LOOPBACK_REFUSED_FATAL_ATTEMPTS = 30
+
+# Consecutive accepted-then-silent connections (upgrade completed, then the
+# socket died without one inbound frame) before the reconnect loop treats the
+# endpoint as unhealthy: it stops using the prompt "recycle" cadence and
+# escalates once, loudly. A healthy tunnel sends a frame within seconds; an
+# endpoint that accepts and never speaks is functionally down.
+_SILENT_CONNECT_ESCALATE_ATTEMPTS = 10
 
 # Host-environment variables a spawned runner is allowed to inherit.
 # Deliberately an allowlist (not ``{**os.environ}``): the host runs as the
@@ -438,6 +464,11 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         # auth, which fails for non-AWS proxies. Same rationale as
         # CLAUDE_CODE_USE_BEDROCK above. Safe to propagate: not a secret.
         "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+        # Non-secret Claude Code flags the native-claude provider path reads from
+        # os.environ. If stripped, the runner re-adds CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1,
+        # which turns off MCP tool search and loads every tool schema eagerly.
+        "CLAUDE_CODE_USE_GATEWAY",
+        "ENABLE_TOOL_SEARCH",
         # Kubernetes config path. A filesystem path (typically
         # ``~/.kube/config``), not a bearer secret — the file *contains*
         # cluster certs/tokens but the env var is just a path string,
@@ -446,6 +477,12 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         # not match what the host owner configured (e.g. a non-standard
         # kubeconfig location or a colon-separated multi-file list).
         "KUBECONFIG",
+        # ssh-agent socket path. Same class as KUBECONFIG above: a path to a
+        # unix socket, not a bearer secret. Without it every runner-spawned
+        # context (sys_os_shell, terminal panes, coding sub-agents) loses
+        # ssh-agent auth, so git-over-SSH and SSH-cert-authenticated tooling
+        # fail with "dial unix: missing address".
+        "SSH_AUTH_SOCK",
         # Telemetry master opt-in. MUST propagate, or the daemon-spawned runner
         # (and the harness it spawns) never see OMNIGENT_TELEMETRY_ENABLED, so
         # telemetry.init() no-ops there and omni-runner / omni-harness export
@@ -554,11 +591,13 @@ class HostConnectError(Exception):
 
     Raised when the WebSocket upgrade fails in a way that reconnecting
     can never fix — the Databricks Apps proxy bounced the connection to
-    a login page (wrong/absent workspace credentials), or the server
+    a login page (wrong/absent workspace credentials), the server
     returned a permanent ``4xx`` (unauthenticated, unauthorized, or a
-    build that predates the host API). The reconnect loop re-raises this
-    instead of backing off, so ``omnigent host`` exits with an
-    actionable message rather than looping silently forever.
+    build that predates the host API), or a loopback server refused a
+    sustained streak of connects (nothing listens — the local server is
+    gone). The reconnect loop re-raises this instead of backing off, so
+    ``omnigent host`` exits with an actionable message rather than
+    looping silently forever.
 
     The message is the full, user-facing explanation including the
     suggested fix; it is printed verbatim by :func:`run_host_process`.
@@ -574,6 +613,7 @@ def _build_runner_env(
     workspace: str,
     parent_pid: int,
     initial_auth_token: str | None = None,
+    host_id: str | None = None,
 ) -> dict[str, str]:
     """
     Build the environment for a spawned runner subprocess.
@@ -645,6 +685,12 @@ def _build_runner_env(
     # MALLOC_ARENA_MAX. setdefault so an operator override still wins.
     for key, value in _proc.malloc_tuning_env().items():
         env.setdefault(key, value)
+    if host_id:
+        # Tell the runner its host so its tunnel co-locates with the host's on
+        # one replica (turn dispatch / terminal-attach for its sessions reach it
+        # there). The runner forwards this to databricks_request_headers, which
+        # emits the routing header only on a host-sharded deployment.
+        env[RUNNER_SLICE_KEY_ENV_VAR] = host_id
     return env
 
 
@@ -764,6 +810,17 @@ class HostProcess:
         # reset by a successful upgrade. Gates the once-per-episode terminal
         # notice so a VPN outage doesn't spam stderr on every retry.
         self._auth_retry_streak = 0
+        # Consecutive connection-refused connect failures; reset by an accepted
+        # upgrade or any non-refused error. Fatal past a bounded streak only
+        # when the server URL is loopback (the local server is gone).
+        self._refused_streak = 0
+        # Consecutive connections that were accepted but died without a single
+        # inbound frame; reset by any received frame or a rejected upgrade.
+        # Past a bound the reconnect loop escalates instead of fast-recycling.
+        self._silent_connect_streak = 0
+        # Per-connection markers feeding the silent-connect streak.
+        self._conn_upgrade_accepted = False
+        self._conn_frame_received = False
         # Live tunnel connection, set by _serve_frames for the watcher
         # tasks (which outlive any single connection) to report on.
         self._ws: websockets.asyncio.client.ClientConnection | None = None
@@ -1251,6 +1308,7 @@ class HostProcess:
             workspace=str(workspace),
             parent_pid=os.getpid(),
             initial_auth_token=initial_auth_token,
+            host_id=self._identity.host_id,
         )
 
         # Embed the session id so operators can find all logs for a session
@@ -1271,7 +1329,7 @@ class HostProcess:
         # zygote would retain its exit status forever. On cancellation we let
         # the spawn land and then tear that runner down.
         spawn = asyncio.ensure_future(
-            asyncio.to_thread(self._spawn_runner_proc, env, _session_slug)
+            asyncio.to_thread(self._spawn_runner_proc, env, _session_slug, workspace)
         )
         try:
             proc, log_path = await asyncio.shield(spawn)
@@ -1311,7 +1369,7 @@ class HostProcess:
         session_line = f"\n    session: {frame.session_id}" if frame.session_id else ""
         print(
             f"  ↑ Runner started: {runner_id} (pid={proc.pid})\n"
-            f"    log: {_display_log_path(log_path)}"
+            f"    log: {display_log_path(log_path)}"
             f"{session_line}",
             flush=True,
         )
@@ -1325,6 +1383,7 @@ class HostProcess:
         self,
         env: dict[str, str],
         session_slug: str,
+        workspace: Path,
     ) -> tuple[subprocess.Popen[bytes] | ZygoteRunnerProc, Path]:
         """Open the session log and spawn the runner, via zygote or direct Popen.
 
@@ -1332,12 +1391,15 @@ class HostProcess:
         When the zygote is enabled it forks the runner there — sharing the import
         graph copy-on-write — and rewrites ``RUNNER_PARENT_PID`` to the zygote's
         pid so the runner's orphan watchdog (which compares ``os.getppid()``)
-        stays correct across the extra process hop. Any zygote failure disables
-        it for the rest of the daemon's life and falls back to a direct Popen.
+        stays correct across the extra process hop. A zygote start failure, or a
+        channel failure while the zygote is still alive, disables it for the
+        daemon's life; a zygote that died is reaped so the next launch respawns
+        a fresh one. Either way this launch falls back to a direct Popen.
 
         :param env: Runner environment from :func:`_build_runner_env` (its
             ``RUNNER_PARENT_PID`` is the daemon pid; overridden on the zygote path).
         :param session_slug: Sanitized session id fragment for the log filename.
+        :param workspace: Existing session workspace to use as the runner's cwd.
         :returns: ``(process_handle, log_path)`` — the handle quacks like Popen.
         :raises OSError: If the log file or a direct Popen spawn fails.
         """
@@ -1349,34 +1411,68 @@ class HostProcess:
             if zygote is not None and not self._zygote_disabled:
                 try:
                     zygote.start()
-                    # The runner's OS parent will be the zygote, so its
-                    # getppid()-based orphan check must watch the zygote pid.
-                    zygote_env = dict(env)
-                    zygote_env[RUNNER_PARENT_PID_ENV_VAR] = str(zygote.pid)
-                    proc = zygote.fork_runner(zygote_env, str(log_path))
-                    _logger.info(
-                        "Forked runner via zygote (zygote pid=%s, runner pid=%s)",
-                        zygote.pid,
-                        proc.pid,
-                    )
-                    return proc, log_path
                 except ZygoteUnavailable as exc:
-                    # Disable the zygote for FUTURE launches, but do NOT stop it
-                    # here: healthy runners already forked from it would see
-                    # their parent die and self-terminate via the orphan
-                    # watchdog, so one failed fork must not tear down unrelated
-                    # live sessions. The still-running zygote is retained and
-                    # reaped on daemon shutdown (see run()'s finally); this
-                    # launch falls back to a direct Popen below.
+                    # Spawning the zygote itself is broken; retrying on every
+                    # launch would only add a doomed spawn to each, so disable
+                    # it for the daemon's life and fall back.
                     _logger.warning(
-                        "Runner zygote unavailable (%s); falling back to direct spawn", exc
+                        "Runner zygote failed to start (%s); disabling it and "
+                        "falling back to direct spawn",
+                        exc,
                     )
                     self._zygote_disabled = True
+                else:
+                    try:
+                        # The runner's OS parent will be the zygote, so its
+                        # getppid()-based orphan check must watch the zygote pid.
+                        zygote_env = dict(env)
+                        zygote_env[RUNNER_PARENT_PID_ENV_VAR] = str(zygote.pid)
+                        proc = zygote.fork_runner(zygote_env, str(log_path), str(workspace))
+                        _logger.info(
+                            "Forked runner via zygote (zygote pid=%s, runner pid=%s)",
+                            zygote.pid,
+                            proc.pid,
+                        )
+                        return proc, log_path
+                    except ZygoteUnavailable as exc:
+                        if zygote.is_running():
+                            # Alive but its control channel failed. Do NOT stop
+                            # it: healthy runners already forked from it would
+                            # see their parent die and self-terminate via the
+                            # orphan watchdog. Disable for future launches; the
+                            # still-running zygote is reaped on daemon shutdown
+                            # (see run()'s finally).
+                            _logger.warning(
+                                "Runner zygote unavailable (%s); disabling it "
+                                "and falling back to direct spawn",
+                                exc,
+                            )
+                            self._zygote_disabled = True
+                        else:
+                            # The zygote process died — its forked runners are
+                            # already self-terminating via their own orphan
+                            # watchdogs, so nothing depends on this instance.
+                            # Reap it and let the next launch's start() respawn
+                            # a fresh one instead of losing copy-on-write
+                            # forking for the rest of the daemon's life.
+                            _logger.warning(
+                                "Runner zygote died (%s); falling back to "
+                                "direct spawn and respawning the zygote on "
+                                "the next launch",
+                                exc,
+                            )
+                            with contextlib.suppress(Exception):
+                                zygote.stop()
 
             with child_logging_popen_kwargs(env) as logging_kwargs:
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "omnigent.runner._entry"],
+                    # -P keeps cwd off sys.path: a workspace that is itself an
+                    # omnigent checkout would otherwise shadow the installed
+                    # package. _entry re-adds it for spec-declared local tools.
+                    [sys.executable, "-P", "-m", "omnigent.runner._entry"],
                     env=env,
+                    # A daemon may outlive the checkout it started from.
+                    cwd=str(workspace),
                     # Runners are WS-tunnel clients with no interactive input.
                     # Give them a clean /dev/null stdin instead of inheriting the
                     # daemon's: a long-lived daemon (e.g. backgrounded / nohup'd)
@@ -1852,6 +1948,7 @@ class HostProcess:
                 request_id=frame.request_id,
                 status="ok",
                 configured_harnesses=configured_harness_map(),
+                gateway_inference=gateway_inference_map(),
             )
         installed, reason = try_install_harness_cli(key)
         if not installed:
@@ -1865,6 +1962,7 @@ class HostProcess:
             request_id=frame.request_id,
             status="ok",
             configured_harnesses=configured_harness_map(),
+            gateway_inference=gateway_inference_map(),
         )
 
     def _handle_store_secret(self, frame: HostStoreSecretFrame) -> HostStoreSecretResultFrame:
@@ -1966,6 +2064,7 @@ class HostProcess:
             request_id=frame.request_id,
             status="ok",
             configured_harnesses=configured_harness_map(),
+            gateway_inference=gateway_inference_map(),
         )
 
     def _handle_detect_credentials(
@@ -2203,6 +2302,9 @@ class HostProcess:
             request_id=frame.request_id,
             status="ok",
             models=models,
+            # The picker names the newest model of each family; the endpoint
+            # serves older generations too, and a launch takes an exact id.
+            routable_models=list(config.routable_models) if config is not None else [],
         )
 
     @staticmethod
@@ -2379,6 +2481,9 @@ class HostProcess:
         disconnect. Ctrl-C / SIGTERM exit cleanly.
 
         :returns: None. Runs until the process is terminated.
+        :raises HostConnectError: On a permanent failure — auth /
+            authorization / outdated server, or a loopback server that
+            kept refusing connections (the local server is gone).
         """
         # Reap orphaned harness/tool grandchildren that reparent here when a
         # runner dies (this host is PID 1 in a container, or a subreaper
@@ -2402,7 +2507,7 @@ class HostProcess:
                     # server). Do NOT back off and retry — propagate so
                     # ``run_host_process`` can fail loud.
                     raise
-                except Exception as exc:  # noqa: BLE001 — reconnect loop
+                except Exception as exc:
                     if not isinstance(exc, InvalidURI):
                         # Any non-redirect failure (5xx bounce, network
                         # blip, mid-serve drop) breaks a login-redirect
@@ -2411,6 +2516,56 @@ class HostProcess:
                         # riding out a messy restart isn't killed by
                         # redirects accumulated across unrelated errors.
                         self._login_redirect_streak = 0
+                    # Refused on loopback is decisive: nothing listens on the
+                    # port and no network path can heal it, so bound the
+                    # retries. Remote refusals retry forever (outages recover).
+                    if _connection_refused(exc) and _url_is_loopback(self._server_url):
+                        self._refused_streak += 1
+                        if self._refused_streak >= _LOOPBACK_REFUSED_FATAL_ATTEMPTS:
+                            _logger.error(
+                                "Giving up: %s refused %d consecutive connection "
+                                "attempts — no server is listening there anymore. "
+                                "Exiting.",
+                                self._server_url,
+                                self._refused_streak,
+                            )
+                            raise HostConnectError(
+                                f"The server at {self._server_url} refused "
+                                f"{self._refused_streak} consecutive connection "
+                                "attempts — nothing is listening on that local "
+                                "address anymore. Start the server, then run "
+                                "`omnigent host` again."
+                            ) from exc
+                    else:
+                        self._refused_streak = 0
+                    # An accepted upgrade that died without one inbound frame
+                    # is an endpoint that answers the door but never speaks —
+                    # functionally down even though every connect "succeeds",
+                    # so the recycle classification below would spin at the
+                    # prompt cadence forever, silently. Escalate once past a
+                    # streak; any received frame resets it.
+                    if self._conn_upgrade_accepted and not self._conn_frame_received:
+                        self._silent_connect_streak += 1
+                        if self._silent_connect_streak == _SILENT_CONNECT_ESCALATE_ATTEMPTS:
+                            cause = (
+                                f"The server at {self._server_url} accepted "
+                                f"{self._silent_connect_streak} consecutive "
+                                "connections but never responded on any of them."
+                            )
+                            _logger.error(
+                                "%s Treating the endpoint as unhealthy; "
+                                "reconnecting on slow backoff until it responds.",
+                                cause,
+                            )
+                            print(
+                                f"⚠ {cause} The server may be unhealthy. "
+                                "Retrying on a slower cadence — this recovers "
+                                "automatically once the server responds.",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    else:
+                        self._silent_connect_streak = 0
                     # Classify the disconnect to choose a reconnect cadence.
                     #
                     # 1012 "service restart" / 1001 "going away" are explicit
@@ -2437,9 +2592,13 @@ class HostProcess:
                         t in reason for t in ("1012", "service restart", "1001", "going away")
                     )
                     ingress_recycle = any(t in reason for t in ("no close frame", "502"))
-                    recycle = explicit_recycle or (
-                        ingress_recycle and not _url_is_loopback(self._server_url)
-                    )
+                    # A silent-connect streak overrides the recycle fast path:
+                    # prompt reconnects are for endpoints that answer.
+                    silent_churn = self._silent_connect_streak >= _SILENT_CONNECT_ESCALATE_ATTEMPTS
+                    recycle = (
+                        explicit_recycle
+                        or (ingress_recycle and not _url_is_loopback(self._server_url))
+                    ) and not silent_churn
                     wait_s = _RECONNECT_BASE_S if recycle else backoff
                     _logger.warning(
                         "Host tunnel disconnected: %s. Reconnecting in %.1fs%s",
@@ -2460,9 +2619,18 @@ class HostProcess:
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
+            # Await the cancellations: a bare cancel() leaves the tasks
+            # pending at loop close ("Task was destroyed but it is pending!").
             if self._reaper_task is not None:
                 self._reaper_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._reaper_task
                 self._reaper_task = None
+            for watcher in list(self._watcher_tasks):
+                watcher.cancel()
+            for watcher in list(self._watcher_tasks):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await watcher
             self._cleanup_runners()
             # Final drain: _cleanup_runners has just reaped the tracked
             # runners via Popen, so any of their still-orphaned tool
@@ -2497,6 +2665,9 @@ class HostProcess:
         :returns: None.
         :raises Exception: On WebSocket disconnect or error.
         """
+        # Fresh per-connection markers for the silent-connect streak.
+        self._conn_upgrade_accepted = False
+        self._conn_frame_received = False
         url = self._tunnel_url()
         headers = self._build_connect_headers()
 
@@ -2533,6 +2704,8 @@ class HostProcess:
         self._ever_connected = True
         self._login_redirect_streak = 0
         self._auth_retry_streak = 0
+        self._refused_streak = 0
+        self._conn_upgrade_accepted = True
         try:
             await self._serve_frames(ws)
         finally:
@@ -2577,7 +2750,11 @@ class HostProcess:
         # hosts (no recorded selector), so neither is affected.
         from omnigent.cli_auth import databricks_request_headers
 
-        headers.update(databricks_request_headers(self._server_url))
+        # Pin this host's tunnel to its replica via the host_id; the builder
+        # emits the routing header only on a host-sharded deployment.
+        headers.update(
+            databricks_request_headers(self._server_url, host_id=self._identity.host_id)
+        )
 
         managed_token = os.environ.get(HOST_TOKEN_ENV_VAR)
         if managed_token:
@@ -2652,6 +2829,7 @@ class HostProcess:
         except Exception:  # noqa: BLE001
             pass
         configured_harnesses = await asyncio.to_thread(configured_harness_map)
+        gateway_inference = await asyncio.to_thread(gateway_inference_map)
         hello = HostHelloFrame(
             version=VERSION,
             frame_protocol_version=1,
@@ -2660,6 +2838,7 @@ class HostProcess:
             # Off the event loop: probes PATH and reads local config.
             # The loop below refreshes changes; launch remains authoritative.
             configured_harnesses=configured_harnesses,
+            gateway_inference=gateway_inference,
             telemetry_opt_out=_tel_opt_out,
             installation_id=_tel_install_id,
         )
@@ -2693,6 +2872,9 @@ class HostProcess:
         try:
             while True:
                 raw = await ws.recv()
+                # Any inbound frame proves the server end is alive — the
+                # reconnect loop's silent-connect streak keys off this.
+                self._conn_frame_received = True
                 if isinstance(raw, str):
                     await self._handle_raw_message(ws, raw)
         finally:
@@ -2722,6 +2904,10 @@ class HostProcess:
         :returns: None. Runs until cancelled when the connection ends.
         """
         configured = initial
+        # Gateway-backing baseline, recomputed with readiness: a flip alone
+        # (same binaries, new credentials) must reach the server without a
+        # reconnect.
+        gateway = await asyncio.to_thread(gateway_inference_map)
         loop = asyncio.get_running_loop()
         next_quick = loop.time() + HARNESS_READINESS_REFRESH_INTERVAL_S
         next_full = loop.time() + HARNESS_READINESS_FULL_REFRESH_INTERVAL_S
@@ -2738,12 +2924,19 @@ class HostProcess:
             if not refresh_full:
                 continue
             latest = await asyncio.to_thread(configured_harness_map)
+            latest_gateway = await asyncio.to_thread(gateway_inference_map)
             next_full = now + HARNESS_READINESS_FULL_REFRESH_INTERVAL_S
-            if latest != configured:
+            if latest != configured or latest_gateway != gateway:
                 await ws.send(
-                    encode_host_frame(HostHarnessReadinessFrame(configured_harnesses=latest))
+                    encode_host_frame(
+                        HostHarnessReadinessFrame(
+                            configured_harnesses=latest,
+                            gateway_inference=latest_gateway,
+                        )
+                    )
                 )
                 configured = latest
+                gateway = latest_gateway
 
     async def _handle_raw_message(
         self, ws: websockets.asyncio.client.ClientConnection, raw: str
@@ -2857,8 +3050,9 @@ def run_host_process(
     :param config_path: Optional path to ``config.yaml``.
         Defaults to ``~/.omnigent/config.yaml``.
     :raises SystemExit: With :data:`HOST_FATAL_EXIT_CODE` when the tunnel
-        fails permanently (auth / authorization / outdated server). The
-        actionable cause is printed to stderr first.
+        fails permanently (auth / authorization / outdated server, or a
+        loopback server that is gone). The actionable cause is printed
+        to stderr first.
     """
     host_log_path = configure_process_logging("host")
     # Initialize tracing so the host daemon exports its own spans
@@ -2881,13 +3075,13 @@ def run_host_process(
     # work goes to per-runner files under the runner dir (the exact
     # file is printed when each runner launches). The host process's
     # own diagnostics go to the host destination.
-    print(f"Session logs: {_display_log_path(_runner_log_dir())}/")
-    print(f"This host's log: {_display_log_path(host_log_path)}")
+    print(f"Session logs: {display_log_path(_runner_log_dir())}/")
+    print(f"This host's log: {display_log_path(host_log_path)}")
     from omnigent.cli_diagnostics import current_cli_log_path
 
     _cli_log = current_cli_log_path()
     if _cli_log is not None and _cli_log != host_log_path:
-        print(f"CLI diagnostics: {_display_log_path(_cli_log)}")
+        print(f"CLI diagnostics: {display_log_path(_cli_log)}")
 
     host = HostProcess(identity, server_url)
     try:

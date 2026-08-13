@@ -948,18 +948,19 @@ def _parse_os_env_sandbox(
     mask_paths = _parse_mask_paths(raw.get("mask_paths"))
     env_passthrough = _parse_env_passthrough(raw.get("env_passthrough"))
     egress_rules = _parse_egress_rules(raw.get("egress_rules"))
-    raw_type = raw.get("type")
-    if raw_type is None:
-        # No ``type:`` field in the sandbox block -- resolve via the
-        # platform default (the same logic that fires when ``sandbox:``
-        # is omitted entirely). On Linux this picks ``linux_bwrap``
-        # when bwrap is on PATH, else ``none``; on macOS it
-        # picks ``darwin_seatbelt``.
-        from omnigent.inner.sandbox import _default_sandbox_for_platform
+    from omnigent.inner.sandbox import _default_sandbox_for_platform, _resolve_sandbox_type
 
+    if "type" not in raw:
         sandbox_type = _default_sandbox_for_platform().type
     else:
-        sandbox_type = str(raw_type)
+        raw_type = raw["type"]
+        if raw_type is not None and not isinstance(raw_type, str):
+            raise OmnigentError(
+                "os_env.sandbox.type must be a string or null, "
+                f"got {type(raw_type).__name__}: {raw_type!r}",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        sandbox_type = _resolve_sandbox_type(raw_type)
     if egress_rules and sandbox_type not in ("linux_bwrap", "darwin_seatbelt"):
         raise OmnigentError(
             "os_env.sandbox.egress_rules requires sandbox.type=linux_bwrap "
@@ -2137,7 +2138,7 @@ def _parse_skills_filter(raw: object) -> str | list[str]:
     Parse the top-level YAML ``skills:`` field into a host-skill
     filter string or list of names.
 
-    Distinct from the bundle-side ``skills/<name>/SKILL.md`` files
+    Distinct from the bundle-side ``skills/<dir>/SKILL.md`` files
     discovered by :func:`_discover_skills` — that's the agent's own
     bundled skills, always loaded. This filter only controls
     HOST-scope skills that the harness picks up from the user's
@@ -2930,7 +2931,12 @@ def _discover_sub_agents(
         config_yaml = agent_dir / "config.yaml"
         if not config_yaml.exists():
             continue
-        sub_agents.append(parse(agent_dir, expand_env=expand_env))
+        sub_spec = parse(agent_dir, expand_env=expand_env)
+        # Provenance for bundle-dir resolution: the directory name, never
+        # the YAML ``name``. A child's skills and local tools live under
+        # ``<parent bundle>/agents/<dir>``, and the two can differ.
+        sub_spec.source_rel_dir = agent_dir.name
+        sub_agents.append(sub_spec)
     return sub_agents
 
 

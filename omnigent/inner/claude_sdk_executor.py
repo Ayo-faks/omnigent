@@ -46,6 +46,7 @@ from omnigent import model_catalog
 from omnigent._platform import resolve_cli_binary, stable_user_id
 from omnigent.inner import _proc
 from omnigent.inner.bundle_skills import ensure_bundle_plugin_manifest
+from omnigent.inner.hook_scripts import subagent_router
 from omnigent.json_types import JsonObject as _JsonObject
 from omnigent.llms._usage_observer import notify_from_dict as _notify_usage_from_dict
 from omnigent.llms.adapters._content import parse_data_uri as _parse_replay_data_uri
@@ -70,6 +71,7 @@ from .executor import (
     ToolSpec,
     TurnComplete,
     classify_tool_result,
+    describe_exception,
 )
 from .native_attachments import unresolved_attachment_marker
 from .sandbox import (
@@ -1046,34 +1048,19 @@ def _resolve_gateway_env(
 
 
 def _databricks_claude_auth_command(host: str, profile: str | None = None) -> str:
-    """Return the legacy Databricks CLI auth helper command for Claude.
+    """Return the Databricks CLI ``apiKeyHelper`` command for Claude.
 
     :param host: Databricks workspace host, e.g.
         ``"https://example.databricks.com"``.
-    :param profile: Optional ``~/.databrickscfg`` profile name, e.g.
-        ``"oss"``. Preferred over ``--host`` when known: two profiles can
-        share one host, which makes ``databricks auth token --host`` fail
-        ("Use --profile to specify which profile") → empty token → 401.
-        ``--profile`` is always unambiguous.
+    :param profile: Optional ``~/.databrickscfg`` profile name, e.g. ``"oss"``.
+        Preferred over ``--host`` when known; see
+        :func:`~omnigent.inner.databricks_executor.databricks_bearer_token_command`,
+        which owns the command's shape for every harness.
     :returns: Shell command that prints a bearer token.
     """
-    # --profile is unambiguous; --host fails when two profiles share a host.
-    selector = f"--profile {json.dumps(profile)}" if profile else f"--host {json.dumps(host)}"
-    # `--force-refresh` proactively refreshes a still-valid cached token
-    # (guards against a mid-session 401 on long gateway connections) but
-    # only exists in Databricks CLI >= v0.296.0. Probe `--help` and pass it
-    # only when supported: older CLIs reject the unknown flag → empty token
-    # → silent 401. Plain `auth token` still auto-refreshes expired tokens.
-    return (
-        'if [ -n "${DATABRICKS_BEARER:-}" ]; then '
-        'printf "%s\\n" "$DATABRICKS_BEARER"; '
-        "else force=''; "
-        "if databricks auth token --help 2>&1 | grep -q force-refresh; "
-        "then force=--force-refresh; fi; "
-        "env -u DATABRICKS_CONFIG_PROFILE "
-        f"databricks auth token {selector} "
-        "$force --output json | jq -r '.access_token'; fi"
-    )
+    from .databricks_executor import databricks_bearer_token_command
+
+    return databricks_bearer_token_command(host, profile)
 
 
 def _parse_optional_int(value: str | None) -> int | None:
@@ -1439,7 +1426,7 @@ class ClaudeSDKExecutor(Executor):
                 ships its own ``skills/`` directory. Used to expose
                 bundled skills to Claude via ``--plugin-dir <bundle>``
                 (the SDK's plugin convention loads SKILL.md files from
-                ``<plugin>/skills/<name>/``). ``None`` for agents
+                ``<plugin>/skills/<dir>/``). ``None`` for agents
                 without a bundled-skill directory — the harness skips
                 the plugin-dir wiring.
             agent_name: Optional agent display name. When *bundle_dir*
@@ -1931,6 +1918,63 @@ class ClaudeSDKExecutor(Executor):
                 return str(metadata["session_id"])
         return "default"
 
+    def _install_subagent_router_hook(
+        self,
+        sdk: _ClaudeSDK,
+        options: Any,  # type: ignore[explicit-any]  # ClaudeAgentOptions — avoid a hard sdk import
+        model: str | None,
+    ) -> None:
+        """
+        Register the in-process subagent-routing ``PreToolUse`` hook.
+
+        The claude-agent-sdk runs hook callbacks in this process, so the
+        native hook script's decision logic is imported instead of
+        subprocessed. No-op unless the runner advertises a
+        ``route-subagent`` endpoint, so unrouted sessions register nothing.
+
+        :param sdk: The ``claude_agent_sdk`` module (or a test double).
+        :param options: ``ClaudeAgentOptions`` to mutate.
+        :param model: Model this session runs on, sent as the spawn's
+            parent model.
+        """
+        hook_matcher_cls = getattr(sdk, "HookMatcher", None)
+        if hook_matcher_cls is None:
+            return
+        router_dir = subagent_router.discover_router_dir()
+        if subagent_router.read_router_endpoint(router_dir) is None:
+            return
+
+        async def route_spawn(
+            payload: Any,  # type: ignore[explicit-any]  # HookInput TypedDict
+            tool_use_id: str | None,  # noqa: ARG001 -- HookCallback signature
+            context: Any,  # type: ignore[explicit-any]  # HookContext  # noqa: ARG001 -- HookCallback signature
+        ) -> dict[str, Any]:  # type: ignore[explicit-any]  # HookJSONOutput
+            if not isinstance(payload, dict):
+                return {}
+            output = await asyncio.to_thread(
+                subagent_router.route_pre_tool_use,
+                payload,
+                harness="claude-sdk",
+                router_dir=router_dir,
+                parent_model=model,
+            )
+            return output or {}
+
+        hooks = dict(getattr(options, "hooks", None) or {})
+        entries = list(hooks.get("PreToolUse") or [])
+        entries.append(
+            hook_matcher_cls(
+                matcher=subagent_router.AGENT_TOOL_MATCHER,
+                # Strictly outside the router call's own HTTP budget: equal
+                # numbers let the SDK cancel the hook at the same instant its
+                # request gives up, so the fail-open branch never ran.
+                timeout=subagent_router.HOOK_TIMEOUT_S,
+                hooks=[route_spawn],
+            )
+        )
+        hooks["PreToolUse"] = entries
+        options.hooks = hooks
+
     async def _can_use_tool_for_permission(
         self,
         tool_name: str,
@@ -2276,7 +2320,7 @@ class ClaudeSDKExecutor(Executor):
             skills="all", setting_sources=None
         )
         # Bundle skills are exposed via the SDK's plugin mechanism.
-        # The bundle's ``<bundle>/skills/<name>/SKILL.md`` files are
+        # The bundle's ``<bundle>/skills/<dir>/SKILL.md`` files are
         # discovered as plugin skills (no ``.claude/`` prefix needed
         # under the plugin convention — see plugin discovery test in
         # tests/inner/test_claude_sdk_executor.py). The plugin's
@@ -2318,7 +2362,7 @@ class ClaudeSDKExecutor(Executor):
                 cfg.extra.get("reasoning_effort"), "Claude Agent SDK", CLAUDE_EFFORTS
             )
         except ValueError as exc:
-            yield ExecutorError(message=str(exc), retryable=False)
+            yield ExecutorError(message=describe_exception(exc), retryable=False)
             return
         if reasoning_effort is not None:
             options_kwargs["effort"] = reasoning_effort
@@ -2366,6 +2410,8 @@ class ClaudeSDKExecutor(Executor):
             or self._elicitation_handler is not None
         ):
             options.can_use_tool = self._can_use_tool_gate
+
+        self._install_subagent_router_hook(sdk, options, model)
 
         # Log the full configuration for debugging
         logger.info(
@@ -2798,6 +2844,9 @@ class ClaudeSDKExecutor(Executor):
                         elif getattr(system_msg, "hook_event_name", None) == "PreCompact":
                             compaction_occurred = True
                             logger.info("Claude SDK compaction detected (PreCompact hook)")
+                            from omnigent.inner.executor import CompactionStarted
+
+                            yield CompactionStarted()
                         else:
                             logger.info("Claude CLI system message: %s", data)
             finally:
