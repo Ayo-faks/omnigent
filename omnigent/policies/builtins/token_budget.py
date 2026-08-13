@@ -63,6 +63,8 @@ a non-empty ``arguments`` block (the registry declares it
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from omnigent.policies.schema import (
     PolicyCallable,
     PolicyEvent,
@@ -86,14 +88,32 @@ _ASK_APPROVED_KEY = "token_budget_ask_approved"
 _GATED_PHASES = frozenset({"request", "tool_call"})
 
 
+def _as_int(value: object) -> int:
+    """Coerce a usage counter (statically ``object``) to a non-negative int.
+
+    Usage values may be missing, ``None``, or non-numeric on a malformed
+    payload, so narrow before ``int()`` rather than catching at the call site.
+    ``bool`` is an ``int`` subclass but never a token count, so it maps to 0.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(value))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _session_tokens(event: PolicyEvent) -> int:
     """Read cumulative session tokens from a policy event.
 
-    Sums input_tokens + output_tokens + cache_read_input_tokens +
-    cache_creation_input_tokens (to reflect actual token consumption at
-    the model, even though cached reads are billed at a lower rate).
-    Falls back to reading ``total_tokens`` when available. Defensively
-    handles malformed usage payloads.
+    Prefers ``total_tokens`` when present; otherwise sums input_tokens +
+    output_tokens + cache_read_input_tokens + cache_creation_input_tokens (to
+    reflect actual consumption at the model, even though cached reads are
+    billed at a lower rate). Malformed values coerce to 0.
 
     :param event: Policy event dict.
     :returns: ``total_tokens`` or the sum of components (int >= 0).
@@ -101,26 +121,18 @@ def _session_tokens(event: PolicyEvent) -> int:
     context = event.get("context") or {}
     usage = context.get("usage") or {}
 
-    # Try explicit total_tokens first.
     if "total_tokens" in usage:
-        raw = usage.get("total_tokens")
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            pass
+        return _as_int(usage.get("total_tokens"))
 
-    # Sum all components: input + output + cached reads.
-    try:
-        input_tk = int(usage.get("input_tokens", 0))
-        output_tk = int(usage.get("output_tokens", 0))
-        cache_read_tk = int(usage.get("cache_read_input_tokens", 0))
-        cache_create_tk = int(usage.get("cache_creation_input_tokens", 0))
-        return max(0, input_tk + output_tk + cache_read_tk + cache_create_tk)
-    except (TypeError, ValueError):
-        return 0
+    return (
+        _as_int(usage.get("input_tokens"))
+        + _as_int(usage.get("output_tokens"))
+        + _as_int(usage.get("cache_read_input_tokens"))
+        + _as_int(usage.get("cache_creation_input_tokens"))
+    )
 
 
-def _usage_has_tokens(usage: dict[str, object]) -> bool:
+def _usage_has_tokens(usage: Mapping[str, object]) -> bool:
     """Return whether the usage dict contains any token data.
 
     Returns True when at least one of the token counters is present and

@@ -189,9 +189,7 @@ class TestTokenBudgetPolicy:
 
     def test_allows_below_soft_threshold(self) -> None:
         """ALLOW when below soft threshold."""
-        evaluator = token_budget(
-            max_tokens=100000, ask_thresholds_tokens=[50000, 75000]
-        )
+        evaluator = token_budget(max_tokens=100000, ask_thresholds_tokens=[50000, 75000])
         event = {
             "type": "request",
             "context": {"usage": {"total_tokens": 25000}},
@@ -270,9 +268,7 @@ class TestTokenBudgetPolicy:
 
     def test_hard_limit_takes_precedence_over_soft(self) -> None:
         """Hard limit DENY takes precedence when both would fire."""
-        evaluator = token_budget(
-            max_tokens=100000, ask_thresholds_tokens=[50000]
-        )
+        evaluator = token_budget(max_tokens=100000, ask_thresholds_tokens=[50000])
         event = {
             "type": "request",
             "context": {"usage": {"total_tokens": 100000}},
@@ -324,9 +320,7 @@ class TestTokenBudgetPolicy:
 
     def test_multiple_soft_thresholds_sorted(self) -> None:
         """Multiple soft thresholds are sorted and checked in order."""
-        evaluator = token_budget(
-            max_tokens=200000, ask_thresholds_tokens=[100000, 50000, 150000]
-        )
+        evaluator = token_budget(max_tokens=200000, ask_thresholds_tokens=[100000, 50000, 150000])
         event = {
             "type": "request",
             "context": {"usage": {"total_tokens": 75000}},
