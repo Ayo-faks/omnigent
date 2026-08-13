@@ -12,16 +12,25 @@ from omnigent.model_metadata import ModelMetadata
 if TYPE_CHECKING:
     from omnigent.model_catalog import ModelEntry
 
-# These system models omit the finish reason Pi requires on Chat Completions.
-# ``glm-`` avoids matching vendor-direct ids without a system.ai alias.
-SYSTEM_AI_RESPONSES_KEYWORDS: tuple[str, ...] = ("kimi", "inkling", "qwen3", "glm-")
+# These system models omit the finish reason Pi requires on Chat Completions, or
+# stream typed-array content there. Probed: the gateway's Responses surface
+# answers each of these with plain ``output_text``/``reasoning_text`` and real
+# ``function_call`` items. ``glm-`` avoids matching vendor-direct ids without a
+# system.ai alias.
+SYSTEM_AI_RESPONSES_KEYWORDS: tuple[str, ...] = (
+    "kimi",
+    "inkling",
+    "qwen3",
+    "glm-",
+    "gpt-oss",
+)
 
 
 # Pi's openai-completions reader appends ``delta.content`` with ``+=``, so an
-# endpoint streaming typed-array content renders as ``[object Object]``. Gemini
-# 2.5 and gpt-oss stream it on every wire they offer; DeepSeek streams reasoning
-# as ``content: [{"type": "reasoning", ...}]`` and offers no Responses fallback.
-PI_UNPARSEABLE_MODEL_FRAGMENTS: tuple[str, ...] = ("gemini-2-5", "gpt-oss", "deepseek")
+# endpoint streaming typed-array content renders as ``[object Object]``. Both of
+# these stream it there and offer no Responses surface to fall back to: that
+# surface reports Gemini 2.5 unavailable and DeepSeek "not enabled".
+PI_UNPARSEABLE_MODEL_FRAGMENTS: tuple[str, ...] = ("gemini-2-5", "deepseek")
 
 
 def unsupported_in_pi(model_id_lower: str) -> bool:

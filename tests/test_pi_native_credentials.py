@@ -1322,6 +1322,9 @@ def _databricks_provider_without_catalog(
         ("system.ai.gemini-3-5-flash", "omnigent-mlflow", "openai-completions"),
         ("databricks-gemini-3-5-flash", "omnigent-completions", "openai-completions"),
         ("databricks-llama-4-maverick", "omnigent-completions", "openai-completions"),
+        # Probed: chat completions streams typed-array content for gpt-oss, while
+        # Responses answers with output_text/reasoning_text and function_call.
+        ("system.ai.gpt-oss-120b", "omnigent-openai", "openai-responses"),
     ],
 )
 def test_uncataloged_non_claude_model_routed_by_family(
