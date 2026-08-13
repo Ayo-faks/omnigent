@@ -1322,7 +1322,6 @@ def _databricks_provider_without_catalog(
         ("system.ai.gemini-3-5-flash", "omnigent-mlflow", "openai-completions"),
         ("databricks-gemini-3-5-flash", "omnigent-completions", "openai-completions"),
         ("databricks-llama-4-maverick", "omnigent-completions", "openai-completions"),
-        ("databricks-deepseek-v3", "omnigent-completions", "openai-completions"),
     ],
 )
 def test_uncataloged_non_claude_model_routed_by_family(
@@ -1346,15 +1345,21 @@ def test_uncataloged_non_claude_model_routed_by_family(
     assert provider.unroutable_model_warning() is None
 
 
-def test_uncataloged_deepseek_declares_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DeepSeek streams on reasoning_content; Pi needs ``reasoning: true``.
+def test_deepseek_is_refused_with_user_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DeepSeek is left unregistered rather than answering ``[object Object]``.
 
-    Without the flag Pi sees empty content and the turn never completes.
+    The gateway streams its reasoning as typed-array ``delta.content``, which Pi
+    concatenates into one ``[object Object]`` per token, and it serves no
+    Responses wire to fall back to ("responses API is not enabled").
     """
     provider = _databricks_provider_without_catalog(monkeypatch, "databricks-deepseek-v3")
 
-    entry = provider.to_models_config()["providers"]["omnigent-completions"]["models"][0]
-    assert entry.get("reasoning") is True
+    cfg = provider.to_models_config()
+    assert cfg["providers"]["omnigent"]["models"] == []
+    assert list(cfg["providers"]) == ["omnigent"]
+    warning = provider.unroutable_model_warning()
+    assert warning is not None
+    assert "databricks-deepseek-v3" in warning
 
 
 def test_uncataloged_claude_model_stays_on_primary(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,13 +17,20 @@ if TYPE_CHECKING:
 SYSTEM_AI_RESPONSES_KEYWORDS: tuple[str, ...] = ("kimi", "inkling", "qwen3", "glm-")
 
 
+# Pi's openai-completions reader appends ``delta.content`` with ``+=``, so an
+# endpoint streaming typed-array content renders as ``[object Object]``. Gemini
+# 2.5 and gpt-oss stream it on every wire they offer; DeepSeek streams reasoning
+# as ``content: [{"type": "reasoning", ...}]`` and offers no Responses fallback.
+PI_UNPARSEABLE_MODEL_FRAGMENTS: tuple[str, ...] = ("gemini-2-5", "gpt-oss", "deepseek")
+
+
 def unsupported_in_pi(model_id_lower: str) -> bool:
     """Return whether Pi cannot parse the model's response content.
 
-    These endpoints return typed-array content that Pi renders as
-    ``[object Object]``; their available alternate wires do not fix it.
+    :param model_id_lower: A lowercased model id.
+    :returns: ``True`` when no wire the model offers yields parseable content.
     """
-    return "gemini-2-5" in model_id_lower or "gpt-oss" in model_id_lower
+    return any(fragment in model_id_lower for fragment in PI_UNPARSEABLE_MODEL_FRAGMENTS)
 
 
 class DatabricksPiSurface(Enum):
@@ -70,9 +77,10 @@ def databricks_pi_surface_for_model(model_id: str) -> DatabricksPiSurface:
     return DatabricksPiSurface.COMPLETIONS
 
 
-# DeepSeek streams its chain of thought on ``reasoning_content``; Pi only reads
-# that channel when the model entry sets ``reasoning``. GLM/kimi/inkling route
-# through the Responses API instead and do not need it.
+# Pi only reads a reasoning channel when the model entry sets ``reasoning``.
+# Reaches only an explicitly forced ``-m`` selection now that DeepSeek is
+# unparseable above: the gateway streams its reasoning as typed-array content
+# rather than ``reasoning_content``, which the flag does not make readable.
 PI_REASONING_MODEL_FRAGMENTS: tuple[str, ...] = ("deepseek",)
 
 
