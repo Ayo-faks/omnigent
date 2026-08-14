@@ -745,8 +745,8 @@ class _ScriptedThenDropStreamResponse:
 
     :param frames: Ready-to-send ``data: ...`` frames yielded in order
         before the tunnel drop.
-    :param gate: Event the test sets once subscribed, gating the drop so
-        the collector observes every scripted frame first.
+    :param gate: Event the test sets once subscribed, gating the frames and
+        the drop so the collector observes every scripted frame.
     """
 
     def __init__(self, frames: list[str], gate: asyncio.Event) -> None:
@@ -765,10 +765,14 @@ class _ScriptedThenDropStreamResponse:
         del exc_type, exc, traceback
 
     async def aiter_text(self) -> AsyncIterator[str]:
+        # The heartbeat comes first so the caller's readiness wait resolves,
+        # then everything else waits for the gate: a frame yielded before the
+        # test subscribes would be published to nobody, making assertions on
+        # the relayed events scheduler-dependent.
         yield 'data: {"type": "session.heartbeat"}\n\n'
+        await self._gate.wait()
         for frame in self._frames:
             yield frame
-        await self._gate.wait()
         raise ConnectionError("tunnel closed before request completed")
 
 
@@ -923,9 +927,12 @@ async def test_relay_stays_quiet_when_runner_leaves_an_idle_session(
         gate.set()
         await asyncio.wait_for(handle.task, timeout=2.0)
 
-        statuses = []
-        while not collector.queue.empty():
-            statuses.append(await collector.queue.get())
+        # Wait for each edge rather than draining a snapshot: the quiet path
+        # publishes nothing and awaits nothing, so the relay task can finish
+        # before the collector's pump is ever scheduled.
+        statuses: list[dict[str, Any]] = []
+        while len([e for e in statuses if e.get("type") == "session.status"]) < 2:
+            statuses.append(await asyncio.wait_for(collector.queue.get(), timeout=2.0))
         assert [e.get("status") for e in statuses if e.get("type") == "session.status"] == [
             "running",
             "idle",
@@ -934,6 +941,8 @@ async def test_relay_stays_quiet_when_runner_leaves_an_idle_session(
         # The session stays idle: no failed edge for the sidebar badge, and
         # no durable labels for the snapshot to project as a last_task_error
         # (which is what synthesizes the transcript's error block on reload).
+        # The cache is written only by ``_publish_status``, so ``idle`` here
+        # also proves no failure edge followed the scripted ones.
         assert sessions_module._session_status_cache.get(session_id) == "idle"
         assert sessions_module._last_task_error_from_labels(store.labels[session_id]) is None
     finally:
@@ -993,6 +1002,70 @@ async def test_relay_fails_mid_turn_session_from_the_row_when_the_cache_is_cold(
         gate.set()
         await asyncio.wait_for(handle.task, timeout=2.0)
 
+        assert sessions_module._session_status_cache.get(session_id) == "failed"
+        persisted = sessions_module._last_task_error_from_labels(store.labels[session_id])
+        assert persisted is not None
+        assert persisted["code"] == "runner_disconnected"
+    finally:
+        gate.set()
+        handle = sessions_module._runner_relay_tasks.get(session_id)
+        if handle is not None and not handle.task.done():
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(handle.task, timeout=1.0)
+        sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
+        session_stream.close(session_id)
+
+
+@pytest.mark.asyncio
+async def test_relay_reports_the_drop_when_the_live_status_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An unreadable row reports the drop instead of killing the relay.
+
+    The cold-cache fallback reads the row from inside the disconnect
+    handler. A store error there must not escape: an exception thrown out of
+    that handler ends the relay task before either branch publishes,
+    truncating the client's stream with no error event — exactly what the
+    ``failed`` status exists to prevent. An indeterminate answer therefore
+    reports the drop, as the ungated relay always did.
+    """
+    from omnigent.runtime import session_stream
+    from omnigent.server.routes import sessions as sessions_module
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.RUNNER_DISCONNECT_GRACE_S",
+        0.0,
+    )
+    sessions_module._runner_relay_tasks.clear()
+    gate = asyncio.Event()
+    fake_runner = _ScriptedThenDropRunnerClient([], gate)
+    store = _RecordingLabelStore()
+    monkeypatch.setattr(
+        store,
+        "get_conversation",
+        lambda conversation_id: (_ for _ in ()).throw(RuntimeError("db blip")),
+    )
+    session_id = "abcdef0123456789abcdef0123456789"
+
+    try:
+        assert sessions_module._session_status_cache.get(session_id) is None
+
+        handle = await sessions_module._ensure_runner_relay_ready(
+            session_id,
+            "runner_unreadable_row",
+            fake_runner,  # type: ignore[arg-type]
+            conversation_store=store,  # type: ignore[arg-type]
+        )
+        assert handle is not None
+
+        gate.set()
+        await asyncio.wait_for(handle.task, timeout=2.0)
+
+        # The relay survived the store error and still reported the cause.
+        assert handle.task.exception() is None
         assert sessions_module._session_status_cache.get(session_id) == "failed"
         persisted = sessions_module._last_task_error_from_labels(store.labels[session_id])
         assert persisted is not None

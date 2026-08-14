@@ -5587,17 +5587,34 @@ async def _runner_drop_interrupted_turn(
     state was published before a restart, so a deploy mid-turn does not
     downgrade a real interruption to a benign one.
 
+    An unreadable or missing row leaves the question open, and this runs
+    inside the disconnect handler: answering "not mid-turn" there would
+    both swallow the failure and let the error escape the handler, killing
+    the relay without publishing anything — the silent truncation the
+    failed status exists to prevent. So an indeterminate answer reports the
+    drop, as the ungated relay always did.
+
     :param session_id: Session/conversation identifier,
         e.g. ``"conv_abc123"``.
     :param conversation_store: Store used to read the durable live status.
     :returns: ``True`` when a turn was in flight
-        (:data:`_MID_TURN_STATUSES`).
+        (:data:`_MID_TURN_STATUSES`) or the state is indeterminate.
     """
     cached = _session_status_cache.get(session_id)
     if cached is not None:
         return cached in _MID_TURN_STATUSES
-    conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
-    return conv is not None and conv.live_status in _MID_TURN_STATUSES
+    try:
+        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+    except Exception:  # noqa: BLE001 — an unreadable row must not kill the relay
+        _logger.warning(
+            "Relay: live-status read failed for session=%s; reporting the drop",
+            session_id,
+            exc_info=True,
+        )
+        return True
+    if conv is None:
+        return True
+    return conv.live_status in _MID_TURN_STATUSES
 
 
 async def _relay_runner_stream(
