@@ -426,7 +426,7 @@ async def test_relay_publishes_failed_status_on_tunnel_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A tunnel close mid-stream publishes ``session.status`` "failed".
+    A tunnel close mid-TURN publishes ``session.status`` "failed".
 
     Regression test for #1114: before the fix the relay swallowed the
     ``ConnectionError`` and exited silently, leaving the client's SSE
@@ -444,6 +444,10 @@ async def test_relay_publishes_failed_status_on_tunnel_close(
     gate = asyncio.Event()
     fake_runner = _TunnelCloseRunnerClient(gate)
     session_id = "03048a276e8a91fab748c87a77d638bf"
+    # A turn is in flight — the state #1114 is about. Only an interrupted
+    # turn is failed by the drop; an idle session stays quiet (see
+    # test_relay_stays_quiet_when_runner_leaves_an_idle_session).
+    sessions_module._session_status_cache[session_id] = "running"
 
     collector = None
     try:
@@ -478,6 +482,7 @@ async def test_relay_publishes_failed_status_on_tunnel_close(
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(handle.task, timeout=1.0)
         sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
         session_stream.close(session_id)
 
 
@@ -492,19 +497,24 @@ class _RecordingLabelStore:
     persisted disconnect code, so both are implemented here.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, live_status: str = "idle") -> None:
         self.labels: dict[str, dict[str, str]] = {}
+        self.live_status = live_status
 
     def set_labels(self, conversation_id: str, updates: dict[str, str]) -> None:
         self.labels.setdefault(conversation_id, {}).update(updates)
 
     def get_conversation(self, conversation_id: str) -> Any:
-        """Return a conversation-shaped object exposing ``.labels``.
+        """Return a conversation-shaped object exposing the read fields.
 
-        Only ``.labels`` is read by the recovery guard, so a lightweight
-        namespace over the recorded labels is enough.
+        ``.labels`` is read by the recovery guard and ``.live_status`` by
+        the mid-turn check when the in-memory status cache is cold, so a
+        lightweight namespace over both is enough.
         """
-        return SimpleNamespace(labels=dict(self.labels.get(conversation_id, {})))
+        return SimpleNamespace(
+            labels=dict(self.labels.get(conversation_id, {})),
+            live_status=self.live_status,
+        )
 
 
 @pytest.mark.asyncio
@@ -512,7 +522,7 @@ async def test_relay_persists_disconnect_error_labels_on_tunnel_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A tunnel close persists the ``runner_disconnected`` cause as labels.
+    A tunnel close mid-turn persists the ``runner_disconnected`` cause as labels.
 
     Option B: a runner that merely disconnected must be distinguishable
     from a genuine task failure. The relay-fed status cache only carries a
@@ -534,6 +544,8 @@ async def test_relay_persists_disconnect_error_labels_on_tunnel_close(
     fake_runner = _TunnelCloseRunnerClient(gate)
     store = _RecordingLabelStore()
     session_id = "82fe36b7ca1bfb567bfbcce4eaa487a1"
+    # Only an interrupted turn is failed by the drop, so put one in flight.
+    sessions_module._session_status_cache[session_id] = "running"
 
     try:
         handle = await sessions_module._ensure_runner_relay_ready(
@@ -571,6 +583,7 @@ async def test_relay_persists_disconnect_error_labels_on_tunnel_close(
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(handle.task, timeout=1.0)
         sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
         session_stream.close(session_id)
 
 
@@ -603,6 +616,9 @@ async def test_runner_recovery_clears_persisted_disconnect_error_labels(
     fake_runner = _TunnelCloseRunnerClient(gate)
     store = _RecordingLabelStore()
     session_id = "51af098ee822b1a024acb911f3cdf297"
+    # A turn in flight, so the drop below is a genuine interruption and the
+    # relay persists the labels this test then asserts recovery clears.
+    sessions_module._session_status_cache[session_id] = "running"
 
     try:
         # Disconnect first: the relay persists the runner_disconnected
@@ -850,6 +866,139 @@ async def test_relay_running_edge_clears_stale_intentional_stop_marker(
         sessions_module._intentional_stop_sessions.discard(session_id)
         if collector is not None:
             await collector.stop()
+        handle = sessions_module._runner_relay_tasks.get(session_id)
+        if handle is not None and not handle.task.done():
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(handle.task, timeout=1.0)
+        sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
+        session_stream.close(session_id)
+
+
+@pytest.mark.asyncio
+async def test_relay_stays_quiet_when_runner_leaves_an_idle_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A runner leaving an idle session is not an error.
+
+    A host going away (asleep, restarted, ``omnigent host`` stopped) drops
+    the tunnel of every session bound to it, including ones that finished
+    their last turn hours ago. The relay used to fail all of them, so those
+    sessions rendered a red "The connection to the host dropped
+    unexpectedly" banner over a transcript where nothing had been
+    interrupted. Scripts a completed turn (``running`` then ``idle``) before
+    the drop and asserts the relay publishes no failure and persists no
+    error labels — the disconnect surfaces through liveness instead.
+    """
+    from omnigent.runtime import session_stream
+    from omnigent.server.routes import sessions as sessions_module
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.RUNNER_DISCONNECT_GRACE_S",
+        0.0,
+    )
+    sessions_module._runner_relay_tasks.clear()
+    gate = asyncio.Event()
+    frames = [
+        'data: {"type": "session.status", "status": "running"}\n\n',
+        'data: {"type": "session.status", "status": "idle"}\n\n',
+    ]
+    fake_runner = _ScriptedThenDropRunnerClient(frames, gate)
+    store = _RecordingLabelStore()
+    session_id = "1e2d3c4b5a69788796a5b4c3d2e1f0a9"
+
+    collector = None
+    try:
+        handle = await sessions_module._ensure_runner_relay_ready(
+            session_id,
+            "runner_idle_disconnect",
+            fake_runner,  # type: ignore[arg-type]
+            conversation_store=store,  # type: ignore[arg-type]
+        )
+        assert handle is not None
+
+        collector = await start_session_stream_collector(session_id)
+        gate.set()
+        await asyncio.wait_for(handle.task, timeout=2.0)
+
+        statuses = []
+        while not collector.queue.empty():
+            statuses.append(await collector.queue.get())
+        assert [e.get("status") for e in statuses if e.get("type") == "session.status"] == [
+            "running",
+            "idle",
+        ], f"expected only the scripted turn edges, saw {statuses}"
+
+        # The session stays idle: no failed edge for the sidebar badge, and
+        # no durable labels for the snapshot to project as a last_task_error
+        # (which is what synthesizes the transcript's error block on reload).
+        assert sessions_module._session_status_cache.get(session_id) == "idle"
+        assert sessions_module._last_task_error_from_labels(store.labels[session_id]) is None
+    finally:
+        gate.set()
+        if collector is not None:
+            await collector.stop()
+        handle = sessions_module._runner_relay_tasks.get(session_id)
+        if handle is not None and not handle.task.done():
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(handle.task, timeout=1.0)
+        sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
+        session_stream.close(session_id)
+
+
+@pytest.mark.asyncio
+async def test_relay_fails_mid_turn_session_from_the_row_when_the_cache_is_cold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A cold status cache falls back to the row, so a restart keeps the failure.
+
+    The in-memory status cache is per-replica and empty after a restart, but
+    the relay is re-established for sessions that were mid-turn when the
+    server went down (a deploy). Reading only the cache would classify that
+    session as idle and swallow a real interruption, leaving the turn hung
+    with no error. The durable ``live_status`` on the row is the fallback,
+    matching ``_mark_runner_sessions_offline_impl``.
+    """
+    from omnigent.runtime import session_stream
+    from omnigent.server.routes import sessions as sessions_module
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.RUNNER_DISCONNECT_GRACE_S",
+        0.0,
+    )
+    sessions_module._runner_relay_tasks.clear()
+    gate = asyncio.Event()
+    # No status frames: the relay never caches an edge, exactly as after a
+    # restart. The row carries the mid-turn state instead.
+    fake_runner = _ScriptedThenDropRunnerClient([], gate)
+    store = _RecordingLabelStore(live_status="running")
+    session_id = "0f9e8d7c6b5a49382716253445362718"
+
+    try:
+        assert sessions_module._session_status_cache.get(session_id) is None
+
+        handle = await sessions_module._ensure_runner_relay_ready(
+            session_id,
+            "runner_cold_cache",
+            fake_runner,  # type: ignore[arg-type]
+            conversation_store=store,  # type: ignore[arg-type]
+        )
+        assert handle is not None
+
+        gate.set()
+        await asyncio.wait_for(handle.task, timeout=2.0)
+
+        assert sessions_module._session_status_cache.get(session_id) == "failed"
+        persisted = sessions_module._last_task_error_from_labels(store.labels[session_id])
+        assert persisted is not None
+        assert persisted["code"] == "runner_disconnected"
+    finally:
+        gate.set()
         handle = sessions_module._runner_relay_tasks.get(session_id)
         if handle is not None and not handle.task.done():
             handle.task.cancel()
