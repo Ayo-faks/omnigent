@@ -11136,7 +11136,8 @@ def test_codex_discover_thread_and_forward_writes_routing_summary_on_timeout(
     bridge_dir = tmp_path / "bridge"
     bridge_dir.mkdir()
 
-    async def _timeout(_client: object) -> str:
+    async def _timeout(_client: object, *, timeout: float | None) -> str:
+        assert timeout is None
         raise TimeoutError("no thread event")
 
     monkeypatch.setattr(_fwd, "wait_for_thread_started", _timeout)
@@ -11153,6 +11154,7 @@ def test_codex_discover_thread_and_forward_writes_routing_summary_on_timeout(
             codex_home=tmp_path / "codex-home",
             event_client=_FakeClient(),
             routing_summary="Codex CLI login (no provider configured) -- SENTINEL",
+            publish_event=lambda _session_id, _event: None,
         )
     )
 

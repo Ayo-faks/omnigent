@@ -421,6 +421,7 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
             self.codex_home = tmp_path / "unconfigured-codex-home"
             self.listen_url: str | None = None
             self.started = False
+            self.close_calls = 0
             # Provider/model -c overrides the runner forwards to the
             # --remote TUI; empty here (no profile in this test).
             self.config_overrides: list[str] = []
@@ -435,6 +436,7 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
 
         async def close(self) -> None:
             """:returns: None."""
+            self.close_calls += 1
 
     app_server = _FakeCodexAppServer()
     build_calls: list[dict[str, Any]] = []
@@ -518,6 +520,7 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     published_events: list[dict[str, Any]] = []
     forward_calls: list[dict[str, Any]] = []
     preload_calls: list[tuple[str, str, list[str] | None]] = []
+    preload_error: RuntimeError | None = RuntimeError("thread already has an active writer")
 
     async def _fake_preload_thread(
         transport: str,
@@ -536,6 +539,8 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
             "stale bridge state must be cleared until the new app-server has "
             "loaded the resume thread"
         )
+        if preload_error is not None:
+            raise preload_error
         preload_calls.append((transport, loaded_thread_id, terminal_launch_args))
 
     async def _fake_forward_known_thread(**kwargs: Any) -> None:
@@ -566,6 +571,18 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
         ),
     )
 
+    with pytest.raises(RuntimeError, match="active writer"):
+        await _auto_create_codex_terminal(
+            session_id,
+            _FakeResourceRegistry(),  # type: ignore[arg-type]
+            lambda _sid, event: published_events.append(event),
+            agent_spec=agent_spec,
+            server_client=_SnapshotServerClient(),  # type: ignore[arg-type]
+        )
+    assert app_server.close_calls == 1
+    assert session_id not in runner_app_mod._AUTO_CODEX_APP_SERVERS
+
+    preload_error = None
     try:
         terminal_view = await _auto_create_codex_terminal(
             session_id,
@@ -591,15 +608,15 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     assert len(launched_specs) == 1
     launched = launched_specs[0]
     assert launched.command == "/opt/codex/bin/codex"
-    assert launched.args[0] == "--dangerously-bypass-hook-trust"
-    assert launched.args[1:4] == [
+    assert "--dangerously-bypass-hook-trust" not in launched.args
+    assert launched.args[0:3] == [
         "--config",
         "approval_policy=on-request",
         "resume",
     ]
-    assert launched.args[4] == "--remote"
-    assert launched.args[5].startswith("ws://127.0.0.1:")
-    assert launched.args[6] == thread_id
+    assert launched.args[3] == "--remote"
+    assert launched.args[4].startswith("ws://127.0.0.1:")
+    assert launched.args[5] == thread_id
     assert launched.env["OPENAI_API_KEY"] == "sk-test"
     assert "IGNORED" not in launched.env
     assert launched.env["CODEX_HOME"] == str(app_server.codex_home)
@@ -1423,11 +1440,9 @@ async def test_auto_create_codex_terminal_uses_worktree_workspace_not_bundle_dir
     assert launched_sandbox is not None and launched_sandbox.type == "none"
     assert launch_captured["parent_os_env"] is codex_os_env
 
-    # A transient / unparseable version probe must not strand a runner-owned
-    # session behind Codex's terminal-only hook review screen. Omnigent's
-    # supported Codex floor is newer than the release that added this flag.
+    # Hook trust remains interactive even when the Codex version is unknown.
     assert app_server.codex_cli_version is None
-    assert launch_captured["spec"].args[0] == "--dangerously-bypass-hook-trust"
+    assert "--dangerously-bypass-hook-trust" not in launch_captured["spec"].args
 
 
 @pytest.mark.asyncio
@@ -3048,7 +3063,8 @@ async def test_codex_discover_thread_and_forward_cleans_up_on_discovery_failure(
         async def close(self) -> None:
             closed["app_server"] = True
 
-    async def _raise_no_thread(*_args: object, **_kwargs: object) -> str:
+    async def _raise_no_thread(_client: object, *, timeout: float | None) -> str:
+        assert timeout is None
         raise TimeoutError("no thread/started observed")
 
     # The helper lazily imports wait_for_thread_started from the forwarder
@@ -3065,6 +3081,7 @@ async def test_codex_discover_thread_and_forward_cleans_up_on_discovery_failure(
             codex_home=tmp_path / "codex-home",
             event_client=_Client(),  # type: ignore[arg-type]
             routing_summary="provider 'test' (model=gpt-test)",
+            publish_event=lambda _session_id, _event: None,
         )
     finally:
         _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
@@ -3074,6 +3091,68 @@ async def test_codex_discover_thread_and_forward_cleans_up_on_discovery_failure(
     assert closed["client"] is True
     assert closed["app_server"] is True
     assert session_id not in _AUTO_CODEX_APP_SERVERS
+
+
+@pytest.mark.asyncio
+async def test_codex_discovery_surfaces_terminal_setup_wait_in_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A cold TUI dialog must replace chat's unexplained Working spinner."""
+    from omnigent import codex_native_forwarder
+    from omnigent.runner.app import (
+        _AUTO_CODEX_APP_SERVERS,
+        _codex_discover_thread_and_forward,
+    )
+    from omnigent.runner.native import orchestration as native_orchestration
+
+    class _Client:
+        async def close(self) -> None:
+            return None
+
+    class _AppServer:
+        async def close(self) -> None:
+            return None
+
+    notice_seen = asyncio.Event()
+    events: list[dict[str, object]] = []
+
+    def _publish(_session_id: str, event: dict[str, object]) -> None:
+        events.append(event)
+        if event.get("blocked_on") == "Codex setup in Terminal":
+            notice_seen.set()
+
+    async def _end_after_notice(_client: object, *, timeout: float | None) -> str:
+        assert timeout is None
+        await notice_seen.wait()
+        raise RuntimeError("event stream ended")
+
+    monkeypatch.setattr(codex_native_forwarder, "wait_for_thread_started", _end_after_notice)
+    monkeypatch.setattr(native_orchestration, "_CODEX_THREAD_WAIT_NOTICE_DELAY_S", 0.0)
+
+    session_id = "86c52de207c7473788730cc393ebd100"
+    _AUTO_CODEX_APP_SERVERS[session_id] = _AppServer()
+    try:
+        await _codex_discover_thread_and_forward(
+            session_id=session_id,
+            bridge_dir=tmp_path,
+            codex_ws_url="ws://127.0.0.1:1",
+            codex_home=tmp_path / "codex-home",
+            event_client=_Client(),  # type: ignore[arg-type]
+            routing_summary="provider 'test' (model=gpt-test)",
+            publish_event=_publish,
+        )
+    finally:
+        _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
+
+    assert events == [
+        {
+            "type": "session.status",
+            "status": "running",
+            "blocked_on": "Codex setup in Terminal",
+        },
+        {"type": "session.status", "status": "running"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -3128,6 +3207,7 @@ async def test_codex_discover_thread_and_forward_records_accurate_startup_error(
             codex_home=tmp_path / "codex-home",
             event_client=_Client(),  # type: ignore[arg-type]
             routing_summary="provider 'test' (model=gpt-test)",
+            publish_event=lambda _session_id, _event: None,
         )
     finally:
         _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
