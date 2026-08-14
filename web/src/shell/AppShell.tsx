@@ -81,6 +81,7 @@ import {
 } from "./TerminalFirstContext";
 import { TerminalsPanel } from "./TerminalsPanel";
 import { TodoPanel } from "./TodoPanel";
+import { AnnouncementsBanner } from "@/components/AnnouncementsBanner";
 import { PermissionsModal } from "@/components/PermissionsModal";
 import { KeyboardShortcutsDialog } from "@/components/KeyboardShortcutsDialog";
 import { CommandPalette } from "./CommandPalette";
@@ -1342,7 +1343,7 @@ export function AppShell() {
         "hiddenInset"), so the web layer drops the sidebar below the
         traffic lights and supplies a drag strip in the freed space. */}
           <div
-            className="app-shell relative flex h-dvh bg-sidebar text-foreground"
+            className="app-shell relative flex h-dvh flex-col bg-sidebar text-foreground"
             data-electron-mac={isMacElectronShell() ? "true" : undefined}
             data-ios-native={isIOSShell() ? "true" : undefined}
             data-android-native={isAndroidShell() ? "true" : undefined}
@@ -1358,18 +1359,25 @@ export function AppShell() {
             {isMacElectronShell() && (
               <TitleBarServerPicker threadTitle={activeSession?.title ?? activeConv?.title} />
             )}
-            <Sidebar
-              open={sidebarOpen}
-              dragProgress={sidebarDragProgress}
-              onClose={() => setSidebarOpen(false)}
-              onOpenSearch={() => setCommandPaletteOpen(true)}
-            />
+            {/* Server-wide announcements (admin-configured). Full-width strips
+          above the sidebar + content row; renders nothing when there are no
+          active, non-dismissed notices, so the layout is unchanged otherwise. */}
+            <AnnouncementsBanner />
+            {/* Sidebar + content row. Sits below the announcements banner (the
+          app shell is a column), so the two share the remaining height. */}
+            <div className="relative flex min-h-0 min-w-0 flex-1">
+              <Sidebar
+                open={sidebarOpen}
+                dragProgress={sidebarDragProgress}
+                onClose={() => setSidebarOpen(false)}
+                onOpenSearch={() => setCommandPaletteOpen(true)}
+              />
 
-            {/* Content region (everything right of the sidebar): a relative
+              {/* Content region (everything right of the sidebar): a relative
           flex row holding the chat+workspace group and the push panels
           as siblings. */}
-            <div className="relative flex min-h-0 min-w-0 flex-1">
-              {/* Chat + workspace group. The full-width header overlay is
+              <div className="relative flex min-h-0 min-w-0 flex-1">
+                {/* Chat + workspace group. The full-width header overlay is
             scoped to this group, so it spans the chat *and* the right
             workspace card but never reaches over the push panels (which
             render their own top chrome as siblings outside the group).
@@ -1377,73 +1385,73 @@ export function AppShell() {
             over — *except* in terminal-first sessions, where the terminal
             renders inline in main (via MainTerminalView) and the
             workspace card stays visible alongside. */}
-              <div
-                className={cn(
-                  "relative flex min-h-0 min-w-0 flex-1",
-                  panelOpen && !terminalFirst && "md:hidden",
-                )}
-                style={
-                  {
-                    "--workspace-panel-offset": workspacePanelVisible
-                      ? `${inlinePanelWidth + 16}px`
-                      : "0px",
-                  } as CSSProperties
-                }
-              >
-                <ChatHeader
-                  sidebarOpen={sidebarOpen}
-                  onOpenSidebar={() => setSidebarOpen(true)}
-                  isChildSession={isChildSession}
-                  parentSessionId={activeSession?.parentSessionId}
-                  conversationId={conversationId}
-                  boundAgent={boundAgent}
-                  canShare={canShare}
-                  shareDisabled={shareDisabled}
-                  shareDisabledReason={shareDisabledReason}
-                  onShare={() => setShareOpen(true)}
-                  hasAgentInfo={hasAgentInfo}
-                  onAgentInfo={() => setAgentInfoOpen(true)}
-                  hasHeaderMenu={hasHeaderMenu}
-                  showFilesPanel={showFilesPanel}
-                  hasRailContent={hasRailContent}
-                  rightPanelOpen={rightPanelOpen}
-                  onToggleRightPanel={toggleRightPanel}
-                  mobileMenu={{
-                    fileViewerOpen,
-                    panelOpen,
-                    terminalFirst,
-                    executionLogsOpen,
-                    filesPanelOpen,
-                    subagentsPanelOpen,
-                    shellsPanelOpen,
-                    todosPanelOpen,
-                    hideTerminalsTab,
-                    // Mobile: reachable when a shell exists OR the agent
-                    // declares shell access (so the drawer's "+ New shell" row
-                    // can create the first one). Desktop rail tab stays gated
-                    // on an existing shell (railTabsAvailable.terminals).
-                    showShellsTab:
-                      !hideTerminalsTab && (railTerminals.length > 0 || agentSupportsShells),
-                    terminalsLength: railTerminals.length,
-                    todosSupported,
-                    todosCompleted,
-                    todosTotal: todos.length,
-                    debugMode,
-                    changedCount,
-                    subagentsWorking,
-                    agentCount,
-                    onOpenFiles: openFilesPanel,
-                    onOpenShells: openShellsPanel,
-                    onOpenSubagents: openSubagentsPanel,
-                    onOpenTodos: openTodosPanel,
-                    onOpenMainExecutionLog: openMainExecutionLog,
-                  }}
-                />
-                <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                  <Outlet />
-                </main>
+                <div
+                  className={cn(
+                    "relative flex min-h-0 min-w-0 flex-1",
+                    panelOpen && !terminalFirst && "md:hidden",
+                  )}
+                  style={
+                    {
+                      "--workspace-panel-offset": workspacePanelVisible
+                        ? `${inlinePanelWidth + 16}px`
+                        : "0px",
+                    } as CSSProperties
+                  }
+                >
+                  <ChatHeader
+                    sidebarOpen={sidebarOpen}
+                    onOpenSidebar={() => setSidebarOpen(true)}
+                    isChildSession={isChildSession}
+                    parentSessionId={activeSession?.parentSessionId}
+                    conversationId={conversationId}
+                    boundAgent={boundAgent}
+                    canShare={canShare}
+                    shareDisabled={shareDisabled}
+                    shareDisabledReason={shareDisabledReason}
+                    onShare={() => setShareOpen(true)}
+                    hasAgentInfo={hasAgentInfo}
+                    onAgentInfo={() => setAgentInfoOpen(true)}
+                    hasHeaderMenu={hasHeaderMenu}
+                    showFilesPanel={showFilesPanel}
+                    hasRailContent={hasRailContent}
+                    rightPanelOpen={rightPanelOpen}
+                    onToggleRightPanel={toggleRightPanel}
+                    mobileMenu={{
+                      fileViewerOpen,
+                      panelOpen,
+                      terminalFirst,
+                      executionLogsOpen,
+                      filesPanelOpen,
+                      subagentsPanelOpen,
+                      shellsPanelOpen,
+                      todosPanelOpen,
+                      hideTerminalsTab,
+                      // Mobile: reachable when a shell exists OR the agent
+                      // declares shell access (so the drawer's "+ New shell" row
+                      // can create the first one). Desktop rail tab stays gated
+                      // on an existing shell (railTabsAvailable.terminals).
+                      showShellsTab:
+                        !hideTerminalsTab && (railTerminals.length > 0 || agentSupportsShells),
+                      terminalsLength: railTerminals.length,
+                      todosSupported,
+                      todosCompleted,
+                      todosTotal: todos.length,
+                      debugMode,
+                      changedCount,
+                      subagentsWorking,
+                      agentCount,
+                      onOpenFiles: openFilesPanel,
+                      onOpenShells: openShellsPanel,
+                      onOpenSubagents: openSubagentsPanel,
+                      onOpenTodos: openTodosPanel,
+                      onOpenMainExecutionLog: openMainExecutionLog,
+                    }}
+                  />
+                  <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+                    <Outlet />
+                  </main>
 
-                {/* Right workspace card — gated on conversationId (panels have
+                  {/* Right workspace card — gated on conversationId (panels have
               no workspace to read without a session), default-open,
               hidden when any push panel takes the right side, *except* in
               terminal-first sessions where the terminal renders inline
@@ -1453,141 +1461,142 @@ export function AppShell() {
               rectangle (e.g. a no-filesystem agent with no terminals).
               Sits inside the group so the header overlay spans it; the
               push panels below sit outside the group. */}
-                {conversationId && workspacePanelVisible && (
-                  <WorkspacePanel
-                    conversationId={conversationId}
-                    width={inlinePanelWidth}
-                    inert={inlinePanelWidth === 0}
-                    handleProps={inlinePanelHandleProps}
-                    rightRailTab={rightRailTab}
-                    onRightRailTabChange={handleRightRailTabChange}
-                    showFilesPanel={showFilesPanel}
-                    showBrowserTab={railTabsAvailable.browser}
-                    changedCount={changedCount}
-                    showShellsTab={railTabsAvailable.terminals}
-                    terminalsLength={railTerminals.length}
-                    subagentsWorking={subagentsWorking}
-                    agentCount={agentCount}
-                    todosSupported={todosSupported}
-                    todosCompleted={todosCompleted}
-                    todosTotal={todos.length}
-                    rootSessionId={rootSessionId}
-                    selectedFilePath={selectedFilePath}
-                    openFiles={openFiles}
-                    openFileViewer={openFileViewer}
-                    onCloseFile={closeFile}
-                    onShowScopeView={showScopeView}
-                    onCommentsOpenChange={setFileViewerCommentsOpen}
-                    openTerminalTab={openTerminalTab}
-                    openTerminals={openTerminals}
-                    selectedTerminalKey={selectedTerminalKey}
-                    onCloseTerminal={closeTerminalTab}
-                    maximized={rightPanelMaximized}
-                    onToggleMaximized={toggleRightPanelMaximized}
-                    permissionLevel={permissionLevel}
-                    filesPanelSort={filesPanelSort}
-                    onSortChange={handleFilesSortChange}
-                    filesPanelFlatView={filesPanelFlatView}
-                    onFlatViewChange={handleFilesFlatViewChange}
-                    filesPanelShowHidden={filesPanelShowHidden}
-                    onShowHiddenChange={setFilesPanelShowHidden}
-                    liveness={liveness}
-                  />
-                )}
-              </div>
+                  {conversationId && workspacePanelVisible && (
+                    <WorkspacePanel
+                      conversationId={conversationId}
+                      width={inlinePanelWidth}
+                      inert={inlinePanelWidth === 0}
+                      handleProps={inlinePanelHandleProps}
+                      rightRailTab={rightRailTab}
+                      onRightRailTabChange={handleRightRailTabChange}
+                      showFilesPanel={showFilesPanel}
+                      showBrowserTab={railTabsAvailable.browser}
+                      changedCount={changedCount}
+                      showShellsTab={railTabsAvailable.terminals}
+                      terminalsLength={railTerminals.length}
+                      subagentsWorking={subagentsWorking}
+                      agentCount={agentCount}
+                      todosSupported={todosSupported}
+                      todosCompleted={todosCompleted}
+                      todosTotal={todos.length}
+                      rootSessionId={rootSessionId}
+                      selectedFilePath={selectedFilePath}
+                      openFiles={openFiles}
+                      openFileViewer={openFileViewer}
+                      onCloseFile={closeFile}
+                      onShowScopeView={showScopeView}
+                      onCommentsOpenChange={setFileViewerCommentsOpen}
+                      openTerminalTab={openTerminalTab}
+                      openTerminals={openTerminals}
+                      selectedTerminalKey={selectedTerminalKey}
+                      onCloseTerminal={closeTerminalTab}
+                      maximized={rightPanelMaximized}
+                      onToggleMaximized={toggleRightPanelMaximized}
+                      permissionLevel={permissionLevel}
+                      filesPanelSort={filesPanelSort}
+                      onSortChange={handleFilesSortChange}
+                      filesPanelFlatView={filesPanelFlatView}
+                      onFlatViewChange={handleFilesFlatViewChange}
+                      filesPanelShowHidden={filesPanelShowHidden}
+                      onShowHiddenChange={setFilesPanelShowHidden}
+                      liveness={liveness}
+                    />
+                  )}
+                </div>
 
-              {/* Push panels — flex siblings to main, animate width. Only one is open at a time.
+                {/* Push panels — flex siblings to main, animate width. Only one is open at a time.
           Terminal-first sessions render the terminal inline inside main
           (via MainTerminalView in ChatPage) and never mount the drawer. */}
-              {conversationId && !terminalFirst && (
-                <TerminalsPanel
-                  open={panelOpen}
-                  conversationId={conversationId}
-                  initialTerminalKey={panelInitialKey}
-                  // No neighbor to resize against (chat is hidden, FilesPanel
-                  // owns its own width) — grow via flex-1.
-                  fluid={panelOpen}
-                  // Non-owners attach read-only: a shared PTY can't attribute
-                  // input per-user, so only the owner may type (server-enforced).
-                  readOnly={!isOwnerLevel(permissionLevel)}
-                  onClose={() => setPanelInitialKey(null)}
-                />
-              )}
-              {conversationId && (
-                <ExecutionLogsPanel
-                  open={executionLogsOpen}
-                  conversationId={conversationId}
-                  initialKey={executionLogsKey}
-                  onClose={() => setExecutionLogsKey(null)}
-                />
-              )}
-              {conversationId && showFilesPanel && (
-                <FilesPanelDrawer
-                  open={filesPanelOpen}
-                  onClose={() => setFilesPanelOpen(false)}
-                  onFileSelect={openFileViewer}
-                  flatView={filesPanelFlatView}
-                  onFlatViewChange={handleFilesFlatViewChange}
-                  showHidden={filesPanelShowHidden}
-                  onShowHiddenChange={setFilesPanelShowHidden}
-                  sort={filesPanelSort}
-                  onSortChange={handleFilesSortChange}
-                />
-              )}
-              {/* Mobile-only full-screen drawers for the rail tabs that have no
+                {conversationId && !terminalFirst && (
+                  <TerminalsPanel
+                    open={panelOpen}
+                    conversationId={conversationId}
+                    initialTerminalKey={panelInitialKey}
+                    // No neighbor to resize against (chat is hidden, FilesPanel
+                    // owns its own width) — grow via flex-1.
+                    fluid={panelOpen}
+                    // Non-owners attach read-only: a shared PTY can't attribute
+                    // input per-user, so only the owner may type (server-enforced).
+                    readOnly={!isOwnerLevel(permissionLevel)}
+                    onClose={() => setPanelInitialKey(null)}
+                  />
+                )}
+                {conversationId && (
+                  <ExecutionLogsPanel
+                    open={executionLogsOpen}
+                    conversationId={conversationId}
+                    initialKey={executionLogsKey}
+                    onClose={() => setExecutionLogsKey(null)}
+                  />
+                )}
+                {conversationId && showFilesPanel && (
+                  <FilesPanelDrawer
+                    open={filesPanelOpen}
+                    onClose={() => setFilesPanelOpen(false)}
+                    onFileSelect={openFileViewer}
+                    flatView={filesPanelFlatView}
+                    onFlatViewChange={handleFilesFlatViewChange}
+                    showHidden={filesPanelShowHidden}
+                    onShowHiddenChange={setFilesPanelShowHidden}
+                    sort={filesPanelSort}
+                    onSortChange={handleFilesSortChange}
+                  />
+                )}
+                {/* Mobile-only full-screen drawers for the rail tabs that have no
           desktop push panel of their own. `MobilePanelDrawer` is `md:hidden`,
           so these never collide with the desktop rail; they're opened from
           the session-menu FAB above. */}
-              {conversationId && rootSessionId && (
-                <MobilePanelDrawer
-                  open={subagentsPanelOpen}
-                  title="Agents"
-                  onClose={() => setSubagentsPanelOpen(false)}
-                  testId="subagents-panel-drawer"
-                >
-                  <SubagentsPanel conversationId={conversationId} rootSessionId={rootSessionId} />
-                </MobilePanelDrawer>
-              )}
-              {conversationId && (
-                <MobilePanelDrawer
-                  open={shellsPanelOpen}
-                  title="Shells"
-                  onClose={() => setShellsPanelOpen(false)}
-                  testId="shells-panel-drawer"
-                >
-                  <InlineTerminalsSection
-                    conversationId={conversationId}
-                    onExpand={openTerminalsPanel}
-                    // Mobile has no tab strip "+" menu, so the drawer carries
-                    // the "+ New shell" create row.
-                    showNewShell
-                  />
-                </MobilePanelDrawer>
-              )}
-              {conversationId && (
-                <MobilePanelDrawer
-                  open={todosPanelOpen}
-                  title="Tasks"
-                  onClose={() => setTodosPanelOpen(false)}
-                  testId="todos-panel-drawer"
-                >
-                  <TodoPanel frameless />
-                </MobilePanelDrawer>
-              )}
-              {/* Mobile-only push panel — on desktop the viewer lives inside the inline aside. */}
-              {conversationId && selectedFilePath !== null && (
-                <div className="md:hidden">
-                  <FileViewer
-                    open
-                    conversationId={conversationId}
-                    path={selectedFilePath}
-                    onClose={closeFileViewer}
-                    onNavigateTo={openFileViewer}
-                    permissionLevel={permissionLevel}
-                    sort={filesPanelSort}
-                  />
-                </div>
-              )}
+                {conversationId && rootSessionId && (
+                  <MobilePanelDrawer
+                    open={subagentsPanelOpen}
+                    title="Agents"
+                    onClose={() => setSubagentsPanelOpen(false)}
+                    testId="subagents-panel-drawer"
+                  >
+                    <SubagentsPanel conversationId={conversationId} rootSessionId={rootSessionId} />
+                  </MobilePanelDrawer>
+                )}
+                {conversationId && (
+                  <MobilePanelDrawer
+                    open={shellsPanelOpen}
+                    title="Shells"
+                    onClose={() => setShellsPanelOpen(false)}
+                    testId="shells-panel-drawer"
+                  >
+                    <InlineTerminalsSection
+                      conversationId={conversationId}
+                      onExpand={openTerminalsPanel}
+                      // Mobile has no tab strip "+" menu, so the drawer carries
+                      // the "+ New shell" create row.
+                      showNewShell
+                    />
+                  </MobilePanelDrawer>
+                )}
+                {conversationId && (
+                  <MobilePanelDrawer
+                    open={todosPanelOpen}
+                    title="Tasks"
+                    onClose={() => setTodosPanelOpen(false)}
+                    testId="todos-panel-drawer"
+                  >
+                    <TodoPanel frameless />
+                  </MobilePanelDrawer>
+                )}
+                {/* Mobile-only push panel — on desktop the viewer lives inside the inline aside. */}
+                {conversationId && selectedFilePath !== null && (
+                  <div className="md:hidden">
+                    <FileViewer
+                      open
+                      conversationId={conversationId}
+                      path={selectedFilePath}
+                      onClose={closeFileViewer}
+                      onNavigateTo={openFileViewer}
+                      permissionLevel={permissionLevel}
+                      sort={filesPanelSort}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </div>
           {conversationId && (

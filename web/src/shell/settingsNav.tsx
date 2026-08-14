@@ -13,6 +13,7 @@ import {
   DownloadIcon,
   GitBranchIcon,
   KeyboardIcon,
+  MegaphoneIcon,
   PaletteIcon,
   PanelRightOpenIcon,
   Share2Icon,
@@ -38,6 +39,7 @@ export type SettingsSectionId =
   | "members"
   | "policies"
   | "sharing"
+  | "announcements"
   | "archived"
   | "cli"
   | "updates";
@@ -50,6 +52,7 @@ const SECTION_IDS: readonly SettingsSectionId[] = [
   "members",
   "policies",
   "sharing",
+  "announcements",
   "archived",
   "cli",
   "updates",
@@ -122,6 +125,10 @@ export function settingsNavGroups(
     if (!isSingleUser) adminItems.push({ id: "members", label: "Members", icon: UsersIcon });
     adminItems.push({ id: "policies", label: "Policies", icon: ShieldCheckIcon });
     if (!isSingleUser) adminItems.push({ id: "sharing", label: "Sharing", icon: Share2Icon });
+    // Announcements stays even in single-user mode — the top-bar banner still
+    // renders for a solo user, so managing it is meaningful (unlike Members /
+    // Sharing, which only concern other users).
+    adminItems.push({ id: "announcements", label: "Announcements", icon: MegaphoneIcon });
     groups.push({ title: "Admin", items: adminItems });
   }
   groups.push({

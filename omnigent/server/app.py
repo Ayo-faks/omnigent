@@ -58,6 +58,7 @@ from omnigent.server.performance_metrics import (
     set_request_session_id_for_access_log,
     set_request_user_agent_for_access_log,
 )
+from omnigent.server.routes.announcements import create_announcements_router
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
@@ -2042,6 +2043,18 @@ def create_app(
         ),
         prefix="/v1",
         tags=["sharing"],
+    )
+
+    # Server-wide announcements shown in the app's top bar. Always mounted:
+    # GET /v1/announcements is public (the banner renders without an admin
+    # session) and the admin editor endpoints self-gate on is_admin.
+    app.include_router(
+        create_announcements_router(
+            auth_provider=auth_provider,
+            permission_store=permission_store,
+        ),
+        prefix="/v1",
+        tags=["announcements"],
     )
 
     # First-class projects (owner-private session containers). Mounted only
