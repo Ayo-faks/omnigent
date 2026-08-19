@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Simulates the host workspace's own tab icon (e.g. the Databricks
+      favicon): the embed island must replace it while mounted and restore it
+      when the host navigates away. The 404 on the .ico itself is fine — the
+      tests only read the link element's attributes.
+    -->
+    <link rel="icon" type="image/x-icon" href="/host-favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host workspace shell</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/embed-harness/main.tsx"></script>
+  </body>
+</html>
