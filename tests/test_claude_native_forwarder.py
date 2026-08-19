@@ -8097,6 +8097,89 @@ async def test_subagent_stays_running_until_stop_hook(tmp_path: Path) -> None:
     assert all(path.endswith("/conv_child_plan/events") for path, _ in statuses)
 
 
+@pytest.mark.asyncio
+async def test_subagent_settles_on_backstop_when_stop_hook_never_fires(tmp_path: Path) -> None:
+    """
+    Without any ``SubagentStop`` edge, the quiescence backstop still settles.
+
+    Covers the degraded path: a Claude build that never fires the event, a
+    dropped hook write, or a hook command that failed. The child must not
+    stay ``running`` forever — the parent row would spin with nothing
+    working — so the widened timer remains the floor under a missing hook.
+
+    :param tmp_path: Pytest temp dir for the bridge dir and transcript.
+    """
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+    _seed_subagent_on_disk(
+        transcript_path=transcript_path,
+        subagent_id="nohook1",
+        agent_type="Explore",
+        description="no stop hook available",
+        tool_use_id="toolu_nohook",
+        transcript_records=[
+            {
+                "isSidechain": True,
+                "type": "assistant",
+                "uuid": "sa-assistant-nohook",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            },
+        ],
+    )
+    statuses: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Accept every POST, recording status edges.
+
+        :param request: Request issued by the forwarder.
+        :returns: Canned Omnigent response.
+        """
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("type") == "external_subagent_start":
+            return httpx.Response(200, json={"child_session_id": "conv_child_nohook"})
+        if body.get("type") == "external_session_status":
+            statuses.append(body["data"]["status"])
+        return httpx.Response(202, json={})
+
+    async def _poll(
+        client: httpx.AsyncClient, state: forwarder.SubagentForwardState
+    ) -> forwarder.SubagentForwardState:
+        return await forwarder._forward_available_subagents(
+            client=client,
+            parent_session_id="conv_parent",
+            bridge_dir=bridge_dir,
+            transcript_path=transcript_path,
+            state=state,
+            agent_name="claude-native-ui",
+            start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            # Empty for every poll: the hook edge never arrives.
+            stopped_subagent_ids=set(),
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://ap",
+    ) as client:
+        state = await _poll(client, forwarder.SubagentForwardState(subagents={}))
+        assert statuses == ["running"]
+        # Quiet past the backstop window with no hook edge in sight.
+        state = forwarder.SubagentForwardState(
+            subagents={
+                "nohook1": dataclasses.replace(
+                    state.subagents["nohook1"],
+                    last_activity_ts=time.time() - (forwarder._SUBAGENT_IDLE_QUIESCENCE_S + 1.0),
+                )
+            }
+        )
+        await _poll(client, state)
+
+    assert statuses == ["running", "idle"]
+
+
 def test_subagent_stop_hook_record_carries_agent_id(tmp_path: Path) -> None:
     """
     A ``SubagentStop`` hook record exposes Claude's ``agent_id``.
