@@ -1,17 +1,7 @@
 import type { NativeModelOption } from "./types";
 
-/**
- * Codex efforts Omnigent cannot deliver as themselves, and the value it
- * sends instead.
- *
- * Codex's ``model/list`` advertises ``ultra`` (the Sol "ultra" mode) and the
- * retired ``max`` alongside the real reasoning tiers, but the OpenAI
- * Responses ladder tops out at ``xhigh``: the server coerces both to
- * ``xhigh`` before the wire (``omnigent/reasoning_effort.py`` EFFORT_ALIASES,
- * applied in ``codex_native_executor._codex_session_overrides``). Offering
- * them as distinct picks is a lie — selecting "ultra" silently lands on
- * ``xhigh`` — so the picker de-aliases them to what a pick actually delivers.
- */
+// Efforts the server coerces before the wire (reasoning_effort.py EFFORT_ALIASES):
+// the picker folds them so a pick means what it shows.
 const CODEX_EFFORT_ALIASES: Readonly<Record<string, string>> = {
   ultra: "xhigh",
   max: "xhigh",
@@ -66,8 +56,6 @@ export function codexEffortLevelsForModel(
     null;
   const efforts = selected?.supportedReasoningEfforts ?? [];
   return Array.from(
-    // De-alias before de-duping so an advertised ``ultra``/``max`` folds into
-    // the ``xhigh`` a pick actually delivers, rather than showing a ghost tier.
     new Set(
       efforts
         .map((option) => option.reasoningEffort)

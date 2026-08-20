@@ -68,10 +68,8 @@ describe("effortLevelsForConv", () => {
   });
 
   it("folds Codex ultra/max into xhigh so the picker offers no ghost tier", () => {
-    // Codex's model/list advertises the ``ultra`` mode (and retired ``max``)
-    // alongside the real tiers, but the server coerces both to ``xhigh``
-    // before the wire. Offering them as distinct picks would silently land
-    // the session on xhigh; de-aliasing keeps the picker honest.
+    // ultra/max are coerced to xhigh server-side, so the picker must not
+    // offer them as distinct tiers.
     const conv = { labels: { "omnigent.wrapper": "codex-native-ui" } };
     const solOptions: NativeModelOption[] = [
       {
