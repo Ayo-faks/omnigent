@@ -67,6 +67,37 @@ describe("effortLevelsForConv", () => {
     expect(effortLevelsForConv(conv, [], null)).toEqual([]);
   });
 
+  it("folds Codex ultra/max into xhigh so the picker offers no ghost tier", () => {
+    // Codex's model/list advertises the ``ultra`` mode (and retired ``max``)
+    // alongside the real tiers, but the server coerces both to ``xhigh``
+    // before the wire. Offering them as distinct picks would silently land
+    // the session on xhigh; de-aliasing keeps the picker honest.
+    const conv = { labels: { "omnigent.wrapper": "codex-native-ui" } };
+    const solOptions: NativeModelOption[] = [
+      {
+        id: "gpt-5.6-sol",
+        model: "databricks-gpt-5-6-sol",
+        displayName: "GPT-5.6-Sol",
+        defaultReasoningEffort: "xhigh",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "Low" },
+          { reasoningEffort: "medium", description: "Medium" },
+          { reasoningEffort: "high", description: "High" },
+          { reasoningEffort: "xhigh", description: "Extra high" },
+          { reasoningEffort: "max", description: "Max" },
+          { reasoningEffort: "ultra", description: "Ultra" },
+        ],
+        isDefault: true,
+      },
+    ];
+    expect(effortLevelsForConv(conv, solOptions, "gpt-5.6-sol")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+  });
+
   it("returns the default set when conv is null or labels are missing", () => {
     expect(effortLevelsForConv(null)).toEqual(["low", "medium", "high"]);
     expect(effortLevelsForConv(undefined)).toEqual(["low", "medium", "high"]);
