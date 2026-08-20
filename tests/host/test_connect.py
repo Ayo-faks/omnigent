@@ -59,6 +59,7 @@ from omnigent.host.frames import (
 from omnigent.host.identity import HostIdentity
 from omnigent.host.runner_zygote import ZygoteUnavailable
 from omnigent.runner.identity import (
+    RUNNER_AUTH_TOKEN_REFRESH_FILE_ENV_VAR,
     RUNNER_DELEGATED_AUTH_ENV_VAR,
     RUNNER_ID_ENV_VAR,
     RUNNER_INITIAL_AUTH_TOKEN_ENV_VAR,
@@ -625,6 +626,9 @@ def _cleanup_host(host: HostProcess) -> None:
     :param host: The host process under test.
     """
     host._cleanup_runners()
+    host._cleanup_auth_refresh_file()
+    if host._auth_refresh_task is not None:
+        host._auth_refresh_task.cancel()
     for task in host._watcher_tasks:
         task.cancel()
 
@@ -713,6 +717,84 @@ async def test_handle_launch_spawns_subprocess(
 
     # Clean up the spawned sleep process (and its exit watcher).
     _cleanup_host(host)
+
+
+async def test_handle_launch_publishes_and_injects_auth_refresh_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_handle_launch writes the host bearer to a 0600 refresh file and injects
+    its path.
+
+    This is the host-side half of the token-refresh channel: the runner
+    re-reads this file to recover after the bearer injected at spawn hits its
+    ~1h expiry, instead of wedging on a stale credential.
+    """
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
+    host = _make_host_process()
+    host._auth_token_factory = lambda: "host-bootstrap-bearer"
+    host._auth_token_factory_resolved = True
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    frame = HostLaunchRunnerFrame(
+        request_id="req_refresh",
+        binding_token="tok_refresh",
+        workspace=str(workspace),
+    )
+
+    spawned_env: dict[str, str] = {}
+    original_popen = subprocess.Popen
+
+    def _fake_popen(args: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        """Capture the runner env and spawn a harmless placeholder process."""
+        spawned_env.update(kwargs.get("env", {}))  # type: ignore[arg-type]
+        return original_popen(
+            ["sleep", "10"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+    with patch("omnigent.host.connect.subprocess.Popen", side_effect=_fake_popen):
+        result = await host._handle_launch(frame)
+
+    assert result.status == "launched", result.error
+
+    refresh_path = spawned_env.get(RUNNER_AUTH_TOKEN_REFRESH_FILE_ENV_VAR)
+    assert refresh_path, "runner env must carry the auth-refresh file path"
+    published = Path(refresh_path)
+    assert published.read_text() == "host-bootstrap-bearer"
+    # The bearer file must never be group- or world-readable.
+    assert (published.stat().st_mode & 0o077) == 0
+
+    _cleanup_host(host)
+    # Shutdown cleanup removes the published bearer file.
+    assert not published.exists()
+
+
+async def test_refresh_runner_auth_file_republishes_rotated_bearer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The periodic refresh rewrites the file with a newly-minted bearer.
+
+    This is what lets a live runner recover without a restart: the host
+    re-mints and republishes before the runner's injected bearer expires. When
+    the host credential rotates, the file must follow.
+    """
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
+    host = _make_host_process()
+    host._auth_token_factory = lambda: "bearer-v1"
+    host._auth_token_factory_resolved = True
+
+    path = host._ensure_runner_auth_refresh_file("bearer-v1")
+    assert path is not None and Path(path).read_text() == "bearer-v1"
+
+    # The host's Databricks credential rotates on its own refresh cycle; the
+    # next periodic publish must carry the new bearer through to the file.
+    host._auth_token_factory = lambda: "bearer-v2"
+    host._refresh_runner_auth_file()
+    assert Path(path).read_text() == "bearer-v2"
+
+    host._cleanup_auth_refresh_file()
 
 
 async def test_handle_launch_fails_for_bad_workspace() -> None:
