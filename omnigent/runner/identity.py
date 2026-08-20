@@ -77,8 +77,9 @@ RUNNER_AUTH_SECRET_ENV_VARS: frozenset[str] = frozenset(
     {
         RUNNER_INITIAL_AUTH_TOKEN_ENV_VAR,
         RUNNER_TUNNEL_BINDING_TOKEN_ENV_VAR,
-        # Not a secret value itself, but it points at the on-disk bearer file;
-        # stripping it keeps a child from reading the credential.
+        # Not a secret itself, but it points at the on-disk bearer file.
+        # Stripping it only withholds the pointer; the real boundary is the
+        # process uid, the same one that guards the CLI's own token cache.
         RUNNER_AUTH_TOKEN_REFRESH_FILE_ENV_VAR,
     }
 )

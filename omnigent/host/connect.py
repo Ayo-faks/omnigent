@@ -18,6 +18,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -631,24 +633,55 @@ _RUNNER_AUTH_REFRESH_INTERVAL_S = 60.0
 def _atomic_write_secret(path: Path, contents: str) -> None:
     """Write *contents* to *path* atomically with owner-only (0600) permissions.
 
-    The file is created 0600 from the first byte (never a wider-mode window)
-    and renamed into place so a concurrent reader never sees a partial write.
+    Each call writes its own unique 0600 temp file (never a wider-mode window,
+    never shared with a concurrent writer) and renames it into place, so a
+    reader sees either the previous contents or the new ones, never a partial
+    write. The temp file never outlives a failure.
 
     :param path: Destination file path.
     :param contents: Text to write (a bearer token).
     :returns: None.
     :raises OSError: On write or rename failure.
     """
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, tmp = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(contents)
+        os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
-    os.replace(tmp, path)
+
+
+# ``runner-auth-<pid>.token`` plus the ``.<random>.tmp`` a crashed write can
+# leave next to it; the pid names the host daemon that owned the file.
+_RUNNER_AUTH_FILE_RE = re.compile(r"^runner-auth-(\d+)\.token(?:\..*\.tmp)?$")
+
+
+def _sweep_dead_host_auth_files(base: Path) -> None:
+    """Delete runner-auth bearer files left behind by host daemons that died.
+
+    Shutdown removes a host's own file, but a killed or OOMed host leaves it
+    (with an expired bearer) on disk for good. Files whose owning pid is still
+    running — another live host on this machine — are left alone.
+
+    :param base: The ``<data-dir>/host`` directory holding the files.
+    :returns: None.
+    """
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        match = _RUNNER_AUTH_FILE_RE.match(entry.name)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        if pid == os.getpid() or _proc.process_alive(pid):
+            continue
+        with contextlib.suppress(OSError):
+            entry.unlink()
 
 
 def _build_runner_env(
@@ -906,6 +939,11 @@ class HostProcess:
         # :meth:`_auth_refresh_loop`; removed on shutdown.
         self._auth_refresh_path: Path | None = None
         self._auth_refresh_task: asyncio.Task[None] | None = None
+        # Launches and the refresh tick both publish from worker threads;
+        # the lock serializes them and the flag fences out a tick that is
+        # still in flight when shutdown removes the file.
+        self._auth_refresh_lock = threading.Lock()
+        self._auth_refresh_closed = False
         # Number of host-owned ``subprocess`` operations (e.g. the git worktree
         # commands in :mod:`omnigent.host.git_worktree`) currently in flight.
         # The orphan reaper skips its sweep while this is >0 so it never
@@ -2885,7 +2923,7 @@ class HostProcess:
                     await watcher
             if self._auth_refresh_task is not None:
                 self._auth_refresh_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                with contextlib.suppress(asyncio.CancelledError):
                     await self._auth_refresh_task
                 self._auth_refresh_task = None
             self._cleanup_auth_refresh_file()
@@ -3103,22 +3141,26 @@ class HostProcess:
 
         :param token: The host's current bearer to publish for its runners.
         :returns: The file path for runner-env injection, or ``None`` when the
-            file could not be written.
+            file could not be written or the host is already shutting down.
         """
-        try:
-            if self._auth_refresh_path is None:
-                from omnigent.process_logging import data_dir
+        with self._auth_refresh_lock:
+            if self._auth_refresh_closed:
+                return None
+            try:
+                if self._auth_refresh_path is None:
+                    from omnigent.process_logging import data_dir
 
-                base = data_dir() / "host"
-                base.mkdir(parents=True, exist_ok=True)
-                # The pid keeps concurrent host daemons on one machine from
-                # clobbering each other's bearer file.
-                self._auth_refresh_path = base / f"runner-auth-{os.getpid()}.token"
-            _atomic_write_secret(self._auth_refresh_path, token)
-            return str(self._auth_refresh_path)
-        except OSError:
-            _logger.debug("Could not write runner-auth refresh file", exc_info=True)
-            return None
+                    base = data_dir() / "host"
+                    base.mkdir(parents=True, exist_ok=True)
+                    _sweep_dead_host_auth_files(base)
+                    # The pid keeps concurrent host daemons on one machine from
+                    # clobbering each other's bearer file.
+                    self._auth_refresh_path = base / f"runner-auth-{os.getpid()}.token"
+                _atomic_write_secret(self._auth_refresh_path, token)
+                return str(self._auth_refresh_path)
+            except OSError:
+                _logger.debug("Could not write runner-auth refresh file", exc_info=True)
+                return None
 
     async def _auth_refresh_loop(self) -> None:
         """Rewrite the shared runner-auth bearer file before the token expires.
@@ -3154,12 +3196,17 @@ class HostProcess:
     def _cleanup_auth_refresh_file(self) -> None:
         """Remove the shared runner-auth bearer file on shutdown.
 
+        Also closes publishing, so a refresh tick that is still running in
+        its worker thread cannot recreate the file afterwards.
+
         :returns: None.
         """
-        if self._auth_refresh_path is not None:
-            with contextlib.suppress(OSError):
-                self._auth_refresh_path.unlink()
-            self._auth_refresh_path = None
+        with self._auth_refresh_lock:
+            self._auth_refresh_closed = True
+            if self._auth_refresh_path is not None:
+                with contextlib.suppress(OSError):
+                    self._auth_refresh_path.unlink()
+                self._auth_refresh_path = None
 
     async def _serve_frames(self, ws: websockets.asyncio.client.ClientConnection) -> None:
         """Send the cached host hello, then service frames until disconnect."""

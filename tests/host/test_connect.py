@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import errno
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ from omnigent.host.connect import (
     HostConnectError,
     HostProcess,
     HostRetryableConnectionError,
+    _atomic_write_secret,
     _build_runner_env,
     _RunnerHandle,
     run_host_process,
@@ -635,6 +637,7 @@ def _cleanup_host(host: HostProcess) -> None:
 
 async def test_handle_launch_spawns_subprocess(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Verify that _handle_launch spawns a subprocess with the correct
@@ -643,6 +646,7 @@ async def test_handle_launch_spawns_subprocess(
     If the result status is not 'launched', the subprocess spawn
     failed or the result frame construction is wrong.
     """
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
     host = _make_host_process()
     host._auth_token_factory = lambda: "host-bootstrap-bearer"
     host._auth_token_factory_resolved = True
@@ -795,6 +799,67 @@ async def test_refresh_runner_auth_file_republishes_rotated_bearer(
     assert Path(path).read_text() == "bearer-v2"
 
     host._cleanup_auth_refresh_file()
+
+
+async def test_auth_refresh_publish_is_fenced_after_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh tick that lands after shutdown cleanup must not recreate the file.
+
+    The tick runs in a worker thread that cannot be cancelled, so without the
+    fence it could republish a bearer that outlives the host.
+    """
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
+    host = _make_host_process()
+    path = host._ensure_runner_auth_refresh_file("bearer-v1")
+    assert path is not None
+
+    host._cleanup_auth_refresh_file()
+
+    assert host._ensure_runner_auth_refresh_file("bearer-late") is None
+    assert not Path(path).exists()
+
+
+async def test_first_publish_sweeps_bearer_files_of_dead_hosts_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A killed host's leftover bearer file is reclaimed; a live host's is kept."""
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
+    base = tmp_path / "data" / "host"
+    base.mkdir(parents=True)
+    dead = base / "runner-auth-4242.token"
+    dead_tmp = base / "runner-auth-4242.token.abc123.tmp"
+    live = base / "runner-auth-4343.token"
+    for leftover in (dead, dead_tmp, live):
+        leftover.write_text("stale")
+    monkeypatch.setattr("omnigent.host.connect._proc.process_alive", lambda pid: pid == 4343)
+    host = _make_host_process()
+
+    path = host._ensure_runner_auth_refresh_file("bearer-v1")
+
+    assert path is not None and Path(path).read_text() == "bearer-v1"
+    assert Path(path).name == f"runner-auth-{os.getpid()}.token"
+    assert not dead.exists() and not dead_tmp.exists()
+    assert live.exists()
+    host._cleanup_auth_refresh_file()
+
+
+def test_atomic_write_secret_leaves_no_temp_on_failed_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed rename must not strand a 0600 temp copy of the bearer."""
+    target = tmp_path / "runner-auth-1.token"
+
+    def _boom(src: str, dst: str) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("omnigent.host.connect.os.replace", _boom)
+    with pytest.raises(OSError, match="replace failed"):
+        _atomic_write_secret(target, "bearer")
+    assert list(tmp_path.iterdir()) == []
 
 
 async def test_handle_launch_fails_for_bad_workspace() -> None:
@@ -4161,6 +4226,7 @@ def test_run_host_process_announces_session_log_dir_on_start(
 
 async def test_launch_cancelled_midspawn_does_not_leak_untracked_runner(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancelling a launch mid-spawn tears the runner down instead of leaking it.
 
@@ -4170,6 +4236,7 @@ async def test_launch_cancelled_midspawn_does_not_leak_untracked_runner(
     would retain forever). The spawn is shielded and the abandoned process is
     terminated.
     """
+    monkeypatch.setenv("OMNIGENT_DATA_DIR", str(tmp_path / "data"))
     host = _make_host_process()
     host._auth_token_factory = lambda: "host-bootstrap-bearer"
     host._auth_token_factory_resolved = True
