@@ -4151,7 +4151,24 @@ function ProjectFolderMenu({
                 </PopoverTrigger>
                 <PopoverContent
                   align="start"
-                  className="w-auto overflow-hidden p-0"
+                  // Publish the collision-aware available viewport height (Radix
+                  // exposes it as a CSS var), less the optional "Remove icon"
+                  // header and capped at the picker's natural size, so the
+                  // .emoji-picker-popover rule in index.css shrinks emoji-mart to
+                  // fit — it then scrolls its grid internally (nav + search
+                  // pinned) instead of clipping on short screens.
+                  collisionPadding={8}
+                  style={
+                    {
+                      "--emoji-picker-height": `min(420px, calc(var(--radix-popover-content-available-height) - ${displayIcon ? "38px" : "0px"}))`,
+                    } as CSSProperties
+                  }
+                  className="emoji-picker-popover flex max-h-[var(--radix-popover-content-available-height)] w-auto flex-col overflow-hidden p-0"
+                  // The rename Dialog's scroll lock (react-remove-scroll)
+                  // preventDefaults wheel events over the picker — it can't see
+                  // emoji-mart's scroll region inside shadow DOM. Stop the wheel
+                  // from reaching the document-level lock so the grid scrolls.
+                  onWheel={(e) => e.stopPropagation()}
                   // Nested in the rename Dialog, emoji-mart's own focus handling
                   // swallows Radix's default outside-pointer dismissal, so a
                   // click elsewhere in the modal wouldn't close the picker.
@@ -4159,7 +4176,7 @@ function ProjectFolderMenu({
                   onInteractOutside={() => setEmojiOpen(false)}
                 >
                   {displayIcon ? (
-                    <div className="border-b p-1">
+                    <div className="shrink-0 border-b p-1">
                       <Button
                         type="button"
                         variant="ghost"

@@ -5,7 +5,7 @@
 //     — pink folder by default, the chosen emoji in a gray tile once set, with
 //     hover-revealed edit/remove affordances (the OMNI-3742 design).
 
-import { lazy, Suspense, useState } from "react";
+import { type CSSProperties, lazy, Suspense, useState } from "react";
 import { useTheme } from "next-themes";
 import { FolderIcon, Loader2Icon, PencilIcon, Trash2Icon } from "lucide-react";
 
@@ -139,7 +139,16 @@ export function ProjectLandingIcon({
         </PopoverAnchor>
         <PopoverContent
           align="center"
-          className="w-auto border-0 bg-transparent p-0 shadow-none ring-0"
+          // Publish the collision-aware available viewport height (capped at the
+          // picker's natural size) so the .emoji-picker-popover rule in index.css
+          // shrinks emoji-mart to fit and it scrolls internally on short screens.
+          collisionPadding={8}
+          style={
+            {
+              "--emoji-picker-height": "min(420px, var(--radix-popover-content-available-height))",
+            } as CSSProperties
+          }
+          className="emoji-picker-popover w-auto border-0 bg-transparent p-0 shadow-none ring-0"
         >
           <EmojiPicker onSelect={save} />
         </PopoverContent>
