@@ -7,7 +7,7 @@
 
 import { lazy, Suspense, useState } from "react";
 import { useTheme } from "next-themes";
-import { FolderIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { FolderIcon, Loader2Icon, PencilIcon, Trash2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
@@ -124,11 +124,13 @@ export function ProjectLandingIcon({
             data-testid="project-icon-tile"
             onClick={openPicker}
             className={cn(
-              "flex size-14 items-center justify-center rounded-xl transition-colors",
+              "flex size-14 cursor-pointer items-center justify-center rounded-xl transition-colors",
               icon ? "bg-muted" : "bg-tag-pink",
             )}
           >
-            {icon ? (
+            {update.isPending ? (
+              <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+            ) : icon ? (
               <span className="text-[30px] leading-none">{icon}</span>
             ) : (
               <FolderIcon className="size-6 text-brand-accent" />
