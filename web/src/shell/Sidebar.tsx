@@ -4101,25 +4101,33 @@ function ProjectFolderMenu({
               const nameChanged = newName !== "" && newName !== projectName;
               const iconChanged = pendingIcon !== undefined && pendingIcon !== (savedIcon ?? null);
               try {
-                // Name first: it promotes a label-only folder and reconciles
-                // members, so a following icon write can target the same id
-                // (via name) instead of promoting a second time.
+                // Name first: it promotes a label-only folder (creating the
+                // first-class row) and reconciles members. Capture the resolved
+                // id so the icon write below targets that row — passing the
+                // stale render-time `null` would make the config write try to
+                // create the project a second time and 409 on the duplicate.
+                let targetId = projectId;
                 if (nameChanged) {
-                  await renameProject.mutateAsync({ id: projectId, oldName: projectName, newName });
+                  targetId = await renameProject.mutateAsync({
+                    id: projectId,
+                    oldName: projectName,
+                    newName,
+                  });
                 }
                 if (iconChanged) {
                   const next = { ...(iconConfig ?? {}) };
                   if (pendingIcon === null) delete next.icon;
                   else next.icon = pendingIcon;
                   await updateConfig.mutateAsync({
-                    id: projectId,
+                    id: targetId,
                     name: nameChanged ? newName : projectName,
                     config: next,
                   });
                 }
               } catch {
-                // Errors surface via the mutation state below; keep the modal
-                // open so the user can retry.
+                // Errors surface via the mutation state below. A rename that
+                // lands before a failed icon write is already persisted; only
+                // the icon needs retrying.
                 return;
               }
               setRenameOpen(false);
