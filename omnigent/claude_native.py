@@ -133,7 +133,7 @@ from omnigent.native_terminal import (
     terminal_attach_url as _attach_url,
 )
 from omnigent.onboarding.provider_config import SUBSCRIPTION_KIND
-from omnigent.terminals.ws_bridge import (
+from omnigent.terminals.close_codes import (
     WS_CLOSE_TERMINAL_DETACHED,
     WS_CLOSE_TERMINAL_NOT_FOUND,
 )

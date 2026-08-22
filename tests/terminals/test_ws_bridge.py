@@ -29,8 +29,8 @@ from pathlib import Path
 import pytest
 
 import omnigent.terminals.ws_bridge as ws_bridge
+from omnigent.terminals.close_codes import WS_CLOSE_TERMINAL_DETACHED
 from omnigent.terminals.ws_bridge import (
-    WS_CLOSE_TERMINAL_DETACHED,
     _check_pane_dead_definitive,
     _forward_pty_to_ws,
     _reap_tmux_attach_child,

@@ -158,9 +158,9 @@ from omnigent.server.schemas import (
 )
 from omnigent.spec.skill_sources import SkillSourceContext, resolve_harness_skills
 from omnigent.spec.types import AgentSpec, LocalToolInfo, SkillSpec
+from omnigent.terminals.close_codes import WS_CLOSE_TERMINAL_NOT_FOUND
 from omnigent.terminals.control_bridge import bridge_tmux_control_to_websocket
 from omnigent.terminals.ws_bridge import (
-    WS_CLOSE_TERMINAL_NOT_FOUND,
     bridge_tmux_pty_to_websocket,
 )
 from omnigent.tools.builtins.load_skill import (

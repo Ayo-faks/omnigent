@@ -68,10 +68,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 # backlog forms, and the forwarder collapses thousands of tiny per-line frames
 # into a few large ones. ``_coalesce_limit_after_input`` keeps the frame right
 # after a keystroke small so the echo stays on xterm's synchronous paint path.
-from omnigent.terminals.ws_bridge import (
+from omnigent.terminals.close_codes import (
     WS_CLOSE_INTERNAL_ERROR,
     WS_CLOSE_TERMINAL_DETACHED,
     WS_CLOSE_TERMINAL_NOT_FOUND,
+)
+from omnigent.terminals.ws_bridge import (
     _coalesce_limit_after_input,
     _forward_pty_to_ws,
     _monotonic,

@@ -54,6 +54,12 @@ if sys.platform != "win32":
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from omnigent.terminals.close_codes import (
+    WS_CLOSE_INTERNAL_ERROR,
+    WS_CLOSE_TERMINAL_DETACHED,
+    WS_CLOSE_TERMINAL_NOT_FOUND,
+)
+
 _logger = logging.getLogger(__name__)
 
 # 4 KiB matches tmux's own copy/redraw paths and is a good fit for
@@ -74,26 +80,6 @@ _PANE_LIVENESS_CHECK_CACHE_S: Final[float] = 0.1  # 100ms cache to avoid per-key
 
 _TMUX_ATTACH_WAIT_GRACE_S: Final[float] = 0.5
 _TMUX_ATTACH_WAIT_POLL_S: Final[float] = 0.02
-
-# Application-level WebSocket close codes (RFC 6455 reserves 4xxx).
-# 4404 tells the client's reconnect loop to stop — sent on a
-# pre-attach lookup miss and on PTY EOF when the tmux session is
-# genuinely gone (Claude exited / the session was killed).
-WS_CLOSE_TERMINAL_NOT_FOUND: Final[int] = 4404
-# 4405 means the user *detached* from tmux: the ``tmux attach`` child
-# exited (PTY EOF) but the session is still alive. The client must NOT
-# treat this as a terminal-gone exit: a detach misread as 4404 would
-# tear the whole session (and runner) down.
-WS_CLOSE_TERMINAL_DETACHED: Final[int] = 4405
-# 4400 is the WS analogue of the HTTP 400 ``wrong_replica`` (the 44xx band
-# mirrors HTTP 4xx, as 4500 mirrors 5xx): the runner tunnel is bound but not on
-# this replica (the ``?omnigent_slice_key=`` reached a replica that doesn't hold
-# the tunnel — the key doesn't match where it lives). Unlike 4500 (a genuine
-# failure), the request is valid and just misrouted: the client re-dials keyless
-# and reaches the replica the tunnel actually lives on. Mirrors the fetch path's
-# keyless re-address on a ``wrong_replica`` 400.
-WS_CLOSE_WRONG_REPLICA: Final[int] = 4400
-WS_CLOSE_INTERNAL_ERROR: Final[int] = 4500
 
 # A ``tmux has-session`` liveness probe is local and near-instant; cap
 # it so a wedged tmux server can't stall the bridge's teardown.
