@@ -81,7 +81,7 @@ import { useResizableInlinePanel } from "@/hooks/useResizableInlinePanel";
 import { useResizableSidebar } from "@/hooks/useResizableSidebar";
 import { ChatHeader } from "./ChatHeader";
 import { ExecutionLogsPanel } from "./ExecutionLogsPanel";
-import { FileViewer } from "./FileViewer";
+import { LazyFileViewer } from "./LazyFileViewer";
 import { FileViewerContext } from "./FileViewerContext";
 import { FilesPanelDrawer } from "./FilesPanelDrawer";
 import type { ChangedSort } from "./FlatFileList";
@@ -1874,7 +1874,7 @@ export function AppShell() {
               {/* Mobile-only push panel — on desktop the viewer lives inside the inline aside. */}
               {conversationId && selectedFilePath !== null && (
                 <div className="md:hidden">
-                  <FileViewer
+                  <LazyFileViewer
                     open
                     conversationId={conversationId}
                     path={selectedFilePath}
