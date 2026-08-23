@@ -27,16 +27,25 @@ export const lazyMermaidPlugin: DiagramPlugin = {
   name: "mermaid",
   type: "diagram",
   language: "mermaid",
-  getMermaid: (config?: MermaidConfig): MermaidInstance => ({
-    // Streamdown never calls initialize (it passes config to getMermaid and
-    // renders), but the contract allows it, so forward it once loaded.
-    initialize: (nextConfig: MermaidConfig) => {
-      // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-then)
-      void loadMermaid().then((plugin) => plugin.getMermaid(config).initialize(nextConfig));
-    },
-    render: async (id: string, source: string) => {
+  getMermaid: (config?: MermaidConfig): MermaidInstance => {
+    let pending: MermaidConfig | undefined;
+    const engine = async () => {
       const plugin = realMermaid ?? (await loadMermaid());
-      return plugin.getMermaid(config).render(id, source);
-    },
-  }),
+      const instance = plugin.getMermaid(config);
+      if (pending) {
+        instance.initialize(pending);
+        pending = undefined;
+      }
+      return instance;
+    };
+    return {
+      // Streamdown passes its config to getMermaid and never calls initialize,
+      // but the contract allows it. Hold the config rather than racing a
+      // floating import, so initialize-then-render keeps that order.
+      initialize: (nextConfig: MermaidConfig) => {
+        pending = nextConfig;
+      },
+      render: async (id: string, source: string) => (await engine()).render(id, source),
+    };
+  },
 };
