@@ -2537,6 +2537,10 @@ function ConversationSection({
 }) {
   // An untitled section is always open — there's no header to collapse it.
   const isCollapsed = title != null && collapsed;
+  // Set, not the raw array: the row loop below asks per row, so `.includes`
+  // made the pinned check O(rows x pinned) on every sidebar render. Matches
+  // what `ProjectFolder` and the section builder already do with this prop.
+  const pinnedSet = useMemo(() => new Set(pinnedConversationIds), [pinnedConversationIds]);
   return (
     <section className="group/section relative">
       {title && (
@@ -2590,7 +2594,7 @@ function ConversationSection({
                 <ConversationRow
                   key={conv.id}
                   conversation={conv}
-                  isPinned={pinnedConversationIds.includes(conv.id)}
+                  isPinned={pinnedSet.has(conv.id)}
                   onClick={onRowClick}
                   onTogglePinned={onTogglePinned}
                   selectionMode={selectionMode}
