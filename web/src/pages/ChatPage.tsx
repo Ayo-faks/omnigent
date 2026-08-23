@@ -96,7 +96,10 @@ import { useAutoGrowTextarea } from "@/hooks/useAutoGrowTextarea";
 import { useDictationInsert } from "@/hooks/useDictationInsert";
 import { useIOSNativeKeyboardVisible } from "@/hooks/useIOSNativeKeyboardInset";
 import type { MessageContentBlock } from "@/lib/blocks";
-import { ELICITATION_RESPONSE_PREFIX } from "@/lib/blocks";
+import {
+  ELICITATION_RESPONSE_PREFIX,
+  hasPendingElicitation as blocksHavePendingElicitation,
+} from "@/lib/blocks";
 import {
   derivePermissionLevel,
   isOwnerLevel,
@@ -1024,12 +1027,10 @@ export function ChatPage() {
   // (host offline, or not host-bound with the runner down).
   const [reconnectDialogOpen, setReconnectDialogOpen] = useState(false);
 
-  // Pending elicitation = parked on user input — suppress shimmer. Must
-  // sit before the early-return guards below (Rules of Hooks).
-  const hasPendingElicitation = useMemo(
-    () => blocks.some((b) => b.type === "elicitation" && b.status === "pending"),
-    [blocks],
-  );
+  // Pending elicitation = parked on user input — suppress shimmer. The helper
+  // memoizes on the `blocks` identity, so this shares one scan with every
+  // AssistantBubble asking the same question on the same update.
+  const hasPendingElicitation = blocksHavePendingElicitation(blocks);
 
   // Single-session snapshot (shared cache with chatStore.bindStream).
   // Must be declared BEFORE the early-return guards below — otherwise
@@ -3896,9 +3897,7 @@ function AssistantBubble({
   // A pending elicitation means the turn is parked awaiting the user —
   // still in flight even when its lifecycle or the session status reads
   // settled (e.g. a reload while parked). Feeds the fold suppression.
-  const hasPendingElicitation = useChatStore((s) =>
-    s.blocks.some((b) => b.type === "elicitation" && b.status === "pending"),
-  );
+  const hasPendingElicitation = useChatStore((s) => blocksHavePendingElicitation(s.blocks));
   // Getter computes the markdown lazily at click time — the hook must run
   // before the early return below (rules of hooks), but `markdownText` is
   // derived after it.
