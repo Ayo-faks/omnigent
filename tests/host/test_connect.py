@@ -4754,10 +4754,8 @@ async def test_launch_harness_probe_runs_off_the_event_loop(
 ) -> None:
     """The readiness probe must not run inline on the daemon's event loop.
 
-    For a CLI-wrapping harness it shells out to ``<cli> --version`` (plus a
-    login probe for codex), each bounded by a 10s timeout. Inline, that stalls
-    every other frame the daemon owes the server plus its keepalive pong, so a
-    hung CLI can push the host past the server's liveness window.
+    It shells out to ``<cli> --version``, so inline a hung CLI would stall the
+    keepalive pong the server counts as liveness.
     """
     host = _make_host_process()
     workspace = tmp_path / "project"
