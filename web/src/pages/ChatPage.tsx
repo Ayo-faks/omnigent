@@ -1351,7 +1351,11 @@ export function ChatPage() {
     codexModelOptions,
     llmModel ?? selectedModel,
   );
-  const showEffort = shouldShowEffortPicker(capabilitySource) && effortLevels.length > 0;
+  // Render the control from the session capability immediately. Codex's
+  // model-specific ladder can arrive seconds later (or fail to probe); until
+  // then the Select still has its useful Default row and fills in place when
+  // metadata lands.
+  const showEffort = shouldShowEffortPicker(capabilitySource);
 
   // When inside a session, only show the bound agent — the session is
   // tied 1:1 to its runner and can't be reassigned. Show all agents on

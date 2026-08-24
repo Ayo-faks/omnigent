@@ -867,7 +867,11 @@ describe("NewChatLandingScreen create flow", () => {
     );
   });
 
-  it("persists Codex bypass so the next session shows it instead of Default", async () => {
+  it("migrates a remembered Codex bypass to the shared Full access preset", async () => {
+    localStorage.setItem(
+      "omnigent:last-mode-by-harness",
+      JSON.stringify({ "codex-native": { mode: "bypass" } }),
+    );
     setAgents([agent({ id: "ag_codex", name: "codex-native-ui", display_name: "Codex" })]);
     vi.mocked(authenticatedFetch).mockResolvedValueOnce({
       ok: true,
@@ -877,7 +881,9 @@ describe("NewChatLandingScreen create flow", () => {
     renderLanding();
     await waitForWorkspaceSeed();
     openAgentConfig("ag_codex");
-    pickSelectOption("new-chat-landing-config-approval", "Bypass approvals & sandbox");
+    expect(screen.getByTestId("new-chat-landing-config-approval").textContent).toContain(
+      "Full access",
+    );
     saveConfig();
     typeMessage("go");
     fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
@@ -886,7 +892,7 @@ describe("NewChatLandingScreen create flow", () => {
       expect(
         JSON.parse(localStorage.getItem("omnigent:last-mode-by-harness") ?? "{}")["codex-native"]
           ?.mode,
-      ).toBe("bypass"),
+      ).toBe("full-access"),
     );
 
     cleanup();
@@ -894,7 +900,7 @@ describe("NewChatLandingScreen create flow", () => {
     await waitForWorkspaceSeed();
     openAgentConfig("ag_codex");
     expect(screen.getByTestId("new-chat-landing-config-approval").textContent).toContain(
-      "Bypass approvals & sandbox",
+      "Full access",
     );
   });
 
