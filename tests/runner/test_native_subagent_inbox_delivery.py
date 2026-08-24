@@ -105,6 +105,85 @@ class _SnapshotServerClient(NullServerClient):
         return self._Response()
 
 
+class _RecoveryServerClient(NullServerClient):
+    """Serve durable parent/child history used by restart recovery tests."""
+
+    def __init__(
+        self,
+        *,
+        parent_items: list[dict[str, Any]],
+        child_items: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """
+        Configure persisted parent items returned by the fake server.
+
+        :param parent_items: Parent transcript items, newest first.
+        :param child_items: Optional child transcript override, newest first.
+        """
+        self._parent_items = parent_items
+        self._child_items = child_items
+
+    class _Resp:
+        """Minimal successful HTTP response carrying a JSON payload."""
+
+        def __init__(self, payload: dict[str, Any]) -> None:
+            """
+            Store one JSON response payload.
+
+            :param payload: JSON object returned by :meth:`json`.
+            """
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self) -> dict[str, Any]:
+            """Return the configured JSON payload."""
+            return self._payload
+
+    async def get(self, url: str, **kwargs: Any) -> Any:
+        """
+        Return child summaries and persisted transcripts for recovery.
+
+        :param url: Requested sessions API path.
+        :param kwargs: Ignored HTTP request options.
+        :returns: Minimal successful response for the requested resource.
+        """
+        del kwargs
+        if url.endswith(f"/{PARENT_SESSION_ID}/child_sessions"):
+            return self._Resp(
+                {
+                    "data": [
+                        {
+                            "id": CHILD_SESSION_ID,
+                            "tool": "reviewer",
+                            "session_name": "review",
+                            "current_task_status": "completed",
+                            "updated_at": 200,
+                        }
+                    ],
+                    "has_more": False,
+                }
+            )
+        if url.endswith(f"/{PARENT_SESSION_ID}/items"):
+            return self._Resp({"data": self._parent_items, "has_more": False})
+        if url.endswith(f"/{CHILD_SESSION_ID}/items"):
+            if self._child_items is not None:
+                return self._Resp({"data": self._child_items, "has_more": False})
+            return self._Resp(
+                {
+                    "data": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "created_at": 200,
+                            "content": [{"type": "output_text", "text": "review complete: LGTM"}],
+                        }
+                    ],
+                    "has_more": False,
+                }
+            )
+        return self._Resp({"data": [], "has_more": False})
+
+
 def _child_snapshot(
     *,
     sub_agent_name: str | None,
@@ -349,6 +428,195 @@ async def test_top_level_session_idle_is_noop(
 
     assert http == 204
     assert items == []
+
+
+@pytest.mark.asyncio
+async def test_runner_restart_recovers_undrained_terminal_child(
+    _clean_subagent_registry: None,
+) -> None:
+    """A new runner queue is rebuilt from durable child state and transcript.
+
+    This is the OMNI-4482 regression: no work entry, inbox item, or drained
+    tombstone survives the process restart. The test supplies only server-side
+    session/history records and requires recovery to recreate the exact result.
+    """
+    pm = _FakeProcessManager(_ScriptedHarnessClient([]))
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        """
+        Return the parent spec needed by the public initialization route.
+
+        :param agent_id: Bound agent id supplied by initialization.
+        :param session_id: Parent session id being initialized.
+        :returns: Minimal parent agent specification.
+        """
+        del agent_id, session_id
+        return AgentSpec(spec_version=1, name="orchestrator")
+
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=_RecoveryServerClient(parent_items=[]),  # type: ignore[arg-type]
+    )
+
+    async with _runner_client(app) as client:
+        response = await client.post(
+            "/v1/sessions",
+            json={"session_id": PARENT_SESSION_ID, "agent_id": "ag_orchestrator"},
+        )
+
+    assert response.status_code == 201
+    inbox = runner_app._session_inboxes_ref[PARENT_SESSION_ID]
+    assert inbox.qsize() == 1
+    payload = inbox.get_nowait()
+    assert payload["conversation_id"] == CHILD_SESSION_ID
+    assert payload["status"] == "completed"
+    assert payload["output"] == "review complete: LGTM"
+
+
+@pytest.mark.asyncio
+async def test_runner_restart_does_not_replay_persisted_drain(
+    _clean_subagent_registry: None,
+) -> None:
+    """A persisted inbox output newer than completion prevents duplicate replay.
+
+    The test's parent function output is the durable acknowledgement already
+    produced by the real ``sys_read_inbox`` path. Removing the acknowledgement
+    check makes this test enqueue a duplicate and fail.
+    """
+    runner_app._session_inboxes_ref[PARENT_SESSION_ID] = asyncio.Queue()
+    app = create_runner_app(
+        server_client=_RecoveryServerClient(
+            parent_items=[
+                {
+                    "type": "function_call",
+                    "created_at": 201,
+                    "call_id": "call_inbox",
+                    "name": "sys_read_inbox",
+                },
+                {
+                    "type": "function_call_output",
+                    "created_at": 201,
+                    "call_id": "call_inbox",
+                    "output": (
+                        f"[System: sub-agent task {CHILD_SESSION_ID} completed — "
+                        "reviewer:review returned: review complete: LGTM]"
+                    ),
+                },
+            ]
+        ),  # type: ignore[arg-type]
+    )
+
+    await app.state.recover_undrained_subagent_results(PARENT_SESSION_ID)
+
+    assert runner_app._session_inboxes_ref[PARENT_SESSION_ID].empty()
+    assert runner_app.get_subagent_work(CHILD_SESSION_ID) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parent_items",
+    [
+        [
+            {
+                "type": "function_call",
+                "created_at": 199,
+                "call_id": "call_old_inbox",
+                "name": "sys_read_inbox",
+            },
+            {
+                "type": "function_call_output",
+                "created_at": 199,
+                "call_id": "call_old_inbox",
+                "output": f"[System: sub-agent task {CHILD_SESSION_ID} completed]",
+            },
+        ],
+        [
+            {
+                "type": "function_call_output",
+                "created_at": 201,
+                "call_id": "call_session_list",
+                "output": f"child session: {CHILD_SESSION_ID}",
+            }
+        ],
+    ],
+)
+async def test_runner_restart_replays_after_old_or_unrelated_child_reference(
+    _clean_subagent_registry: None,
+    parent_items: list[dict[str, Any]],
+) -> None:
+    """Only a newer, correlated ``sys_read_inbox`` output proves consumption.
+
+    :param _clean_subagent_registry: Isolates module-level runner state.
+    :param parent_items: Either an older inbox drain from a previous child turn
+        or an unrelated tool output that happens to mention the child id.
+    """
+    runner_app._session_inboxes_ref[PARENT_SESSION_ID] = asyncio.Queue()
+    app = create_runner_app(
+        server_client=_RecoveryServerClient(parent_items=parent_items),  # type: ignore[arg-type]
+    )
+
+    await app.state.recover_undrained_subagent_results(PARENT_SESSION_ID)
+
+    payload = runner_app._session_inboxes_ref[PARENT_SESSION_ID].get_nowait()
+    assert payload["conversation_id"] == CHILD_SESSION_ID
+    assert payload["output"] == "review complete: LGTM"
+
+
+@pytest.mark.asyncio
+async def test_runner_restart_never_suppresses_continued_child_generation(
+    _clean_subagent_registry: None,
+) -> None:
+    """A child-id acknowledgement cannot suppress a later continued turn.
+
+    Both turns and the old drain intentionally share one-second timestamps.
+    Without the at-least-once continued-child guard, recovery mistakes the old
+    result for acknowledgement of the new one and leaves the inbox empty.
+    """
+    runner_app._session_inboxes_ref[PARENT_SESSION_ID] = asyncio.Queue()
+    parent_items = [
+        {
+            "type": "function_call",
+            "created_at": 200,
+            "call_id": "call_old_inbox",
+            "name": "sys_read_inbox",
+        },
+        {
+            "type": "function_call_output",
+            "created_at": 200,
+            "call_id": "call_old_inbox",
+            "output": f"[System: sub-agent task {CHILD_SESSION_ID} completed]",
+        },
+    ]
+    child_items = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "created_at": 200,
+            "content": [{"type": "output_text", "text": "new turn result"}],
+        },
+        {"type": "message", "role": "user", "created_at": 200, "content": []},
+        {"type": "message", "role": "user", "created_at": 199, "content": []},
+    ]
+    app = create_runner_app(
+        server_client=_RecoveryServerClient(
+            parent_items=parent_items,
+            child_items=child_items,
+        ),  # type: ignore[arg-type]
+    )
+
+    await app.state.recover_undrained_subagent_results(PARENT_SESSION_ID)
+
+    payload = runner_app._session_inboxes_ref[PARENT_SESSION_ID].get_nowait()
+    assert payload["conversation_id"] == CHILD_SESSION_ID
+    assert payload["output"] == "new turn result"
+
+    # The restart may replay an ambiguous continued result once, but after the
+    # parent drains that replay the process-local tombstone must keep every
+    # later sys_read_inbox call from resurrecting it forever.
+    runner_app.unregister_subagent_work(CHILD_SESSION_ID, remember_drained_delivery=True)
+    await app.state.recover_undrained_subagent_results(PARENT_SESSION_ID)
+    assert runner_app._session_inboxes_ref[PARENT_SESSION_ID].empty()
 
 
 @pytest.mark.asyncio

@@ -1368,6 +1368,220 @@ def list_subagent_work(parent_session_id: str) -> list[_SubagentWorkEntry]:
     return sorted(entries, key=lambda entry: entry.created_at)
 
 
+def _parent_items_confirm_subagent_drained(
+    items: list[_JsonObject],
+    *,
+    child_id: str,
+    completed_at: object,
+) -> bool:
+    """
+    Return whether persisted parent history proves a child result was drained.
+
+    ``sys_read_inbox`` output contains the child conversation id in the
+    rendered ``[System: sub-agent task ...]`` line.  Comparing item time with
+    the child's latest update distinguishes a prior drain from a later turn
+    completed on the same continued child session.
+
+    :param items: Parent conversation item dictionaries from the sessions API.
+    :param child_id: Child conversation id, e.g. ``"conv_child456"``.
+    :param completed_at: Child summary's latest update timestamp, e.g.
+        ``1753900000``. Non-numeric values conservatively disable recovery
+        deduplication by time.
+    :returns: ``True`` when a persisted function output after completion names
+        the child, proving the parent already consumed this result.
+    """
+    if not isinstance(completed_at, (int, float)) or isinstance(completed_at, bool):
+        return False
+    inbox_call_ids = {
+        raw_item.get("call_id")
+        for raw_item in items
+        if isinstance(raw_item, dict)
+        and raw_item.get("type") == "function_call"
+        and raw_item.get("name") == "sys_read_inbox"
+        and isinstance(raw_item.get("call_id"), str)
+    }
+    for raw_item in items:
+        if not isinstance(raw_item, dict) or raw_item.get("type") != "function_call_output":
+            continue
+        if raw_item.get("call_id") not in inbox_call_ids:
+            continue
+        created_at = raw_item.get("created_at")
+        if not isinstance(created_at, (int, float)) or isinstance(created_at, bool):
+            continue
+        output = raw_item.get("output")
+        if created_at >= completed_at and isinstance(output, str) and child_id in output:
+            return True
+    return False
+
+
+async def _get_all_session_api_items(
+    server_client: httpx.AsyncClient,
+    path: str,
+    *,
+    order: str,
+) -> list[_JsonObject] | None:
+    """
+    Read every page from a cursor-paginated sessions API endpoint.
+
+    :param server_client: HTTP client connected to the Omnigent server.
+    :param path: Sessions API path, e.g.
+        ``"/v1/sessions/conv_parent/child_sessions"``.
+    :param order: API sort order, either ``"asc"`` or ``"desc"``.
+    :returns: All object rows in API order, or ``None`` when a page fails.
+    """
+    rows: list[_JsonObject] = []
+    after: str | None = None
+    while True:
+        params = {"limit": "1000", "order": order}
+        if after is not None:
+            params["after"] = after
+        response = await server_client.get(path, params=params, timeout=10.0)
+        if response.status_code != 200:
+            return None
+        page = response.json()
+        page_rows = page.get("data", [])
+        if not isinstance(page_rows, list):
+            raise ValueError(f"sessions API page at {path!r} has non-list data")
+        rows.extend(row for row in page_rows if isinstance(row, dict))
+        if not page.get("has_more", False):
+            return rows
+        after = page.get("last_id")
+        if not isinstance(after, str) or not after:
+            raise ValueError(f"sessions API page at {path!r} omitted last_id")
+
+
+def _latest_assistant_text_from_api_items(items: list[_JsonObject]) -> str | None:
+    """
+    Extract the newest assistant text from descending API conversation items.
+
+    :param items: Child conversation items ordered newest first.
+    :returns: Joined output text from the newest assistant message containing
+        text, or ``None`` when the transcript has no assistant output.
+    """
+    for raw_item in items:
+        if (
+            not isinstance(raw_item, dict)
+            or raw_item.get("type") != "message"
+            or raw_item.get("role") != "assistant"
+        ):
+            continue
+        content = raw_item.get("content")
+        if not isinstance(content, list):
+            continue
+        parts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "output_text"
+            and isinstance(block.get("text"), str)
+        ]
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
+async def _recover_terminal_subagent_child(
+    *,
+    server_client: httpx.AsyncClient,
+    parent_id: str,
+    child: _JsonObject,
+    parent_items: list[_JsonObject],
+    schedule_wake: Callable[[_SubagentWorkEntry], None],
+) -> None:
+    """
+    Recreate one terminal child's undrained parent-inbox payload.
+
+    :param server_client: HTTP client connected to the Omnigent server.
+    :param parent_id: Parent session id, e.g. ``"conv_parent123"``.
+    :param child: Terminal ``ChildSessionSummary`` API object.
+    :param parent_items: Complete persisted parent conversation history.
+    :param schedule_wake: Callback that posts the parent wake notice.
+    :returns: None.
+    """
+    child_id = cast(str, child["id"])
+    if get_subagent_work(child_id) is not None or child_id in _drained_delivered_subagent_children:
+        return
+    child_items = await _get_all_session_api_items(
+        server_client, f"/v1/sessions/{child_id}/items", order="desc"
+    )
+    if child_items is None:
+        return
+    user_turn_count = sum(
+        item.get("type") == "message" and item.get("role") == "user" for item in child_items
+    )
+    # A continued child reuses its conversation id, while historical inbox
+    # output records only that id—not a per-turn generation. Treating such an
+    # output as an acknowledgement can lose a newer turn (including two turns
+    # completed in the same second). For continued children we deliberately
+    # choose at-least-once replay until the protocol carries a durable
+    # generation; a duplicate is recoverable, a dropped result is not.
+    if user_turn_count <= 1 and _parent_items_confirm_subagent_drained(
+        parent_items, child_id=child_id, completed_at=child.get("updated_at")
+    ):
+        return
+    failed = child.get("current_task_status") == "failed"
+    raw_error = child.get("last_task_error")
+    output = (
+        raw_error.get("message")
+        if failed and isinstance(raw_error, dict) and isinstance(raw_error.get("message"), str)
+        else (None if failed else _latest_assistant_text_from_api_items(child_items))
+    )
+    entry = register_subagent_work(
+        parent_session_id=parent_id,
+        child_session_id=child_id,
+        agent=str(child.get("tool") or child.get("agent_name") or "sub-agent"),
+        title=str(child.get("session_name") or child.get("title") or ""),
+    )
+    ack = mark_subagent_work_terminal(
+        child_id, status="failed" if failed else "completed", output=output
+    )
+    if ack.delivered_now:
+        schedule_wake(entry)
+
+
+async def _recover_subagent_results_from_server(
+    *,
+    server_client: httpx.AsyncClient,
+    parent_id: str,
+    schedule_wake: Callable[[_SubagentWorkEntry], None],
+) -> None:
+    """
+    Rebuild undrained terminal child results from durable server records.
+
+    :param server_client: HTTP client connected to the Omnigent server.
+    :param parent_id: Parent session whose runner-local inbox was recreated,
+        e.g. ``"conv_parent123"``.
+    :param schedule_wake: Callback that posts a parent wake notice.
+    :returns: None.
+    """
+    children = await _get_all_session_api_items(
+        server_client, f"/v1/sessions/{parent_id}/child_sessions", order="asc"
+    )
+    if children is None:
+        return
+    terminal_children = [
+        child
+        for child in children
+        if child.get("current_task_status") in {"completed", "failed"}
+        and isinstance(child.get("id"), str)
+    ]
+    if not terminal_children:
+        return
+    parent_items = await _get_all_session_api_items(
+        server_client, f"/v1/sessions/{parent_id}/items", order="desc"
+    )
+    if parent_items is None:
+        return
+    for child in terminal_children:
+        await _recover_terminal_subagent_child(
+            server_client=server_client,
+            parent_id=parent_id,
+            child=child,
+            parent_items=parent_items,
+            schedule_wake=schedule_wake,
+        )
+
+
 def mark_subagent_work_terminal(
     child_session_id: str,
     *,
@@ -2972,6 +3186,11 @@ def create_runner_app(
             _session_event_queues[session_id] = asyncio.Queue()
         if session_id not in _session_inboxes:
             _session_inboxes[session_id] = asyncio.Queue()
+        # A fresh queue can mean a fresh runner process, not a fresh session.
+        # Run this on every initialization (the operation is idempotent) so a
+        # transient server read failure on the first attempt cannot strand the
+        # result for the lifetime of the replacement runner.
+        await _recover_undrained_subagent_results(session_id)
         if session_id not in _session_async_tasks:
             _session_async_tasks[session_id] = {}
         raw_sub_agent_name = body.get("sub_agent_name")
@@ -4030,6 +4249,48 @@ def create_runner_app(
             agent=agent,
             title=snapshot.sub_agent_name or "",
         )
+
+    async def _recover_undrained_subagent_results(parent_id: str) -> None:
+        """
+        Rebuild terminal child results lost with a runner process restart.
+
+        The server already durably stores the child relationship, lifecycle
+        status, transcript, and the parent's ``sys_read_inbox`` tool outputs.
+        Those records are sufficient to reconstruct an undrained result, so
+        persisting a second queue or work-registry table would create two
+        sources of truth.  The runner queue remains only a delivery cache.
+
+        A terminal child is replayed only when no later parent tool output
+        names that child.  This timestamp check is important for continued
+        child sessions: an older ``sys_read_inbox`` result must not suppress a
+        newly completed turn on the same child conversation.
+
+        :param parent_id: Parent session whose inbox was recreated, e.g.
+            ``"conv_parent123"``.
+        :returns: None.
+        """
+        inbox = _session_inboxes.get(parent_id)
+        if inbox is None:
+            return
+        try:
+            await _recover_subagent_results_from_server(
+                server_client=server_client,
+                parent_id=parent_id,
+                schedule_wake=_schedule_subagent_wake,
+            )
+        except (httpx.HTTPError, RuntimeError, TypeError, ValueError):
+            # Recovery is best-effort during initialization.  A server outage
+            # must not prevent the parent session itself from reconnecting;
+            # the child's terminal-status retry remains the second recovery
+            # path once connectivity returns.
+            _logger.warning(
+                "Failed to recover undrained sub-agent results for %s",
+                parent_id,
+                exc_info=True,
+                extra={"session_id": parent_id},
+            )
+
+    app.state.recover_undrained_subagent_results = _recover_undrained_subagent_results
 
     def _note_session_harness_override(conv_id: str, harness_override: str | None) -> None:
         """Record the harness a session was forwarded, so reads match the run.
@@ -9427,6 +9688,12 @@ def create_runner_app(
                     status_code=200,
                     content={"error": {"code": -32000, "message": "Missing tool name"}},
                 )
+
+            if tool_name == "sys_read_inbox":
+                # Initialization recovery can race a temporary server outage.
+                # Retry immediately before the observable drain so the
+                # in-memory queue is never the sole source of truth.
+                await _recover_undrained_subagent_results(session_id)
 
             if "__" in tool_name:
                 if mcp_manager is None:
