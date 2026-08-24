@@ -187,6 +187,7 @@ from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.artifact_store import ArtifactStore
 from omnigent.stores.comment_store import CommentStore
 from omnigent.stores.conversation_store import (
+    CODEX_NATIVE_BYPASS_SANDBOX_LABEL_KEY,
     PINNED_LABEL_KEY,
     PROJECT_LABEL_KEY,
     ConversationNotFoundError,
@@ -1993,6 +1994,16 @@ def register_core_routes(
             )
             if updated is None:
                 raise _session_not_found()
+            # A live settings update has moved Codex out of the launch-only
+            # full-bypass stance. Drop the launch directive only after the
+            # runner accepted the switch and its restart args were persisted;
+            # otherwise a later restart would silently re-enable bypass and
+            # override the permission preset the user just selected.
+            await asyncio.to_thread(
+                conversation_store.delete_label,
+                session_id,
+                CODEX_NATIVE_BYPASS_SANDBOX_LABEL_KEY,
+            )
         # Some labels are cleared by DELETE, not by upserting an empty value:
         # the project membership (empty = "remove from project") and the pinned
         # flag (empty = "unpin"). Split any empty-valued clear keys out before
