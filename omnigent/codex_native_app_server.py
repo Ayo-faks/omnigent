@@ -65,6 +65,7 @@ from omnigent.inner.codex_executor import (
 )
 from omnigent.inner.databricks_executor import _databricks_gateway_host
 from omnigent.process_logging import log_info_once, log_once
+from omnigent.reasoning_effort import CODEX_NATIVE_EFFORTS
 
 _logger = logging.getLogger(__name__)
 
@@ -1207,6 +1208,7 @@ class CodexNativeAppServer:
             config_source,
             inject_hooks=self.router_hooks_registered,
             extend_model_catalog=codex_extended_catalog_requested(self.env),
+            supported_efforts=CODEX_NATIVE_EFFORTS,
         )
         if self.trust_project:
             _trust_codex_project(self.codex_home, self.cwd)
