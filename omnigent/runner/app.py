@@ -1179,6 +1179,7 @@ class _SubagentDeliveryAck:
 _subagent_work_by_child: dict[str, _SubagentWorkEntry] = {}
 _subagent_work_by_parent: dict[str, set[str]] = {}
 _drained_delivered_subagent_children: set[str] = set()
+_subagent_recovery_scanned_parents: set[str] = set()
 
 # Per-(parent, agent_type) monotonic ordinal counter for structured
 # sub-agent names (e.g. "researcher-1", "researcher-2").
@@ -1419,6 +1420,8 @@ async def _get_all_session_api_items(
     path: str,
     *,
     order: str,
+    after: str | None = None,
+    item_type: str | None = None,
 ) -> list[_JsonObject] | None:
     """
     Read every page from a cursor-paginated sessions API endpoint.
@@ -1427,14 +1430,18 @@ async def _get_all_session_api_items(
     :param path: Sessions API path, e.g.
         ``"/v1/sessions/conv_parent/child_sessions"``.
     :param order: API sort order, either ``"asc"`` or ``"desc"``.
+    :param after: Optional item cursor, e.g. ``"msg_abc123"``.
+    :param item_type: Optional item-type filter, e.g. ``"compaction"``.
     :returns: All object rows in API order, or ``None`` when a page fails.
     """
     rows: list[_JsonObject] = []
-    after: str | None = None
+    after_cursor = after
     while True:
         params = {"limit": "1000", "order": order}
-        if after is not None:
-            params["after"] = after
+        if after_cursor is not None:
+            params["after"] = after_cursor
+        if item_type is not None:
+            params["type"] = item_type
         response = await server_client.get(path, params=params, timeout=10.0)
         if response.status_code != 200:
             return None
@@ -1445,20 +1452,86 @@ async def _get_all_session_api_items(
         rows.extend(row for row in page_rows if isinstance(row, dict))
         if not page.get("has_more", False):
             return rows
-        after = page.get("last_id")
-        if not isinstance(after, str) or not after:
+        after_cursor = page.get("last_id")
+        if not isinstance(after_cursor, str) or not after_cursor:
             raise ValueError(f"sessions API page at {path!r} omitted last_id")
+
+
+@dataclasses.dataclass(frozen=True)
+class _CompactedSessionApiWindow:
+    """
+    Durable session history projected around its latest compaction boundary.
+
+    :param items: Chronological raw items after the compaction coverage cursor,
+        or the complete history when no valid compaction exists.
+    :param compaction: Latest valid compaction API item, or ``None``.
+    """
+
+    items: list[_JsonObject]
+    compaction: _JsonObject | None
+
+
+async def _get_compacted_session_api_items(
+    server_client: httpx.AsyncClient,
+    session_id: str,
+) -> _CompactedSessionApiWindow | None:
+    """
+    Load only the durable history window after the latest compaction boundary.
+
+    Mirrors :func:`omnigent.runtime.workflow._load_initial_history`: query one
+    latest compaction item, validate its coverage cursor, then fetch items after
+    ``last_item_id``. Without a valid compaction the full history is required
+    for correctness, matching the runtime's existing fallback.
+
+    :param server_client: HTTP client connected to the Omnigent server.
+    :param session_id: Session to load, e.g. ``"conv_parent123"``.
+    :returns: Compaction metadata plus raw items after its boundary, or full
+        items with no compaction when no valid boundary exists; ``None`` on
+        an HTTP failure.
+    """
+    path = f"/v1/sessions/{session_id}/items"
+    response = await server_client.get(
+        path,
+        params={"limit": "1", "order": "desc", "type": "compaction"},
+        timeout=10.0,
+    )
+    if response.status_code != 200:
+        return None
+    rows = response.json().get("data", [])
+    compaction: _JsonObject | None = None
+    boundary: str | None = None
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        summary = rows[0].get("summary")
+        last_item_id = rows[0].get("last_item_id")
+        if (
+            isinstance(summary, str)
+            and summary
+            and isinstance(last_item_id, str)
+            and last_item_id
+            and not last_item_id.startswith("synthetic_")
+        ):
+            compaction = rows[0]
+            boundary = last_item_id
+    items = await _get_all_session_api_items(
+        server_client,
+        path,
+        order="asc",
+        after=boundary,
+    )
+    if items is None:
+        return None
+    return _CompactedSessionApiWindow(items=items, compaction=compaction)
 
 
 def _latest_assistant_text_from_api_items(items: list[_JsonObject]) -> str | None:
     """
-    Extract the newest assistant text from descending API conversation items.
+    Extract the newest assistant text from chronological API conversation items.
 
-    :param items: Child conversation items ordered newest first.
+    :param items: Child conversation items ordered oldest first.
     :returns: Joined output text from the newest assistant message containing
         text, or ``None`` when the transcript has no assistant output.
     """
-    for raw_item in items:
+    for raw_item in reversed(items):
         if (
             not isinstance(raw_item, dict)
             or raw_item.get("type") != "message"
@@ -1472,12 +1545,33 @@ def _latest_assistant_text_from_api_items(items: list[_JsonObject]) -> str | Non
             block["text"]
             for block in content
             if isinstance(block, dict)
-            and block.get("type") == "output_text"
+            and block.get("type") in {"output_text", "text"}
             and isinstance(block.get("text"), str)
         ]
         if parts:
             return "\n".join(parts)
     return None
+
+
+def _assistant_text_from_compaction(compaction: _JsonObject | None) -> str | None:
+    """
+    Recover child output represented inside a compaction snapshot.
+
+    :param compaction: Valid latest compaction API item, or ``None``.
+    :returns: Latest assistant text from ``compacted_messages`` when present,
+        otherwise the compaction summary; ``None`` without either.
+    """
+    if compaction is None:
+        return None
+    compacted_messages = compaction.get("compacted_messages")
+    if isinstance(compacted_messages, list):
+        text = _latest_assistant_text_from_api_items(
+            [item for item in compacted_messages if isinstance(item, dict)]
+        )
+        if text is not None:
+            return text
+    summary = compaction.get("summary")
+    return summary if isinstance(summary, str) and summary else None
 
 
 async def _recover_terminal_subagent_child(
@@ -1487,7 +1581,7 @@ async def _recover_terminal_subagent_child(
     child: _JsonObject,
     parent_items: list[_JsonObject],
     schedule_wake: Callable[[_SubagentWorkEntry], None],
-) -> None:
+) -> bool:
     """
     Recreate one terminal child's undrained parent-inbox payload.
 
@@ -1496,18 +1590,17 @@ async def _recover_terminal_subagent_child(
     :param child: Terminal ``ChildSessionSummary`` API object.
     :param parent_items: Complete persisted parent conversation history.
     :param schedule_wake: Callback that posts the parent wake notice.
-    :returns: None.
+    :returns: ``True`` when recovery completed or was unnecessary; ``False``
+        when the child-history read failed and needs retry.
     """
     child_id = cast(str, child["id"])
     if get_subagent_work(child_id) is not None or child_id in _drained_delivered_subagent_children:
-        return
-    child_items = await _get_all_session_api_items(
-        server_client, f"/v1/sessions/{child_id}/items", order="desc"
-    )
-    if child_items is None:
-        return
+        return True
+    child_window = await _get_compacted_session_api_items(server_client, child_id)
+    if child_window is None:
+        return False
     user_turn_count = sum(
-        item.get("type") == "message" and item.get("role") == "user" for item in child_items
+        item.get("type") == "message" and item.get("role") == "user" for item in child_window.items
     )
     # A continued child reuses its conversation id, while historical inbox
     # output records only that id—not a per-turn generation. Treating such an
@@ -1515,16 +1608,22 @@ async def _recover_terminal_subagent_child(
     # completed in the same second). For continued children we deliberately
     # choose at-least-once replay until the protocol carries a durable
     # generation; a duplicate is recoverable, a dropped result is not.
-    if user_turn_count <= 1 and _parent_items_confirm_subagent_drained(
+    generation_is_unambiguous = child_window.compaction is None and user_turn_count <= 1
+    if generation_is_unambiguous and _parent_items_confirm_subagent_drained(
         parent_items, child_id=child_id, completed_at=child.get("updated_at")
     ):
-        return
+        return True
     failed = child.get("current_task_status") == "failed"
     raw_error = child.get("last_task_error")
     output = (
         raw_error.get("message")
         if failed and isinstance(raw_error, dict) and isinstance(raw_error.get("message"), str)
-        else (None if failed else _latest_assistant_text_from_api_items(child_items))
+        else (
+            None
+            if failed
+            else _latest_assistant_text_from_api_items(child_window.items)
+            or _assistant_text_from_compaction(child_window.compaction)
+        )
     )
     entry = register_subagent_work(
         parent_session_id=parent_id,
@@ -1537,6 +1636,7 @@ async def _recover_terminal_subagent_child(
     )
     if ack.delivered_now:
         schedule_wake(entry)
+    return True
 
 
 async def _recover_subagent_results_from_server(
@@ -1544,7 +1644,7 @@ async def _recover_subagent_results_from_server(
     server_client: httpx.AsyncClient,
     parent_id: str,
     schedule_wake: Callable[[_SubagentWorkEntry], None],
-) -> None:
+) -> bool:
     """
     Rebuild undrained terminal child results from durable server records.
 
@@ -1552,13 +1652,14 @@ async def _recover_subagent_results_from_server(
     :param parent_id: Parent session whose runner-local inbox was recreated,
         e.g. ``"conv_parent123"``.
     :param schedule_wake: Callback that posts a parent wake notice.
-    :returns: None.
+    :returns: ``True`` when all required server reads completed, including
+        when there was nothing to recover; ``False`` on an HTTP failure.
     """
     children = await _get_all_session_api_items(
         server_client, f"/v1/sessions/{parent_id}/child_sessions", order="asc"
     )
     if children is None:
-        return
+        return False
     terminal_children = [
         child
         for child in children
@@ -1566,20 +1667,21 @@ async def _recover_subagent_results_from_server(
         and isinstance(child.get("id"), str)
     ]
     if not terminal_children:
-        return
-    parent_items = await _get_all_session_api_items(
-        server_client, f"/v1/sessions/{parent_id}/items", order="desc"
-    )
-    if parent_items is None:
-        return
+        return True
+    parent_window = await _get_compacted_session_api_items(server_client, parent_id)
+    if parent_window is None:
+        return False
     for child in terminal_children:
-        await _recover_terminal_subagent_child(
+        recovered = await _recover_terminal_subagent_child(
             server_client=server_client,
             parent_id=parent_id,
             child=child,
-            parent_items=parent_items,
+            parent_items=parent_window.items,
             schedule_wake=schedule_wake,
         )
+        if not recovered:
+            return False
+    return True
 
 
 def mark_subagent_work_terminal(
@@ -3780,6 +3882,7 @@ def create_runner_app(
         _last_server_item_id.pop(session_id, None)
         _session_event_queues.pop(session_id, None)
         _session_inboxes.pop(session_id, None)
+        _subagent_recovery_scanned_parents.discard(session_id)
         _subagent_wake_pending.discard(session_id)
         _last_rewake_notice.pop(session_id, None)
         _session_sub_agent_names.pop(session_id, None)
@@ -4270,14 +4373,16 @@ def create_runner_app(
         :returns: None.
         """
         inbox = _session_inboxes.get(parent_id)
-        if inbox is None:
+        if inbox is None or parent_id in _subagent_recovery_scanned_parents:
             return
         try:
-            await _recover_subagent_results_from_server(
+            completed = await _recover_subagent_results_from_server(
                 server_client=server_client,
                 parent_id=parent_id,
                 schedule_wake=_schedule_subagent_wake,
             )
+            if completed:
+                _subagent_recovery_scanned_parents.add(parent_id)
         except (httpx.HTTPError, RuntimeError, TypeError, ValueError):
             # Recovery is best-effort during initialization.  A server outage
             # must not prevent the parent session itself from reconnecting;
