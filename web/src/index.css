@@ -210,8 +210,43 @@
       var(--omnigent-bottom-bar-visible)
   );
 
+  /* Brand palette (light). Hex values are the brand spec, kept verbatim
+     * for fidelity. --background is white: the lavender brand canvas is
+     * expressed by the .app-shell gradient (see index.css .app-shell), so
+     * the base background stays white. This keeps bg-background tiles/
+     * inputs/code-blocks/tables (incl. Streamdown's hardcoded bg-background)
+     * from rendering as lavender patches on the white cards they sit on.
+     * The auth pages (outside the gradient shell) use this as their
+     * full-page canvas. */
+  --background: #fff;
+  --foreground: #0d0d0d;
   /* Tertiary gray for lighter/disabled/placeholder text. */
   --foreground-tertiary: #a1a1aa;
+  --card: #fff;
+  /* Light --card is already opaque; the solid form only diverges in dark. */
+  --card-solid: #fff;
+  --card-foreground: #0d0d0d;
+  /* Tray surface (composer footer tray): white, applied translucently
+     * via opacity modifiers so the page gradient shows through. */
+  --tray: #fff;
+  /* Popover/dropdown/tooltip/dialog surfaces — light, matching --card.
+     * (These all consume bg-popover / text-popover-foreground.) */
+  --popover: #fff;
+  --popover-foreground: #0d0d0d;
+  --primary: #0d0d0d;
+  --primary-foreground: #fff;
+  /* Light grey fill so secondary badges/headers read as surfaces (a
+     * fully-transparent value left them as bare floating text). */
+  --secondary: #f4f4f4;
+  --secondary-foreground: #0d0d0d;
+  --muted: #0000000f;
+  --muted-foreground: #676767;
+  /* Dedicated chip background for inline code — a hair darker than the
+     * white card so the chip reads as a tile. Kept separate from --muted
+     * (now a translucent black wash reused for hover/quote surfaces). */
+  --code-bg: #0000000f;
+  --accent: #ececec;
+  --accent-foreground: #0d0d0d;
   --destructive: #c8324c;
   --destructive-foreground: #fff;
   /* success/warning/info repointed onto the named status hues below so
@@ -222,12 +257,21 @@
   /* Session active / idle-alive blue — a deeper, saturated azure
      * that harmonizes with the brand blues (#2272b4 / #3b8ff5) and reads
      * with strong contrast on the white card surface. */
-  --session-active: #2f7fd4;
+  --session-active: #10a37f;
+  --border: #e5e5e5;
   /* Weaker panel border for low-contrast dividers. */
-  --border-weak: #ececee;
-  --button-icon-hover-color: #27272a;
+  --border-weak: #ececec;
+  /* Stronger divider/outline + a dedicated neutral button border. */
+  --border-strong: #b4b4b4;
+  --button-border: #d9d9d9;
+  --button-icon-hover-color: #0d0d0d;
+  --input: #d9d9d9;
+  /* Focus ring matches --primary. */
+  --ring: #0d0d0d;
+  /* Brand pink — reserved for brand moments, not status. */
+  --brand-accent: #10a37f;
   /* Pink tag surface — a translucent wash, so it tints whatever it sits on. */
-  --tag-pink: rgba(240, 1, 150, 0.06);
+  --tag-pink: rgba(0, 0, 0, 0.06);
   /* Named status hues. success/warning/info above mirror green/yellow/blue. */
   --status-blue: #3b8ff5;
   --status-green: #2ea65c;
@@ -245,6 +289,22 @@
   --radius-otto-md: 12px;
   --ease-otto: cubic-bezier(0.34, 1.4, 0.64, 1);
   --duration-otto-fast: 180ms;
+  /* Sidebar + workspace cards are white (--card); they float on the
+     * near-white .app-shell gradient canvas. --sidebar matches that
+     * gradient's lightest tone so bg-sidebar surfaces (the app-shell's
+     * fallback fill under the gradient, translucent chrome like the
+     * message copy button) blend into the canvas rather than painting
+     * a lavender band. */
+  --sidebar: #f9f9f9;
+  --sidebar-foreground: #0d0d0d;
+  --sidebar-primary: #0d0d0d;
+  --sidebar-primary-foreground: #fff;
+  --sidebar-accent: #ececec;
+  --sidebar-accent-foreground: #0d0d0d;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #0d0d0d;
+  --sidebar-active: color-mix(in srgb, var(--sidebar-foreground) 7%, var(--sidebar));
+  --sidebar-active-foreground: var(--sidebar-foreground);
 }
 
 .dark {
@@ -252,6 +312,33 @@
   --ui-shadow-warm-rgb: 0 0 0;
   --composer-shadow: 0 0 12px -6px rgb(0 0 0 / 80%);
   --composer-shadow-focus: 0 0 14px -8px rgb(0 0 0 / 90%);
+  --background: #000000;
+  --foreground: #f2f2f2;
+  --card: #212121;
+  /* Opaque stand-in for the glass --card. The composer card uses this
+     * instead of --card: its trays tuck their square corners behind the
+     * card (negative-margin overlap), and a translucent card lets the
+     * tucked strip ghost through its edges. Approximates the glass card's
+     * perceived color on the dark canvas. */
+  --card-solid: #212121;
+  --card-foreground: #f2f2f2;
+  /* Dark counterpart of the tray surface — semi-transparent for glass effect */
+  --tray: #212121;
+  --popover: #2f2f2f;
+  --popover-foreground: #f2f2f2;
+  --primary: #f4f4f4;
+  --primary-foreground: #0d0d0d;
+  --secondary: #2f2f2f;
+  --secondary-foreground: #ececec;
+  /* Active/selected states, hover backgrounds, subtle containers. */
+  /* Opaque slate base: bg-muted backs ~160 solid utility surfaces (code
+       blocks, badges, hover rows) that must stay opaque; the frosted look is
+       reserved for the .dark .bg-card rule. */
+  --muted: #2f2f2f;
+  --muted-foreground: #b4b4b4;
+  --code-bg: #2f2f2f;
+  --accent: #2f2f2f;
+  --accent-foreground: #ececec;
   --destructive: #e65b77;
   --destructive-foreground: #fff;
   /* success/warning/info repointed onto the status hues below, mirroring
@@ -262,23 +349,54 @@
   /* Session active / idle-alive blue, lightened for the dark glass card so
      * the small dot keeps adequate contrast against the dark canvas (the
      * light-mode #2f7fd4 reads too dim here). */
-  --session-active: #5ca4f5;
+  --session-active: #10a37f;
+  /* Brand pink + named status hues (same values as light — the brand
+     * status palette is hue-stable across themes). Defined explicitly here
+     * rather than inheriting from :root so dark mode is self-contained. */
+  --brand-accent: #10a37f;
   /* Pink tag surface — a heavier wash than light, since 6% all but vanishes
      * against the dark canvas. */
-  --tag-pink: rgba(240, 1, 150, 0.15);
+  --tag-pink: rgba(255, 255, 255, 0.08);
   --status-blue: #3b8ff5;
   --status-green: #2ea65c;
   --status-yellow: #d4972a;
   --status-red: #f04858;
   --status-gray: #8e99a4;
+  --border: #424242;
+  --border-weak: #2f2f2f;
+  --border-strong: #565656;
+  --button-border: #565656;
+  --button-icon-hover-color: #f2f2f2;
+  --input: #424242;
+  /* Focus ring matches --primary. */
+  --ring: #f4f4f4;
   --chart-1: oklch(0.64 0.22 254);
   --chart-2: oklch(0.65 0.14 200);
   --chart-3: oklch(0.68 0.15 145);
   --chart-4: oklch(0.75 0.16 70);
   --chart-5: oklch(0.65 0.008 240);
-  --tooltip-bg: #2a2440;
+  /* Translucent so the sidebar's own layers (see .dark .conversations-sidebar)
+     * and the canvas read through it. */
+  --sidebar: #171717;
+  --sidebar-foreground: #ececec;
+  --sidebar-primary: #f4f4f4;
+  --sidebar-primary-foreground: #0d0d0d;
+  --sidebar-accent: #2f2f2f;
+  --sidebar-accent-foreground: #ececec;
+  --sidebar-border: #2f2f2f;
+  --sidebar-ring: #f4f4f4;
+  --tooltip-bg: #2f2f2f;
 }
 
+:root:not(.dark):not([data-theme]) {
+  --sidebar-active: #ececec;
+  --sidebar-active-foreground: #0d0d0d;
+}
+
+.dark:not([data-theme]) {
+  --sidebar-active: #2f2f2f;
+  --sidebar-active-foreground: #ececec;
+}
 /* Main-sidebar item labels use the same text-ui semantic step as Appearance
  * content. Both read the desktop typography tokens derived from the size
  * selected in Settings. */
@@ -316,9 +434,25 @@
   padding: 0;
 }
 
-/* The transparent <main> shows the palette canvas through. */
 .app-shell {
   background: var(--background);
+}
+
+.dark .app-shell {
+  background: #000000;
+}
+
+:root:not(.dark):not([data-theme]) .conversations-sidebar {
+  background: #f9f9f9;
+}
+
+.dark:not([data-theme]) .conversations-sidebar {
+  background: #171717;
+}
+
+:root:not(.dark)[data-theme] .conversations-sidebar,
+.dark[data-theme] .conversations-sidebar {
+  background: var(--sidebar);
 }
 
 /* A desktop peek floats over the chat instead of pushing it aside, so its
@@ -417,7 +551,7 @@ html:not(.dark) .conversations-sidebar:not(.is-peek) {
  * React version drops the boolean inert attribute from the DOM.)
  * Both rails (Workspace, Conversations) are excluded — they paint their own
  * canvas layers above, not a glass card. */
-.dark
+.dark[data-theme]
   :is(.bg-card, [class*="md:bg-card"]):not(
     :is(.bg-card, [class*="md:bg-card"]) :is(.bg-card, [class*="md:bg-card"])
   ):not([data-collapsed]):not([aria-label="Workspace"]):not([aria-label="Conversations"]) {
@@ -813,7 +947,6 @@ aside[aria-label="Workspace"][data-maximized] {
     transition-duration: 1ms;
   }
 }
-
 /* Liquid glass for the mobile sidebar's two floating chips (Search at the top
  * of the header row, Settings over the bottom of the session list) — the iOS
  * control idiom.
@@ -870,28 +1003,25 @@ aside[aria-label="Workspace"][data-maximized] {
  * the full emboss + dark depth shadow reads too heavy on the light
  * canvas. Dark mode: stronger emboss plus the grounding shadow. */
 .share-button-glassy {
-  background: linear-gradient(to bottom, #fa3d99 0%, #f22286 40%, #d51d74 100%);
-  border: none;
+  background: #0d0d0d;
+  border: 1px solid #0d0d0d;
   box-shadow: none;
   color: #ffffff;
 }
 
 .share-button-glassy:hover {
-  /* Darken the gradient slightly on hover */
-  background: linear-gradient(to bottom, #ec3790 0%, #e51b7d 40%, #c41a6b 100%);
+  background: #2f2f2f;
 }
 
 .dark .share-button-glassy {
-  background: linear-gradient(150deg, #ff4da6 0%, #f22286 40%, #b8185f 100%);
-  border: none;
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.5),
-    0 1px 3px rgba(0, 0, 0, 0.4);
-  color: #ffffff;
+  background: #f4f4f4;
+  border: 1px solid #f4f4f4;
+  box-shadow: none;
+  color: #0d0d0d;
 }
 
 .dark .share-button-glassy:hover {
-  background: linear-gradient(150deg, #f0408f 0%, #e51b7d 40%, #a51455 100%);
+  background: #d9d9d9;
 }
 
 @layer base {
@@ -1892,4 +2022,173 @@ aside[aria-label="Workspace"][data-maximized] {
 .emoji-picker-popover em-emoji-picker {
   height: var(--emoji-picker-height, 420px) !important;
   min-height: 0 !important;
+}
+
+.dpia-print-pack {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  html,
+  body,
+  #root,
+  .app-shell,
+  main {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #111 !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .dpia-print-pack,
+  .dpia-print-pack * {
+    visibility: visible !important;
+  }
+
+  .dpia-print-pack {
+    position: absolute;
+    inset: 0;
+    display: block !important;
+    width: 100%;
+    padding: 0;
+    color: #111;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+  }
+
+  .dpia-print-pack header {
+    border-bottom: 2px solid #111;
+    padding-bottom: 6mm;
+  }
+
+  .dpia-print-pack h1 {
+    margin: 1mm 0 2mm;
+    font-size: 22pt;
+    line-height: 1.15;
+  }
+
+  .dpia-print-pack h2 {
+    margin: 7mm 0 3mm;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 1.5mm;
+    font-size: 15pt;
+  }
+
+  .dpia-print-pack h3 {
+    margin: 0 0 1mm;
+    font-size: 10.5pt;
+  }
+
+  .dpia-print-pack p {
+    margin: 1.5mm 0;
+  }
+
+  .dpia-print-kicker {
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .dpia-print-warning {
+    margin-top: 4mm;
+    border: 1px solid #b7791f;
+    padding: 2.5mm 3mm;
+    background: #fffbea !important;
+    font-weight: 600;
+  }
+
+  .dpia-print-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 3mm;
+    margin: 3mm 0;
+  }
+
+  .dpia-print-grid > div {
+    border: 1px solid #bbb;
+    padding: 2mm;
+  }
+
+  .dpia-print-grid dt {
+    color: #555;
+    font-size: 8pt;
+  }
+
+  .dpia-print-grid dd {
+    margin: 0.5mm 0 0;
+    font-weight: 700;
+  }
+
+  .dpia-print-lifecycle {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2mm;
+  }
+
+  .dpia-print-lifecycle > div,
+  .dpia-print-finding {
+    break-inside: avoid;
+    border: 1px solid #bbb;
+    padding: 2.5mm;
+  }
+
+  .dpia-print-lifecycle span,
+  .dpia-print-lifecycle small {
+    display: block;
+    margin-top: 1mm;
+  }
+
+  .dpia-print-finding {
+    margin-bottom: 2.5mm;
+  }
+
+  .dpia-print-pack table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 8pt;
+  }
+
+  .dpia-print-pack th,
+  .dpia-print-pack td {
+    border: 1px solid #aaa;
+    padding: 1.8mm;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+
+  .dpia-print-pack th {
+    background: #eee !important;
+    font-weight: 700;
+  }
+
+  .dpia-print-pack tr,
+  .dpia-print-pack li {
+    break-inside: avoid;
+  }
+
+  .dpia-print-pack ol {
+    padding-left: 5mm;
+  }
+
+  .dpia-print-pack li {
+    margin-bottom: 2mm;
+  }
+
+  .dpia-print-break {
+    break-before: page;
+  }
 }

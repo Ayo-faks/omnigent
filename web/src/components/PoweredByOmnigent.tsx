@@ -1,9 +1,5 @@
-import { OttoEyes } from "@/components/OttoEyes";
+import { WuloMark } from "@/components/WuloMark";
 
-/**
- * Understated "Powered by Omnigent" mark for the landing footer. Always uses
- * the real Otto mascot (not the operator's logo), since it credits the product.
- */
 export function PoweredByOmnigent() {
   return (
     <div
@@ -11,8 +7,11 @@ export function PoweredByOmnigent() {
       data-testid="powered-by-omnigent"
     >
       <span>Powered by</span>
-      <OttoEyes className="h-3.5 w-auto opacity-60 transition-opacity duration-300 ease-out group-hover:opacity-100" />
-      <span>Omnigent</span>
+      <WuloMark
+        alt=""
+        className="h-3.5 w-auto opacity-60 transition-opacity duration-300 ease-out group-hover:opacity-100"
+      />
+      <span>wulo-work</span>
     </div>
   );
 }

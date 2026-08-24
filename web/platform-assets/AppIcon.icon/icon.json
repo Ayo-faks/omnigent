@@ -1,8 +1,8 @@
 {
   "fill" : {
     "linear-gradient" : [
-      "display-p3:0.12164,0.15594,0.26582,1.00000",
-      "display-p3:0.11859,0.15173,0.25830,1.00000"
+      "display-p3:0.09020,0.09020,0.09020,1.00000",
+      "display-p3:0.09020,0.09020,0.09020,1.00000"
     ],
     "orientation" : {
       "start" : {
@@ -19,10 +19,10 @@
     {
       "layers" : [
         {
-          "image-name" : "SVG Image.svg",
-          "name" : "SVG Image",
+          "image-name" : "Wulo Mark.png",
+          "name" : "Wulo Mark",
           "position" : {
-            "scale" : 1.05,
+            "scale" : 0.88,
             "translation-in-points" : [
               0,
               0

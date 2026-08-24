@@ -5,8 +5,8 @@
   in values-night/colors.xml.
 -->
 <resources>
-    <!-- App-icon background: the brand dark-navy (iOS Icon Composer gradient). -->
-    <color name="ic_launcher_background">#1E2742</color>
+    <!-- App-icon background shared with the browser and desktop icons. -->
+    <color name="ic_launcher_background">#171717</color>
 
     <color name="brand_background">#FFFFFF</color>
     <color name="brand_foreground">#11171C</color>

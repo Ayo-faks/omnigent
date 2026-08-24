@@ -21,6 +21,9 @@ import * as conversationsHook from "@/hooks/useConversations";
 import * as commentInboxHook from "@/hooks/useCommentInbox";
 import * as sessionsApi from "@/lib/sessionsApi";
 import type { CommentInbox } from "@/hooks/useCommentInbox";
+import * as dpiaCasesHook from "@/hooks/useDpiaCases";
+import * as dpiaRequestsHook from "@/hooks/useDpiaRequests";
+import { createStudentSuccessAlertSeed } from "@/lib/dpia/seed";
 
 // Minimal ApprovalCard stub: renders the message and an Accept button that
 // forwards to the page's submit handler. The real card's form/preview UX is
@@ -51,6 +54,11 @@ vi.mock("@/hooks/useConversations", async (importActual) => ({
   useConversations: vi.fn(),
 }));
 vi.mock("@/hooks/useCommentInbox", () => ({ useCommentInbox: vi.fn() }));
+vi.mock("@/hooks/useDpiaCases", () => ({ useDpiaCases: vi.fn() }));
+vi.mock("@/hooks/useDpiaRequests", () => ({
+  useDpiaRequests: vi.fn(),
+  useDpiaContributorResponses: vi.fn(),
+}));
 vi.mock("@/lib/sessionsApi", () => ({ getSession: vi.fn(), approve: vi.fn() }));
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -116,6 +124,13 @@ function renderPage() {
 beforeEach(() => {
   vi.mocked(conversationsHook.useConversations).mockReturnValue(conversationsStub([]));
   vi.mocked(commentInboxHook.useCommentInbox).mockReturnValue(commentInboxStub());
+  vi.mocked(dpiaCasesHook.useDpiaCases).mockReturnValue([]);
+  vi.mocked(dpiaRequestsHook.useDpiaRequests).mockReturnValue({ data: [] } as unknown as ReturnType<
+    typeof dpiaRequestsHook.useDpiaRequests
+  >);
+  vi.mocked(dpiaRequestsHook.useDpiaContributorResponses).mockReturnValue({
+    data: [],
+  } as unknown as ReturnType<typeof dpiaRequestsHook.useDpiaContributorResponses>);
   vi.mocked(sessionsApi.getSession).mockResolvedValue({
     pendingElicitations: [],
   } as unknown as Awaited<ReturnType<typeof sessionsApi.getSession>>);
@@ -130,6 +145,88 @@ afterEach(() => {
 });
 
 describe("InboxPage states", () => {
+  it("always renders the DPIA cases section", () => {
+    renderPage();
+    expect(screen.getByTestId("dpia-inbox-section")).toHaveTextContent("DPIA cases");
+    expect(screen.getByText("No DPIA case actions need attention.")).toBeInTheDocument();
+  });
+
+  it("renders an unbound case awaiting an officer decision and counts it in the header", () => {
+    vi.mocked(dpiaCasesHook.useDpiaCases).mockReturnValue([createStudentSuccessAlertSeed()]);
+    renderPage();
+
+    const item = screen.getByTestId("dpia-inbox-item");
+    expect(item).toHaveTextContent("Screening recommendation awaits officer decision");
+    expect(within(item).getByRole("link", { name: /Open case/ })).toHaveAttribute(
+      "href",
+      "/dpia/cases/student-success-alert?tab=screening",
+    );
+    expect(screen.getByText(/1 DPIA item/)).toBeInTheDocument();
+    expect(screen.queryByText("Nothing waiting on you")).not.toBeInTheDocument();
+  });
+
+  it("renders incoming DPIA requests and pending stakeholder responses", () => {
+    vi.mocked(dpiaRequestsHook.useDpiaRequests).mockReturnValue({
+      data: [
+        {
+          sessionId: "s-req",
+          requestId: "req-vendor-abc",
+          status: "submitted",
+          acknowledged: false,
+          caseId: null,
+          request: {
+            artifact: "dpia-request",
+            request_id: "req-vendor-abc",
+            requester: { name: "Priya Shah", team: "Procurement" },
+            project: {
+              title: "Vendor Wellbeing Analytics",
+              purpose: "Score wellbeing surveys to prioritise support.",
+              data_subjects: "Students",
+              personal_data: "Survey responses",
+              vendors: "Acme",
+              timeline: "October",
+            },
+            known_unknowns: [],
+            submitted_at: "2026-08-22T09:00:00.000Z",
+          },
+          outcome: null,
+        },
+      ],
+    } as unknown as ReturnType<typeof dpiaRequestsHook.useDpiaRequests>);
+    vi.mocked(dpiaRequestsHook.useDpiaContributorResponses).mockReturnValue({
+      data: [
+        {
+          sessionId: "s-contrib",
+          contributor: "IT Security",
+          caseId: "student-success-alert",
+          requestId: "req-vendor-abc",
+          status: "submitted",
+          response: {
+            artifact: "stakeholder-response",
+            case_id: "student-success-alert",
+            respondent: { name: "Jordan Ali", team: "IT Security" },
+            answers: [{ question_id: "q-hosting", response: "Hosted in London, UK region." }],
+            submitted_at: "2026-08-22T10:00:00.000Z",
+          },
+        },
+      ],
+    } as unknown as ReturnType<typeof dpiaRequestsHook.useDpiaContributorResponses>);
+    renderPage();
+
+    const items = screen.getAllByTestId("dpia-inbox-item");
+    expect(items[0]).toHaveTextContent("DPIA request awaiting triage");
+    expect(within(items[0]).getByRole("link", { name: /Review request/ })).toHaveAttribute(
+      "href",
+      "/dpia/requests/req-vendor-abc",
+    );
+    expect(items[1]).toHaveTextContent("Stakeholder response awaiting review");
+    expect(within(items[1]).getByRole("link", { name: /Open case/ })).toHaveAttribute(
+      "href",
+      "/dpia/cases/student-success-alert",
+    );
+    expect(screen.getByText(/2 DPIA items/)).toBeInTheDocument();
+  });
+
   it("shows a loading state while the session list is still loading", () => {
     // WHY: an in-flight (assembling) list with no items yet must show the
     // loading row, never the empty state.

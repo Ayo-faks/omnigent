@@ -32,7 +32,7 @@ struct ConnectView: View {
           .frame(height: 80)
           .padding(.bottom, 12)
 
-        Text("Enter the URL of the Omnigent server.")
+        Text("Enter the URL of the wulo-work server.")
           .font(.system(size: 14))
           .lineSpacing(2)
           .multilineTextAlignment(.center)
@@ -151,7 +151,7 @@ struct ConnectView: View {
         .frame(width: 44, height: 44)
         .contentShape(Rectangle())
     }
-    .accessibilityLabel("About Omnigent")
+    .accessibilityLabel("About wulo-work")
   }
 
   private var visibleRecentServers: [String] {

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { OttoEyes } from "@/components/OttoEyes";
-import { OttoIcon } from "@/components/icons/OttoIcon";
+import { WuloMark } from "@/components/WuloMark";
 import { useAppName, useLogoUrl } from "@/lib/branding";
 import { authenticatedFetch } from "@/lib/identity";
 import { getOmnigentHostConfig, getOmnigentHostGeneration } from "@/lib/host";
@@ -86,11 +85,7 @@ function acquireLogo(path: string, generation: number): BlobUrlHandle {
 }
 
 function FallbackLogo({ className, variant }: { className?: string; variant: "eyes" | "icon" }) {
-  return variant === "eyes" ? (
-    <OttoEyes className={className} />
-  ) : (
-    <OttoIcon className={className} aria-hidden />
-  );
+  return <WuloMark className={className} alt={variant === "eyes" ? "wulo-work" : ""} />;
 }
 
 function EmbeddedBrandLogo({
@@ -157,8 +152,8 @@ function StandaloneBrandLogo({
 
 /**
  * The app's brand logo: the operator's custom logo when configured, else the
- * Otto mascot. `variant` picks the logo variant and matching fallback —
- * `"eyes"` (hero) → `main`/`OttoEyes`, `"icon"` (indicators) → `loading`/`OttoIcon`.
+ * wulo-work mark. `variant` picks the operator logo variant — `"eyes"` uses
+ * the main logo and `"icon"` uses the loading logo.
  */
 export function BrandLogo({
   className,

@@ -598,7 +598,7 @@ function ColorThemeControl() {
               <div className="text-ui font-medium">Theme palette</div>
               <div className="truncate text-sm text-muted-foreground">
                 {selection === "custom"
-                  ? `Based on ${PALETTES.find((palette) => palette.id === customTheme.basePalette)?.label ?? "Omnigent"}`
+                  ? `Based on ${PALETTES.find((palette) => palette.id === customTheme.basePalette)?.label ?? "wulo-work"}`
                   : selectedPalette?.blurb}
               </div>
             </div>
@@ -843,7 +843,7 @@ function AppearanceSection() {
   return (
     <Section
       title="Appearance"
-      description="Choose how Omnigent looks on this device."
+      description="Choose how wulo-work looks on this device."
       descriptionClassName="text-sm"
     >
       <div key={resetKey} className="flex flex-col gap-8">
@@ -1008,7 +1008,7 @@ function AppearanceSection() {
 /** Git behavior settings. */
 function GitSection() {
   return (
-    <Section title="Git" description="Configure how Omnigent works with Git.">
+    <Section title="Git" description="Configure how wulo-work works with Git.">
       <div className="flex flex-col gap-8">
         <AlwaysUseWorktreeControl />
         <DefaultBaseBranchControl />
@@ -1643,7 +1643,7 @@ function LocalCliSection() {
 
 const UPDATE_MODE_LABELS: Record<UpdateMode, string> = {
   default: "Automatic (check periodically, ask before installing)",
-  start: "Check when Omnigent starts",
+  start: "Check when wulo-work starts",
   manual: "Manual only",
   none: "Off",
 };
@@ -1727,7 +1727,7 @@ function UpdatesSection() {
   return (
     <Section
       title="Updates"
-      description="Desktop app update preferences for this installed Omnigent shell."
+      description="Desktop app update preferences for this installed wulo-work shell."
     >
       {config === null ? (
         <p className="text-ui text-muted-foreground">Update settings are unavailable.</p>
