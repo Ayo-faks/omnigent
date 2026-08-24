@@ -163,6 +163,10 @@ import {
   CLAUDE_NATIVE_DEFAULT_PERMISSION_MODE,
   CLAUDE_NATIVE_PERMISSION_MODES,
 } from "@/lib/claudePermissionMode";
+import {
+  CODEX_NATIVE_APPROVAL_MODES,
+  CODEX_NATIVE_DEFAULT_APPROVAL_MODE,
+} from "@/lib/codexApprovalMode";
 import { useHostModelOptions, useHosts, type Host } from "@/hooks/useHosts";
 import {
   controlHost,
@@ -323,33 +327,6 @@ const CURSOR_NATIVE_EXEC_MODES: {
 // runner uses Codex's built-in default.
 // Keep in sync with `codex --help` and
 // https://developers.openai.com/codex/agent-approvals-security
-const CODEX_NATIVE_DEFAULT_APPROVAL_MODE = "default";
-const CODEX_NATIVE_APPROVAL_MODES: {
-  value: string;
-  label: string;
-  description: string;
-  args: string[];
-}[] = [
-  {
-    value: "default",
-    label: "Default",
-    description: "Read/edit/run in workspace; approval for external edits or network",
-    args: [],
-  },
-  {
-    value: "full-access",
-    label: "Full access",
-    description: "Edit any file and access the internet without approval",
-    args: ["--sandbox", "danger-full-access", "--ask-for-approval", "never"],
-  },
-  {
-    value: "read-only",
-    label: "Read only",
-    description: "Read files only; approval required for edits, commands, or network",
-    args: ["--sandbox", "read-only", "--ask-for-approval", "on-request"],
-  },
-];
-
 // Conversation-label key for the DANGEROUS codex full-bypass opt-in. When
 // set to "1" the runner launches Codex with
 // `--dangerously-bypass-approvals-and-sandbox` (no approval prompts, no
