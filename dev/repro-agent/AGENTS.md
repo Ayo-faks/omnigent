@@ -246,8 +246,9 @@ real provider credentials. From your workspace checkout, in the background (keep
 the log paths — you need them for evidence and the runner-online check):
 
 ```bash
-# 1) mock LLM (deterministic agent turns; no real provider needed)
-python3 tests/server/integration/mock_llm_server.py --port 8900 \
+# 1) mock LLM (deterministic agent turns; no real provider needed).
+#    The port is a POSITIONAL arg (mock_llm_server.py reads sys.argv[1]).
+python3 tests/server/integration/mock_llm_server.py 8900 \
   >/tmp/mock_llm.log 2>&1 &
 
 # 2) server
@@ -256,7 +257,11 @@ omnigent server --host 127.0.0.1 --port 8901 \
   --artifact-location /tmp/repro/artifacts \
   >/tmp/omni_server.log 2>&1 &
 
-# 3) sibling runner, pointed at the server, LLM routed to the mock
+# 3) sibling runner, pointed at the server, LLM routed to the mock.
+#    Minimal loopback form — a plain runner id, no tunnel binding token, since
+#    the local no-auth server accepts it. conftest.py uses the fuller setup
+#    (token_bound_runner_id + OMNIGENT_RUNNER_TUNNEL_BINDING_TOKEN +
+#    OMNIGENT_RUNNER_PARENT_PID); prefer that if this simpler form won't connect.
 OMNIGENT_RUNNER_ID="$(python3 -c 'import secrets;print("runner_"+secrets.token_hex(8))')"
 RUNNER_SERVER_URL="http://127.0.0.1:8901" \
 OMNIGENT_RUNNER_ID="$OMNIGENT_RUNNER_ID" \
@@ -265,8 +270,8 @@ OPENAI_BASE_URL="http://127.0.0.1:8900/v1" OPENAI_API_KEY="mock-key" \
 ```
 
 Then **wait until it is healthy** — poll `/health` for 200 AND the runner status
-for `online: true`, exactly as the e2e harness does; do not start driving before
-both pass (a cold boot builds the web bundle and can take a minute):
+for `online: true`; do not start driving before both pass (a cold boot builds the
+web bundle and can take a minute):
 
 ```bash
 for i in $(seq 1 90); do
@@ -277,11 +282,21 @@ for i in $(seq 1 90); do
 done
 ```
 
+**Seed the mock's response queue before driving any turn.** The mock LLM returns
+nothing until you configure a keyed response queue (`POST /mock/configure`) — an
+unconfigured mock yields empty/errored completions, so a turn-driven journey will
+fail for the wrong reason. Use conftest's `configure_mock_llm(mock_url, responses,
+key=…)` helper (queue keyed by the agent's model name; `match` for content-based
+routing) to enqueue the assistant turns your journey expects, exactly as the e2e
+tests do. (Pure-UI-render or backend/HTTP journeys that never drive an agent turn
+can skip this.)
+
 Follow `tests/e2e_ui/conftest.py` as the source of truth for the exact flags,
-env, and mock-LLM configuration (`configure_mock_llm`) — do not invent a new
-harness. If the nested server never becomes healthy, capture the tails of the
-three logs above as evidence and stop with `needs_more_info` (the sandbox image
-can't boot the stack), rather than reporting a bug verdict you didn't observe.
+env, and mock-LLM configuration (`configure_mock_llm` / `reset_mock_llm`) — do not
+invent a new harness. If the nested server never becomes healthy, capture the
+tails of the three logs above as evidence and stop with `needs_more_info` (the
+sandbox image can't boot the stack), rather than reporting a bug verdict you
+didn't observe.
 
 ### Drive the journey (both modes, by surface)
 

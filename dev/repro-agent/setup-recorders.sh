@@ -26,16 +26,17 @@ set -uo pipefail  # intentionally NOT -e: keep going past a failed lane
 
 echo "→ setup-recorders: installing reproduction recorders (best-effort)"
 
-# 1) pytest-playwright — the tests/e2e_ui/ recorder plugin. Declared in omnigent's
-#    [test] extra; install it from the cloned workspace so the version matches.
+# 1) pytest-playwright — the only recorder plugin Step 4 needs (stock
+#    `--video on --screenshot on`; no visual-snapshot plugin). Install just this
+#    at the repo's pinned floor rather than the whole `.[test]` extra: a full
+#    editable `.[test]` install would reinstall omnigent over the platform image's
+#    pre-baked copy (heavy, and can conflict). It pulls in `playwright` + `pytest`.
 if python3 -c "import pytest_playwright" 2>/dev/null; then
   echo "  ok: pytest-playwright already present"
-elif [ -f pyproject.toml ]; then
-  pip3 install --break-system-packages -e ".[test]" \
-    && echo "  ok: installed .[test] (pytest-playwright)" \
-    || echo "  WARN: pip install .[test] failed — web/terminal recording will degrade"
 else
-  echo "  WARN: no pyproject.toml in cwd — run from the cloned omnigent workspace; skipping pytest-playwright"
+  pip3 install --break-system-packages "pytest-playwright>=0.7" \
+    && echo "  ok: installed pytest-playwright" \
+    || echo "  WARN: pip install pytest-playwright failed — web/terminal recording will degrade"
 fi
 
 # 2) Chromium — the headless browser the Playwright driver + recorder use.
