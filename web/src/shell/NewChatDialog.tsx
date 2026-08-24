@@ -165,6 +165,9 @@ import {
 } from "@/lib/claudePermissionMode";
 import {
   CODEX_NATIVE_APPROVAL_MODES,
+  CODEX_NATIVE_BYPASS_APPROVAL_OPTION,
+  CODEX_NATIVE_BYPASS_APPROVAL_VALUE,
+  CODEX_NATIVE_BYPASS_SANDBOX_LABEL_KEY,
   CODEX_NATIVE_DEFAULT_APPROVAL_MODE,
 } from "@/lib/codexApprovalMode";
 import { useHostModelOptions, useHosts, type Host } from "@/hooks/useHosts";
@@ -319,18 +322,6 @@ const CURSOR_NATIVE_EXEC_MODES: {
     args: ["--yolo"],
   },
 ];
-
-// Launch-only Codex full bypass. Unlike the three approval presets, this cannot
-// be switched safely on a running session, so it is offered only by the new
-// session composer and rides on the conversation as a label.
-const CODEX_NATIVE_BYPASS_SANDBOX_LABEL_KEY = "omnigent.codex_native.bypass_sandbox";
-const CODEX_NATIVE_BYPASS_APPROVAL_VALUE = "bypass";
-const CODEX_NATIVE_BYPASS_APPROVAL_OPTION = {
-  value: CODEX_NATIVE_BYPASS_APPROVAL_VALUE,
-  label: "Bypass approvals & sandbox",
-  description: "Runs Codex with no approval prompts and no command sandbox",
-  args: [] as string[],
-};
 
 function createdHarnessOptions({
   harness,

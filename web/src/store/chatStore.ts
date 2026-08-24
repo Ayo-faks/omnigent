@@ -111,7 +111,7 @@ import { uploadFile } from "@/lib/filesApi";
 import type { ActiveResponse } from "./types";
 import { supportsEffortControl } from "@/lib/sessionCapabilities";
 import { claudePermissionModeFromSession } from "@/lib/claudePermissionMode";
-import { codexApprovalModeFromArgs } from "@/lib/codexApprovalMode";
+import { codexApprovalModeFromSession } from "@/lib/codexApprovalMode";
 import { codexPlanModeFromSession } from "@/lib/codexPlanMode";
 import { getCurrentAuthorId } from "@/lib/identity";
 import { getOmnigentHostConfig, type OmnigentInteractionStatus } from "@/lib/host";
@@ -2334,7 +2334,7 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
     patchSet({ codexApprovalMode: mode });
     try {
       const session = await updateSession(conversationId, { codexApprovalMode: mode });
-      patchSet({ codexApprovalMode: codexApprovalModeFromArgs(session.terminalLaunchArgs) });
+      patchSet({ codexApprovalMode: codexApprovalModeFromSession(session) });
     } catch (err) {
       patchSet({ codexApprovalMode: previous });
       throw err;
@@ -2979,7 +2979,7 @@ function sessionBindingPatch(
     claudePermissionMode: isNativeWrapper(wrapper)
       ? (claudePermissionModeFromSession(session) ?? "")
       : "",
-    codexApprovalMode: codexApprovalModeFromArgs(session.terminalLaunchArgs),
+    codexApprovalMode: codexApprovalModeFromSession(session),
     contextWindow: session.contextWindow ?? null,
     gitBranch: session.gitBranch ?? null,
     skills: session.skills ?? [],

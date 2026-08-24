@@ -221,7 +221,11 @@ import {
   claudePermissionModeLabel,
   isClaudeNativeSession,
 } from "@/lib/claudePermissionMode";
-import { CODEX_NATIVE_APPROVAL_MODES } from "@/lib/codexApprovalMode";
+import {
+  CODEX_NATIVE_APPROVAL_MODES,
+  CODEX_NATIVE_BYPASS_APPROVAL_OPTION,
+  CODEX_NATIVE_BYPASS_APPROVAL_VALUE,
+} from "@/lib/codexApprovalMode";
 import { isCodexNativeSession } from "@/lib/codexPlanMode";
 import { getCliServerUrl } from "@/lib/host";
 import { SessionImage } from "@/components/SessionImage";
@@ -6414,10 +6418,9 @@ const SUBAGENT_ROUTING_DESCRIPTION = "Model routing for subagents this session s
  * In-session run-config modal opened from the composer's gear icon. The
  * live-committing analogue of the new-session ``HarnessConfigModal``: only the
  * knobs switchable mid-session appear — Model (which folds Smart Routing in as
- * an option where a dropdown exists), Effort, and Subagent routing. A session's
- * own Smart Routing is otherwise a create-time choice, and
- * permission/approval/cursor modes are launch-time only (no in-session state to
- * read or write), so they are intentionally absent.
+ * an option where a dropdown exists), Effort, native permission presets, and
+ * Subagent routing. A session's own Smart Routing and cursor mode remain
+ * create-time choices.
  *
  * Like the new-session modal, changes are drafted locally and only applied on
  * Save (through the store setters ``setModel`` / ``setEffort`` /
@@ -6759,7 +6762,14 @@ function SessionConfigModal({
             </ConfigRow>
           )}
           {showClaudePermissionMode && modelPickerKind === "codex" && (
-            <ConfigRow label="Permissions" description="How much Codex asks before acting">
+            <ConfigRow
+              label="Permissions"
+              description={
+                codexApprovalMode === CODEX_NATIVE_BYPASS_APPROVAL_VALUE
+                  ? "Currently bypassing approvals and sandbox; choose another mode to leave bypass"
+                  : "How much Codex asks before acting"
+              }
+            >
               <Select
                 value={draftCodexApprovalMode}
                 onValueChange={setDraftCodexApprovalMode}
@@ -6774,6 +6784,15 @@ function SessionConfigModal({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper" align="start">
+                  {codexApprovalMode === CODEX_NATIVE_BYPASS_APPROVAL_VALUE && (
+                    <SelectItem
+                      value={CODEX_NATIVE_BYPASS_APPROVAL_VALUE}
+                      data-approval-mode={CODEX_NATIVE_BYPASS_APPROVAL_VALUE}
+                      disabled
+                    >
+                      {CODEX_NATIVE_BYPASS_APPROVAL_OPTION.label}
+                    </SelectItem>
+                  )}
                   {CODEX_NATIVE_APPROVAL_MODES.map((mode) => (
                     <SelectItem key={mode.value} value={mode.value} data-approval-mode={mode.value}>
                       {mode.label}
