@@ -5171,6 +5171,127 @@ async def test_subagent_watcher_forwards_transcript_items_to_child_session(
         server.server_close()
 
 
+async def test_subagent_watcher_eof_skips_preexisting_history_on_resume(
+    tmp_path: Path,
+) -> None:
+    """
+    On a resume, a sub-agent already tracked in state at ``byte_offset=0``
+    has its pre-existing transcript skipped to EOF instead of re-uploaded.
+
+    This is the resume re-upload bug: a prior run whose drain the stall
+    deadline cancelled leaves the cursor at 0, so every accumulated
+    sub-agent would otherwise re-post its whole transcript. The first tail
+    pass (id in ``cold_start_eof_pending``) must post nothing and jump the
+    cursor to end-of-file; a later append then forwards normally.
+    """
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+    subagent_jsonl = _seed_subagent_on_disk(
+        transcript_path=transcript_path,
+        subagent_id="old1",
+        agent_type="Explore",
+        description="finished last run",
+        tool_use_id="toolu_old",
+        transcript_records=[
+            {
+                "isSidechain": True,
+                "type": "user",
+                "uuid": "sa-user-old",
+                "message": {"role": "user", "content": "go"},
+            },
+            {
+                "isSidechain": True,
+                "type": "assistant",
+                "uuid": "sa-assistant-old",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                },
+            },
+        ],
+    )
+    # Tracked from a prior run, cursor stuck at 0 (drain never completed).
+    state = forwarder.SubagentForwardState(
+        subagents={
+            "old1": forwarder.SubagentEntry(
+                subagent_id="old1",
+                child_conversation_id="conv_child_old",
+            )
+        }
+    )
+    posted_items: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """
+        Record any conversation-item posts; accept everything.
+
+        :param request: Request issued by the forwarder.
+        :returns: Canned Omnigent response.
+        """
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("type") == "external_conversation_item":
+            posted_items.append(body["data"]["item_data"]["content"][0]["text"])
+        return httpx.Response(202, json={})
+
+    pending = {"old1"}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://ap",
+    ) as client:
+        first = await forwarder._forward_available_subagents(
+            client=client,
+            parent_session_id="conv_parent",
+            bridge_dir=bridge_dir,
+            transcript_path=transcript_path,
+            state=state,
+            agent_name="claude-native-ui",
+            start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            start_at_end=True,
+            cold_start_eof_pending=pending,
+        )
+        # Nothing re-uploaded; cursor jumped to EOF; id drained from pending.
+        assert posted_items == []
+        assert first.subagents["old1"].byte_offset == subagent_jsonl.stat().st_size
+        assert pending == set()
+
+        # A new append after the resume tails normally (not skipped again).
+        with subagent_jsonl.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "isSidechain": True,
+                        "type": "assistant",
+                        "uuid": "sa-assistant-new",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "after resume"}],
+                        },
+                    }
+                )
+                + "\n"
+            )
+        second = await forwarder._forward_available_subagents(
+            client=client,
+            parent_session_id="conv_parent",
+            bridge_dir=bridge_dir,
+            transcript_path=transcript_path,
+            state=first,
+            agent_name="claude-native-ui",
+            start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            start_at_end=True,
+            cold_start_eof_pending=pending,
+        )
+
+    assert posted_items == ["after resume"]
+    assert second.subagents["old1"].byte_offset == subagent_jsonl.stat().st_size
+
+
 async def test_subagent_watcher_retry_skips_previously_posted_items(
     tmp_path: Path,
 ) -> None:

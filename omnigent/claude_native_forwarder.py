@@ -790,6 +790,16 @@ async def forward_claude_transcript_to_session(
     # metadata predates this launch is historical and, on a resume, is skipped
     # rather than re-mirrored from offset 0.
     subagent_cold_start_ts = time.time()
+    # Sub-agents already tracked from a prior run (loaded from disk above): on a
+    # resume their pre-existing transcript is skipped to EOF once — their child
+    # conversations already hold it, and a prior run's stall-cancelled drain can
+    # leave their byte_offset at 0, which would otherwise re-upload the whole
+    # transcript. This is the parent's start_at_end, applied to sub-agents.
+    # Mutated (drained) as each is skipped; genuinely-new sub-agents spawned
+    # this run are never in this set, so they still upload from offset 0.
+    subagent_cold_start_eof_pending: set[str] = (
+        set(subagent_state.subagents) if start_at_end else set()
+    )
     # Live assistant-text streaming. The delta cursor is independent of
     # the transcript/subagent cursors and survives /clear and /fork
     # (the deltas file belongs to the long-lived Claude process). The
@@ -1008,6 +1018,7 @@ async def forward_claude_transcript_to_session(
                             status_retry_tracker=subagent_status_retries,
                             start_at_end=start_at_end,
                             cold_start_ts=subagent_cold_start_ts,
+                            cold_start_eof_pending=subagent_cold_start_eof_pending,
                         )
                         # Reconcile + POST cumulative cost AFTER sub-agents are
                         # forwarded so the estimate sees this poll's sub-agent
@@ -1324,6 +1335,7 @@ async def _forward_available_subagents(
     status_retry_tracker: _PostRetryTracker,
     start_at_end: bool = False,
     cold_start_ts: float = 0.0,
+    cold_start_eof_pending: set[str] | None = None,
 ) -> SubagentForwardState:
     """
     Discover new Claude Task-tool sub-agents on disk, mint Omnigent child
@@ -1352,11 +1364,18 @@ async def _forward_available_subagents(
     :param status_retry_tracker: Backoff tracker for failed
         ``external_session_status`` POSTs (keyed by
         ``status:<child_id>``).
-    :param start_at_end: When ``True`` (resume/reattach), sub-agents whose
-        metadata predates ``cold_start_ts`` are skipped rather than mirrored
-        from offset 0 — they were already forwarded by the prior run.
+    :param start_at_end: When ``True`` (resume/reattach), a sub-agent
+        newly discovered on disk whose metadata predates ``cold_start_ts``
+        is skipped rather than registered + mirrored from offset 0 — it was
+        already forwarded by the prior run.
     :param cold_start_ts: Unix time of this forwarder launch; the boundary
         for the ``start_at_end`` skip above.
+    :param cold_start_eof_pending: Ids of sub-agents already tracked in
+        ``state`` at forwarder launch. On the first tail pass that reaches
+        one (``start_at_end`` only), its cursor is jumped to end-of-file and
+        the id removed from the set — skipping pre-existing history whose
+        prior-run drain may have been stall-cancelled at offset 0, then
+        tailing new appends normally. ``None`` disables the jump.
     :returns: Updated state with new sub-agents registered and
         existing sub-agents' cursors advanced.
     """
@@ -1478,6 +1497,32 @@ async def _forward_available_subagents(
             continue
         jsonl_path = subagents_dir / f"agent-{subagent_id}.jsonl"
         if not jsonl_path.exists():
+            continue
+        # Cold-start EOF skip (resume): a sub-agent carried over from a prior
+        # run has its pre-existing history skipped to end-of-file once, then
+        # tails new appends normally. Without this, a prior run whose drain the
+        # stall deadline cancelled leaves byte_offset at 0, so every accumulated
+        # sub-agent re-uploads its whole transcript on resume. Mirrors the
+        # parent's start_at_end. Done before the read so this pass posts nothing.
+        if cold_start_eof_pending is not None and subagent_id in cold_start_eof_pending:
+            cold_start_eof_pending.discard(subagent_id)
+            try:
+                eof_offset = jsonl_path.stat().st_size
+            except OSError:
+                eof_offset = entry.byte_offset
+            if eof_offset > entry.byte_offset:
+                new_entry = SubagentEntry(
+                    subagent_id=entry.subagent_id,
+                    child_conversation_id=entry.child_conversation_id,
+                    byte_offset=eof_offset,
+                    seen_source_ids=entry.seen_source_ids,
+                    last_activity_ts=entry.last_activity_ts,
+                    last_status=entry.last_status,
+                )
+                updated = SubagentForwardState(
+                    subagents={**updated.subagents, subagent_id: new_entry}
+                )
+                await _write_subagent_forward_state_async(bridge_dir, updated)
             continue
         # Reuse the parent-transcript parser, but pass
         # ``include_sidechains=True`` — every record in a sub-agent's
