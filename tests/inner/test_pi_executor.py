@@ -391,6 +391,26 @@ class TestPiProviderForModel(unittest.TestCase):
             "databricks-completions",
         )
 
+    def test_catalog_responses_non_gpt_model(self):
+        # grok serves only openai/v1/responses + the MLflow chat gateway, so
+        # /serving-endpoints chat (databricks-completions) would 400.
+        self.assertEqual(
+            _pi_provider_for_model(
+                "databricks-grok-4-6",
+                frozenset({ModelWireAPI.OPENAI_CHAT, ModelWireAPI.OPENAI_RESPONSES}),
+            ),
+            "databricks-openai",
+        )
+
+    def test_catalog_chat_only_non_gpt_model(self):
+        self.assertEqual(
+            _pi_provider_for_model(
+                "databricks-kimi-k3",
+                frozenset({ModelWireAPI.OPENAI_CHAT}),
+            ),
+            "databricks-completions",
+        )
+
 
 # ---------------------------------------------------------------------------
 # _split_pi_prompt tests

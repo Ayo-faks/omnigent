@@ -910,6 +910,13 @@ def _pi_provider_for_model(
         )
     if "gpt" in lower:
         return "databricks-openai" if _pi_needs_responses_api(model, wire_apis) else "databricks"
+    # A model can advertise Responses without being a GPT (e.g. grok, whose
+    # only surfaces are ``openai/v1/responses`` and the MLflow chat gateway).
+    # Routing it to ``databricks-completions`` sends it at /serving-endpoints
+    # chat, the one surface it rejects, so consult the catalog wire APIs before
+    # defaulting. With no metadata this still falls through unchanged.
+    if _pi_needs_responses_api(model, wire_apis):
+        return "databricks-openai"
     return "databricks-completions"
 
 

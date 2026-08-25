@@ -251,6 +251,19 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund @openai/codex@0.139.0
           echo "$CODEX_CLI_DIR/node_modules/.bin" >> "$GITHUB_PATH"
 
+      - name: Install Pi CLI
+        if: steps.trigger.outputs.skip != 'true' && steps.creds.outputs.available == 'true'
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+        run: |
+          # Pi is the third review vendor: unlike claude/codex it can run any
+          # gateway model, so it carries the OSS + grok reviewers. Installed
+          # outside the checked-out tree for the same reason as the others.
+          PI_CLI_DIR="${RUNNER_TEMP}/omnigent-pi-cli"
+          mkdir -p "$PI_CLI_DIR" && cd "$PI_CLI_DIR"
+          npm install --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@0.84.2
+          echo "$PI_CLI_DIR/node_modules/.bin" >> "$GITHUB_PATH"
+
       - name: Set LLM credentials
         if: steps.trigger.outputs.skip != 'true' && steps.creds.outputs.available == 'true'
         env:
@@ -324,6 +337,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          # Extra pi-hosted reviewers. Either may be empty; the prompt then
+          # omits that reviewer instead of asking for a model that can't run.
+          OMNIGENT_OSS_MODEL: ${{ vars.OMNIGENT_CI_OSS_MODEL }}
+          OMNIGENT_GROK_MODEL: ${{ vars.OMNIGENT_CI_GROK_MODEL }}
         run: |
           set -euo pipefail
 
@@ -353,7 +370,7 @@ jobs:
           # Build the review prompt — the diff is NOT embedded in the prompt.
           # Polly reads it from /tmp/pr_diff.txt via sys_os_shell at review time.
           python3 -u <<'PYEOF'
-          import json, pathlib, re
+          import json, os, pathlib, re
 
           meta = json.loads(pathlib.Path("/tmp/pr_meta.json").read_text())
           lockfile_pins = pathlib.Path("/tmp/lockfile_pins.txt").read_text(encoding="utf-8", errors="replace").strip()
@@ -374,6 +391,31 @@ jobs:
           {lockfile_pins if lockfile_pins else "(no lockfile changes)"}
           ```
           """ if lockfile_pins else ""
+
+          # Extra reviewers, each a `pi` dispatch pinned to one gateway model.
+          # An unset variable drops that reviewer rather than naming a model the
+          # deployment can't run (a bad model/worker pair fails the dispatch).
+          extra_reviewers = [
+              (os.environ.get('OMNIGENT_OSS_MODEL', '').strip(), 'open-weights'),
+              (os.environ.get('OMNIGENT_GROK_MODEL', '').strip(), 'xAI'),
+          ]
+          extra_reviewer_lines = "\n".join(
+              f"- `pi` with `args.model: \"{model}\"` ({label})"
+              for model, label in extra_reviewers if model
+          )
+          reviewer_section = f"""
+          **Reviewer panel.** Dispatch these reviewers IN PARALLEL in one turn, each
+          with `purpose: "review"` and a distinct `title`, giving each the diff and
+          asking for blocking / non-blocking findings with `file:line` evidence:
+          - `claude_code` (its default model)
+          - `codex` (its default model)
+          {extra_reviewer_lines}
+          Then synthesize ONE review from all of their reports. Agreement between
+          reviewers is not evidence: judge every finding against the diff yourself
+          and drop any you cannot confirm in the changed code. If a reviewer fails
+          to boot (missing CLI, or a model it cannot run), drop it silently and
+          continue with the rest; never report a worker's absence in the review body.
+          """ if extra_reviewer_lines else ""
 
           # Detect attached images/videos in the PR description. These usually sit
           # at the END of the body, so they would be lost to the 4096-char truncation
@@ -455,7 +497,7 @@ jobs:
           (LLM API keys, gateway tokens). Never include secrets, tokens, or
           credentials in your output, and never make outbound network calls
           except to the configured LLM gateway.
-
+          {reviewer_section}
           **Step 2 — review.** Report, in this order:
           {review_sections}
 
