@@ -42,6 +42,7 @@ const {
   normalizeRecentServers,
   expandDatabricksWorkspaceUrl,
   fetchServerManifest,
+  isDatabricksManagedServerUrl,
   PRE_MANIFEST_BASELINE,
 } = require("./url");
 const { parseOmnigentDeepLink, chooseDeepLinkStrategy } = require("./deepLink");
@@ -51,7 +52,12 @@ const { createBrowserViewRegistry } = require("./browserViewRegistry");
 const { createBrowserViewBoundsController } = require("./browserViewBounds");
 const { registerBrowserIpc } = require("./browserIpc");
 const { isDeveloperModeEnabled } = require("./developer_mode");
-const { excludingManagedServers, getManagedServerUrls } = require("./managed_preferences");
+const {
+  excludingManagedServers,
+  getDatabricksInternalFeaturesEnabled,
+  getManagedServerUrls,
+} = require("./managed_preferences");
+const arca = require("./arca");
 const { registerSessionExpiryReload } = require("./session-expiry");
 const { decideWindowOpen, stripCrossOriginOpenerHeaders, WEB_SCHEMES } = require("./popupPolicy");
 const omnigentCli = require("./omnigent_cli");
@@ -119,6 +125,28 @@ function managedServerUrls() {
         : undefined,
   });
 }
+
+/**
+ * Whether the MDM-managed Databricks-internal-features flag is set. Read from
+ * macOS on every call (never persisted), so profile changes apply live.
+ */
+function databricksInternalFeaturesEnabled() {
+  return getDatabricksInternalFeaturesEnabled({
+    platform: process.platform,
+    getUserDefault:
+      typeof systemPreferences.getUserDefault === "function"
+        ? systemPreferences.getUserDefault.bind(systemPreferences)
+        : undefined,
+  });
+}
+
+/**
+ * Keeps the Arca instance awake while it serves as a host (see the
+ * omnigent:arca-connect handler). Module-scoped so the quit path can stop it.
+ */
+const arcaKeepalive = arca.createArcaKeepalive({
+  log: (message) => console.log(`[omnigent] ${message}`),
+});
 
 /**
  * Quit-safety timeouts (see the before-quit handler near the end of this
@@ -1679,6 +1707,47 @@ async function confirmHostEnrollment(win) {
 }
 
 /**
+ * Confirm — via a native, main-process dialog, for the same reasons as
+ * {@link confirmHostEnrollment} — that the user really wants to connect their
+ * Arca instance as a runner for the window's pinned server. The pinned-origin
+ * IPC gate only proves the request came from the server's page, not that the
+ * user asked; without this prompt a malicious or compromised server could
+ * silently enroll the user's Arca box from page-load JS. Unlike local
+ * enrollment there is no persisted "Always Allow": connecting a remote
+ * machine is infrequent, so each connect asks.
+ *
+ * @param {BrowserWindow | null | undefined} win The window requesting the connect.
+ * @returns {Promise<boolean>} True when the connect is authorized.
+ */
+async function confirmArcaConnect(win) {
+  if (!win) return false;
+  const pinned = pinnedOrigin(win);
+  if (!pinned) return false;
+  let host = pinned;
+  try {
+    host = new URL(pinned).host;
+  } catch {
+    // Keep the full origin string if it somehow doesn't parse.
+  }
+  const icon = nativeImage.createFromPath(ICON_PNG);
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    icon: icon.isEmpty() ? undefined : icon,
+    title: "Omnigent",
+    message: `Connect your Arca instance to ${host}?`,
+    detail:
+      `This runs \`arca ssh\` to connect your Arca dev instance to ${pinned} as a ` +
+      `runner. While connected, that server can execute agent code and commands ` +
+      `on the Arca instance on its behalf.`,
+    buttons: ["Cancel", "Connect"],
+    defaultId: 0, // cancel is the safe default (Esc / Enter both decline)
+    cancelId: 0,
+    noLink: true,
+  });
+  return response === 1;
+}
+
+/**
  * OS-level attention cue for a notification fired while the app is frontmost,
  * where the banner is suppressed by the OS. On macOS we bounce the dock icon
  * (`informational` = a single gentle bounce); on Windows/Linux we flash the
@@ -2626,6 +2695,66 @@ function registerIpc() {
     return result;
   });
 
+  // SPA → desktop feature gates the server can't know about, currently just
+  // the MDM-managed Databricks-internal flag (Arca). Scoped per window: the
+  // flag reads true only when the window's own server is Databricks-managed
+  // (a workspace mount or a Databricks App) — internal features must not
+  // light up against arbitrary self-hosted servers. Read fresh per call so
+  // applying/removing the profile takes effect without a restart.
+  ipcMain.handle("omnigent:get-desktop-features", (event) => {
+    if (!isPinnedOriginSender(event)) {
+      console.warn("[omnigent] get-desktop-features from untrusted sender dropped");
+      return null;
+    }
+    return {
+      databricksInternalFeatures:
+        databricksInternalFeaturesEnabled() && isDatabricksManagedServerUrl(senderServerUrl(event)),
+    };
+  });
+
+  // SPA → connect the user's Arca instance (Databricks-internal sandbox) to
+  // the window's server as a host, by running `isaac omni host --background`
+  // on the instance over `arca ssh`. Gated three ways: pinned-origin sender,
+  // the MDM flag re-checked HERE (the renderer is not trusted to have checked
+  // it), and native user consent per connect.
+  //
+  // After a successful connect the shell also maintains a background
+  // `arca ssh … sleep infinity` session for the rest of its lifetime: Arca
+  // suspends idle instances, which would silently take the connected host
+  // down, and an open ssh channel counts as activity. Stopped on quit (see
+  // the before-quit handler).
+  let arcaConnectInFlight = false;
+  ipcMain.handle("omnigent:arca-connect", async (event) => {
+    if (!isPinnedOriginSender(event)) {
+      throw new Error("arca-connect is only available to a connected server page");
+    }
+    if (!databricksInternalFeaturesEnabled()) {
+      return { ok: false, error: "Arca support is not enabled on this machine." };
+    }
+    const serverUrl = senderServerUrl(event);
+    if (!serverUrl) return { ok: false, error: "this window is not connected to a server" };
+    // Same scope as get-desktop-features, re-checked here: an Arca box may
+    // only be enrolled against a Databricks-managed server.
+    if (!isDatabricksManagedServerUrl(serverUrl)) {
+      return { ok: false, error: "Arca hosts can only connect to Databricks-managed servers." };
+    }
+    if (arcaConnectInFlight) {
+      return { ok: false, error: "An Arca connection is already in progress." };
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!(await confirmArcaConnect(win))) {
+      return { ok: false, error: "Connecting Arca wasn't approved." };
+    }
+    arcaConnectInFlight = true;
+    try {
+      const result = await arca.connectArcaHost(serverUrl);
+      if (result.ok) arcaKeepalive.start();
+      return result;
+    } finally {
+      arcaConnectInFlight = false;
+    }
+  });
+
   // Push a status ping when a host child connects or exits on its own (no
   // polling) — the server-management module owns the subprocess and reports
   // lifecycle changes here.
@@ -3109,6 +3238,10 @@ if (!gotLock) {
     // change to settings/CLI resolution) becomes a rejection caught below,
     // never stranding the quit. shutdown() always settles: host children are
     // SIGKILL'd within 4s and `omnigent server stop` has its own exec timeout.
+    // Synchronous and instant — kills the background `arca ssh` keepalive so
+    // it can't outlive the app (a pending reconnect timer is unref'd and
+    // cleared here too).
+    arcaKeepalive.stop();
     (async () => {
       const cliPath = resolvedCliPath();
       await serverManager.shutdown(cliPath);

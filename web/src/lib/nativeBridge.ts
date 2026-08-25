@@ -168,6 +168,10 @@ interface ElectronDesktopApi extends NativeShellApi {
   controlHost?: (action: HostControlAction) => Promise<HostActionResult>;
   /** Subscribe to host status-change pings (re-read on fire); returns an unsubscribe. */
   onHostStatusChanged?: (callback: () => void) => () => void;
+  /** Desktop feature gates (MDM-managed); absent on older shells. */
+  getDesktopFeatures?: () => Promise<DesktopFeatures | null>;
+  /** Connect the user's Arca instance to the window's server as a host. */
+  connectArcaHost?: () => Promise<HostActionResult>;
   /** The local `omni` CLI status (installed, resolved path, version, source). */
   getCliStatus?: () => Promise<CliStatus | null>;
   /** Clear the CLI-path override (revert to auto-detection); resolves status. */
@@ -194,6 +198,19 @@ interface ElectronDesktopApi extends NativeShellApi {
 
 /** A lifecycle action for the host daemon. */
 export type HostControlAction = "start" | "stop" | "restart";
+
+/**
+ * Desktop-shell feature gates the server can't know about, sourced from MDM
+ * managed preferences. All fields optional: an older shell reports fewer.
+ */
+export interface DesktopFeatures {
+  /**
+   * Databricks-internal features (e.g. the Arca host option) are enabled.
+   * Already scoped by the shell: true only when the MDM flag is set AND the
+   * window's server is Databricks-managed.
+   */
+  databricksInternalFeatures?: boolean;
+}
 
 /** Status of the local `omni` CLI, from the desktop shell. */
 export interface CliStatus {
@@ -756,6 +773,41 @@ export async function controlHost(action: HostControlAction): Promise<HostAction
     return await electron.controlHost(action);
   } catch (err) {
     console.warn("[nativeBridge] electron controlHost failed:", err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Fetch the desktop shell's feature gates (MDM-managed). Resolves `null`
+ * outside the Electron shell or under a shell too old to expose them — callers
+ * must treat null / a missing field as disabled.
+ */
+export async function getDesktopFeatures(): Promise<DesktopFeatures | null> {
+  const electron = electronApi();
+  if (!electron?.getDesktopFeatures) return null;
+  try {
+    return await electron.getDesktopFeatures();
+  } catch (err) {
+    console.warn("[nativeBridge] electron getDesktopFeatures failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Connect the user's Arca instance (Databricks-internal sandbox) to the
+ * window's server as a host, via the desktop shell. The shell asks native
+ * consent and runs `arca ssh` — resolving only once the remote host daemon
+ * started (or failed). A no-op `{ ok: false }` outside the shell.
+ */
+export async function connectArcaHost(): Promise<HostActionResult> {
+  const electron = electronApi();
+  if (!electron?.connectArcaHost) {
+    return { ok: false, error: "not running under the desktop shell" };
+  }
+  try {
+    return await electron.connectArcaHost();
+  } catch (err) {
+    console.warn("[nativeBridge] electron connectArcaHost failed:", err);
     return { ok: false, error: String(err) };
   }
 }
