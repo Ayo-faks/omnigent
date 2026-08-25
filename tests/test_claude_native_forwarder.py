@@ -5281,6 +5281,80 @@ async def test_subagent_watcher_retry_skips_previously_posted_items(
     }
 
 
+async def test_subagent_watcher_skips_pre_launch_subagents_on_resume(
+    tmp_path: Path,
+) -> None:
+    """
+    On a resume (``start_at_end=True``), a sub-agent whose metadata predates
+    the forwarder launch is historical — the prior run already forwarded it —
+    so it is not re-registered or re-uploaded. A sub-agent created after the
+    launch still registers normally.
+    """
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+
+    old_jsonl = _seed_subagent_on_disk(
+        transcript_path=transcript_path,
+        subagent_id="old1",
+        agent_type="Explore",
+        description="ran last session",
+        tool_use_id="toolu_old",
+    )
+    new_jsonl = _seed_subagent_on_disk(
+        transcript_path=transcript_path,
+        subagent_id="new1",
+        agent_type="Explore",
+        description="spawned this session",
+        tool_use_id="toolu_new",
+    )
+    # Place the launch boundary between the two sub-agents' metadata.
+    os.utime(old_jsonl.with_name("agent-old1.meta.json"), (1_000.0, 1_000.0))
+    cold_start_ts = 2_000.0
+    os.utime(new_jsonl.with_name("agent-new1.meta.json"), (3_000.0, 3_000.0))
+
+    started: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """
+        Record ``external_subagent_start`` ids and mint a child id.
+
+        :param request: Request issued by the forwarder.
+        :returns: Canned Omnigent response.
+        """
+        body = json.loads(request.content.decode("utf-8"))
+        if body.get("type") == "external_subagent_start":
+            sid = body["data"]["subagent_id"]
+            started.append(sid)
+            return httpx.Response(202, json={"child_session_id": f"conv_{sid}"})
+        return httpx.Response(202, json={})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://ap",
+    ) as client:
+        result = await forwarder._forward_available_subagents(
+            client=client,
+            parent_session_id="conv_parent",
+            bridge_dir=bridge_dir,
+            transcript_path=transcript_path,
+            state=forwarder.SubagentForwardState(subagents={}),
+            agent_name="claude-native-ui",
+            start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            start_at_end=True,
+            cold_start_ts=cold_start_ts,
+        )
+
+    # The pre-launch sub-agent is skipped wholesale; the post-launch one
+    # registers and is tracked.
+    assert started == ["new1"]
+    assert "old1" not in result.subagents
+    assert result.subagents["new1"].child_conversation_id == "conv_new1"
+
+
 async def test_subagent_watcher_skips_subagents_already_in_state(
     tmp_path: Path,
 ) -> None:

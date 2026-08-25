@@ -786,6 +786,10 @@ async def forward_claude_transcript_to_session(
     state = _read_forward_state(bridge_dir)
     hook_state: HookForwardState | None = None
     subagent_state = _read_subagent_forward_state(bridge_dir)
+    # Cold-start boundary for _forward_available_subagents: a sub-agent whose
+    # metadata predates this launch is historical and, on a resume, is skipped
+    # rather than re-mirrored from offset 0.
+    subagent_cold_start_ts = time.time()
     # Live assistant-text streaming. The delta cursor is independent of
     # the transcript/subagent cursors and survives /clear and /fork
     # (the deltas file belongs to the long-lived Claude process). The
@@ -986,6 +990,12 @@ async def forward_claude_transcript_to_session(
                             # (the user-message reset only fires on the next turn).
                             response_id=state.current_response_id,
                         )
+                        # Re-seed from disk (written per item): a poll the
+                        # stall deadline cancels never returns its advanced
+                        # state, so re-read to resume instead of re-uploading.
+                        subagent_state = await asyncio.to_thread(
+                            _read_subagent_forward_state, bridge_dir
+                        )
                         subagent_state = await _forward_available_subagents(
                             client=client,
                             parent_session_id=current_session_id,
@@ -996,6 +1006,8 @@ async def forward_claude_transcript_to_session(
                             start_retry_tracker=subagent_start_retries,
                             item_retry_tracker=subagent_item_retries,
                             status_retry_tracker=subagent_status_retries,
+                            start_at_end=start_at_end,
+                            cold_start_ts=subagent_cold_start_ts,
                         )
                         # Reconcile + POST cumulative cost AFTER sub-agents are
                         # forwarded so the estimate sees this poll's sub-agent
@@ -1310,6 +1322,8 @@ async def _forward_available_subagents(
     start_retry_tracker: _PostRetryTracker,
     item_retry_tracker: _PostRetryTracker,
     status_retry_tracker: _PostRetryTracker,
+    start_at_end: bool = False,
+    cold_start_ts: float = 0.0,
 ) -> SubagentForwardState:
     """
     Discover new Claude Task-tool sub-agents on disk, mint Omnigent child
@@ -1338,6 +1352,11 @@ async def _forward_available_subagents(
     :param status_retry_tracker: Backoff tracker for failed
         ``external_session_status`` POSTs (keyed by
         ``status:<child_id>``).
+    :param start_at_end: When ``True`` (resume/reattach), sub-agents whose
+        metadata predates ``cold_start_ts`` are skipped rather than mirrored
+        from offset 0 — they were already forwarded by the prior run.
+    :param cold_start_ts: Unix time of this forwarder launch; the boundary
+        for the ``start_at_end`` skip above.
     :returns: Updated state with new sub-agents registered and
         existing sub-agents' cursors advanced.
     """
@@ -1355,6 +1374,16 @@ async def _forward_available_subagents(
         subagent_id = meta_path.stem.removeprefix("agent-").removesuffix(".meta")
         if subagent_id in updated.subagents:
             continue
+        # Cold-start skip (resume/reattach): a sub-agent whose metadata
+        # predates this launch was already forwarded last run; re-uploading it
+        # re-broadcasts items Omnigent has, like start_at_end for the parent.
+        if start_at_end:
+            try:
+                meta_mtime: float | None = meta_path.stat().st_mtime
+            except OSError:
+                meta_mtime = None
+            if meta_mtime is not None and meta_mtime <= cold_start_ts:
+                continue
         retry_key = f"subagent_start:{subagent_id}"
         if start_retry_tracker.retry_delay_s(retry_key) is not None:
             continue
