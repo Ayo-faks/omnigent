@@ -138,6 +138,14 @@ function parseErrorMessage(rawMessage: string): ParsedErrorMessage {
  * unclassified failure reads as English) and finally to the raw message/code —
  * never a blank panel.
  */
+// Break the banner out of the chat text-column so its dashed rule reaches the
+// conversation pane's left/right edges and the pill centers in the full pane
+// rather than the narrower message column. `cqi` is the width of the
+// `@container/chat` pane; the negative inline margins pull the full-pane box
+// back over the column's auto-margins and side padding. Every render site sits
+// inside that container.
+const FULL_BLEED_CHAT_PANE = "w-[100cqi] mx-[calc(50%-50cqi)]";
+
 export function ErrorBanner({
   message,
   code,
@@ -201,7 +209,7 @@ export function ErrorBanner({
       <div
         data-testid="error-reconnecting"
         className={cn(
-          TOOL_SURFACE_WIDTH_CLASS,
+          FULL_BLEED_CHAT_PANE,
           "relative flex min-h-14 items-center justify-center py-2",
         )}
       >
@@ -245,7 +253,12 @@ export function ErrorBanner({
   };
 
   return (
-    <div className="relative mb-[24px] flex w-full flex-col items-center px-[16px]">
+    <div
+      className={cn(
+        FULL_BLEED_CHAT_PANE,
+        "relative mb-[24px] flex flex-col items-center px-[16px]",
+      )}
+    >
       <span
         aria-hidden="true"
         className="pointer-events-none absolute top-[20px] right-0 left-0 h-px"
