@@ -49,6 +49,14 @@ interface ErrorBannerProps {
   remediation?: string;
   /** Reconnect the existing session without replaying or duplicating user input. */
   onRetry?: () => Promise<void>;
+  /**
+   * Full-bleed the banner to the `@container/chat` pane edges. Opt-in, and only
+   * safe from render sites that sit inside that container (the in-thread error
+   * paths). Off by default so out-of-pane banners (the connection / sandbox
+   * status banner) — which have no `container-type` ancestor and would resolve
+   * `cqi` against the viewport — keep their column width.
+   */
+  fullBleed?: boolean;
 }
 
 /**
@@ -142,8 +150,9 @@ function parseErrorMessage(rawMessage: string): ParsedErrorMessage {
 // conversation pane's left/right edges and the pill centers in the full pane
 // rather than the narrower message column. `cqi` is the width of the
 // `@container/chat` pane; the negative inline margins pull the full-pane box
-// back over the column's auto-margins and side padding. Every render site sits
-// inside that container.
+// back over the column's auto-margins and side padding. Applied only via the
+// `fullBleed` prop, and only from render sites that live inside that container
+// — with no `container-type` ancestor `cqi` would resolve against the viewport.
 const FULL_BLEED_CHAT_PANE = "w-[100cqi] mx-[calc(50%-50cqi)]";
 
 export function ErrorBanner({
@@ -153,6 +162,7 @@ export function ErrorBanner({
   cause,
   remediation,
   onRetry,
+  fullBleed = false,
 }: ErrorBannerProps) {
   const headline = title || FAILURE_CODE_DESCRIPTIONS[code] || "Something went wrong";
   const parsed = useMemo(() => parseErrorMessage(message), [message]);
@@ -209,7 +219,7 @@ export function ErrorBanner({
       <div
         data-testid="error-reconnecting"
         className={cn(
-          FULL_BLEED_CHAT_PANE,
+          fullBleed ? FULL_BLEED_CHAT_PANE : TOOL_SURFACE_WIDTH_CLASS,
           "relative flex min-h-14 items-center justify-center py-2",
         )}
       >
@@ -255,7 +265,7 @@ export function ErrorBanner({
   return (
     <div
       className={cn(
-        FULL_BLEED_CHAT_PANE,
+        fullBleed ? FULL_BLEED_CHAT_PANE : "w-full",
         "relative mb-[24px] flex flex-col items-center px-[16px]",
       )}
     >

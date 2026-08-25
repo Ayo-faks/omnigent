@@ -4042,7 +4042,7 @@ function AssistantBubble({
           dropped host connection already carries its own error pill inside the
           bubble and leaves `bubble.error` null, so this stays hidden there. */}
       {bubble.lifecycle === "failed" && bubble.error && (
-        <ErrorBanner message={bubble.error} source="" code="" />
+        <ErrorBanner message={bubble.error} source="" code="" fullBleed />
       )}
     </>
   );
