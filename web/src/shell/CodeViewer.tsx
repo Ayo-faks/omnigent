@@ -42,6 +42,7 @@ import remarkEmoji from "remark-emoji";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { rehypeGithubAlerts } from "rehype-github-alerts";
+import rehypeSlug from "rehype-slug";
 import { mermaid } from "@streamdown/mermaid";
 import { Streamdown } from "streamdown";
 import type { Comment } from "@/hooks/useComments";
@@ -74,6 +75,7 @@ import { HtmlCommentViewer } from "./HtmlCommentViewer";
 import { TruncatedBanner } from "./TruncatedBanner";
 import { useLightbox } from "@/components/ImageLightbox";
 import { getEmbedRoot } from "@/lib/host";
+import { MarkdownTableOfContents } from "./MarkdownTableOfContents";
 
 // Monaco is heavy (~MBs + worker); load it only when a non-markdown file is
 // actually viewed, so the initial bundle and markdown/preview paths don't pay
@@ -130,10 +132,11 @@ const MARKDOWN_SANITIZE_SCHEMA = {
 // drops by default, showing the escaped tags as literal text. rehype-raw parses
 // that HTML; rehype-sanitize then strips anything unsafe (<script>, event
 // handlers, javascript: URLs) so this stays safe to render inline without an
-// iframe. Order matters: alerts transform before sanitize, and sanitize runs
-// last, after raw parsing and GFM.
+// iframe. Order matters: alerts transform before sanitize, slug adds IDs to
+// headings, and sanitize runs last, after raw parsing and GFM.
 const MARKDOWN_REHYPE_PLUGINS: Options["rehypePlugins"] = [
   rehypeRaw,
+  rehypeSlug,
   rehypeGithubAlerts,
   [rehypeSanitize, MARKDOWN_SANITIZE_SCHEMA],
 ];
@@ -189,19 +192,24 @@ function MarkdownPreview({
   onScroll?: (event: UIEvent<HTMLElement>) => void;
 }) {
   return (
-    <div
-      ref={rootRef}
-      data-preview-scroll
-      onScroll={onScroll}
-      className="markdown-preview px-6 py-4 overflow-auto h-full prose dark:prose-invert prose-sm max-w-none"
-    >
-      <ReactMarkdown
-        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-        components={MARKDOWN_COMPONENTS}
+    <div className="flex h-full">
+      <div
+        ref={rootRef}
+        data-preview-scroll
+        onScroll={onScroll}
+        className="markdown-preview flex-1 px-6 py-4 overflow-auto prose dark:prose-invert prose-sm max-w-none"
       >
-        {content}
-      </ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+          rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+      <aside className="hidden xl:block w-64 shrink-0">
+        <MarkdownTableOfContents content={content} containerRef={rootRef} />
+      </aside>
     </div>
   );
 }
