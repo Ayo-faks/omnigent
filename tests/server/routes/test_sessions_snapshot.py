@@ -412,12 +412,17 @@ async def test_session_snapshot_unresolvable_sub_agent_warns_and_reports_parent(
             return type(
                 "StoredAgent",
                 (),
-                {"id": agent_id, "name": "advisor-row", "bundle_location": "bundle"},
+                {
+                    "id": agent_id,
+                    "name": "advisor-row",
+                    "bundle_location": "bundle",
+                    "session_id": None,
+                },
             )()
 
     class _AgentCache:
         @staticmethod
-        def load(agent_id: str, bundle_location: str) -> Any:
+        def load(agent_id: str, bundle_location: str, *, expand_env: bool = True) -> Any:
             assert (agent_id, bundle_location) == ("ag_advisor", "bundle")
             return type("LoadedAgent", (), {"spec": parent_spec})()
 

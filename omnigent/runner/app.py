@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import enum
 import functools
 import itertools
 import json
@@ -59,9 +60,7 @@ from omnigent.harness_aliases import (
     native_terminal_name,
 )
 from omnigent.harness_availability import CODEX_CANONICAL_HARNESSES
-from omnigent.harness_capabilities import InstructionDelivery
 from omnigent.harness_plugins import (
-    harness_capabilities,
     load_object,
     model_env_keys,
     spawn_env_builders,
@@ -159,6 +158,7 @@ from omnigent.runner.subagent_routing import (
     session_routing_class,
 )
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager, NoLiveHarnessError
+from omnigent.runtime.prompt import build_instructions
 from omnigent.server.schemas import (
     BackgroundSessionTitleRequest,
     BackgroundSessionTitleResponse,
@@ -194,8 +194,6 @@ _CLAUDE_MODEL_LATE_DIALOG_BUDGET_S = 1200.0
 _CLAUDE_MODEL_LATE_DIALOG_POLL_S = 2.0
 
 
-
-
 class _SubAgentProvenance(enum.Enum):
     """How a cached session spec relates to the session's ``sub_agent_name``.
 
@@ -218,8 +216,6 @@ class _SubAgentProvenance(enum.Enum):
 # What a cache entry records about its sub-agent: the name that failed to
 # resolve, or one of the two states above.
 _SubAgentProvenanceValue: TypeAlias = "str | _SubAgentProvenance"
-
-
 
 
 class _SubAgentRecovery(NamedTuple):
@@ -1049,8 +1045,6 @@ class _CommentRelayBinding:
     bridge_dir: Path
 
 
-
-
 def _cache_get_for_agent(
     cache: dict[str, tuple[str | None, Any]], conv_id: str, agent_id: str | None
 ) -> Any | None:
@@ -1077,8 +1071,6 @@ def _cache_get_for_agent(
     if tagged_agent_id is not None and tagged_agent_id != agent_id:
         return None
     return value
-
-
 
 
 def _cache_set_for_agent(
@@ -1212,8 +1204,6 @@ class TurnDispatch:
     agent_version: int | None = None
     spawn_env: dict[str, str] | None = None
     client_side_tool_names: frozenset[str] = frozenset()
-
-
 
 
 @dataclasses.dataclass
@@ -6641,6 +6631,7 @@ def create_runner_app(
             _session_histories[conv] = (
                 [] if is_native_harness(harness_name) else await _load_history_as_input(conv)
             )
+        _raw_per_request_instructions = cast(str | None, msg_body.get("instructions"))
         if cached_spec is not None:
             spawn_env = _build_spawn_env_from_spec(
                 cached_spec,
@@ -6650,9 +6641,13 @@ def create_runner_app(
                 model_override=cast(str | None, msg_body.get("model_override")),
                 session_id=conv,
             )
-            from omnigent.runtime.prompt import build_instructions
-
-            instructions = build_instructions(cached_spec, None, [])
+            # The turn's own per-request text composes with the agent's
+            # authored instructions rather than being dropped.
+            instructions = build_instructions(
+                cached_spec,
+                _raw_per_request_instructions,
+                [],
+            )
 
         ctx = TurnDispatch(
             agent_id=_dispatched_agent_id,
@@ -10602,8 +10597,6 @@ def create_runner_app_from_env() -> FastAPI:
     return create_runner_app(server_client=server_client)
 
 
-
-
 async def _resolve_effective_turn(
     *,
     agent_id: str | None,
@@ -10700,7 +10693,14 @@ async def _resolve_effective_turn(
                     # spec_resolver_failed. The warning is the only trace.
                     _warn_unresolved_sub_agent(session_id, sub_agent_name)
                 else:
+                    from omnigent.runner.native.orchestration import (
+                        _sub_agent_bundle_workdir as _sub_workdir,
+                    )
+
+                    child_workdir = _sub_workdir(spec_entry, spec, sub_spec)
                     spec = sub_spec
+                    if child_workdir is not None:
+                        workdir = child_workdir
             harness = harness_override or spec.executor.config.get("harness") or spec.executor.type
             harness = canonicalize_harness(harness) or harness
             spawn_env = _build_spawn_env_from_spec(

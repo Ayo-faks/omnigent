@@ -16,6 +16,8 @@ from omnigent.runtime.prompt import (
 )
 from omnigent.spec import AgentSpec
 
+_SAMPLE_FRAMEWORK_INSTRUCTION = "Framework instruction for testing build_instructions_nullable."
+
 
 def _output_item(output: str) -> ConversationItem:
     """Build a persisted ``function_call_output`` item for replay tests."""
@@ -135,9 +137,9 @@ def test_build_instructions_nullable_whitespace_only_treated_as_absent() -> None
     spec = cast(AgentSpec, SimpleNamespace(instructions="   \n  ", skills=[]))
     assert build_instructions_nullable(spec, None, []) is None
     result = build_instructions_nullable(
-        spec, None, [], framework_instructions=(SHARED_SESSION_AUTHORSHIP_INSTRUCTION,)
+        spec, None, [], framework_instructions=(_SAMPLE_FRAMEWORK_INSTRUCTION,)
     )
-    assert result == SHARED_SESSION_AUTHORSHIP_INSTRUCTION
+    assert result == _SAMPLE_FRAMEWORK_INSTRUCTION
 
 
 def test_build_instructions_nullable_whitespace_only_per_request_treated_as_absent() -> None:
@@ -147,9 +149,9 @@ def test_build_instructions_nullable_whitespace_only_per_request_treated_as_abse
     spec = cast(AgentSpec, SimpleNamespace(instructions=None, skills=[]))
     assert build_instructions_nullable(spec, "   \n  ", []) is None
     result = build_instructions_nullable(
-        spec, "   \n  ", [], framework_instructions=(SHARED_SESSION_AUTHORSHIP_INSTRUCTION,)
+        spec, "   \n  ", [], framework_instructions=(_SAMPLE_FRAMEWORK_INSTRUCTION,)
     )
-    assert result == SHARED_SESSION_AUTHORSHIP_INSTRUCTION
+    assert result == _SAMPLE_FRAMEWORK_INSTRUCTION
 
 
 def test_build_instructions_nullable_authored_present() -> None:
@@ -173,19 +175,19 @@ def test_build_instructions_nullable_framework_only_omits_fallback() -> None:
     """
     spec = cast(AgentSpec, SimpleNamespace(instructions=None, skills=[]))
     result = build_instructions_nullable(
-        spec, None, [], framework_instructions=(SHARED_SESSION_AUTHORSHIP_INSTRUCTION,)
+        spec, None, [], framework_instructions=(_SAMPLE_FRAMEWORK_INSTRUCTION,)
     )
-    assert result == SHARED_SESSION_AUTHORSHIP_INSTRUCTION
+    assert result == _SAMPLE_FRAMEWORK_INSTRUCTION
     assert "You are a helpful assistant." not in (result or "")
 
     # The comparison this helper replaces would have misclassified the
     # framework-only case: build_instructions()'s actual output IS fused
     # with the fallback literal, confirming the unsafe-comparison rationale.
     fused = build_instructions(
-        spec, None, [], framework_instructions=(SHARED_SESSION_AUTHORSHIP_INSTRUCTION,)
+        spec, None, [], framework_instructions=(_SAMPLE_FRAMEWORK_INSTRUCTION,)
     )
     assert fused.startswith("You are a helpful assistant.")
-    assert SHARED_SESSION_AUTHORSHIP_INSTRUCTION in fused
+    assert _SAMPLE_FRAMEWORK_INSTRUCTION in fused
 
 
 def test_raw_author_instructions_verbatim_and_none() -> None:

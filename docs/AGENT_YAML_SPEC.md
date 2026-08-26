@@ -105,6 +105,7 @@ object.
 | `copilot` | `composed-per-turn` |
 | `cursor` | `first-user-prefix` |
 | `cursor-native` | `not-delivered` |
+| `devin` | `first-user-prefix` |
 | `goose` | `first-user-prefix` |
 | `goose-native` | `not-delivered` |
 | `grok` | `first-user-prefix` (builtin ACP CLI catalog row; see below) |

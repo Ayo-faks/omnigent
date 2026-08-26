@@ -4080,11 +4080,22 @@ async def _auto_create_codex_terminal(
     # never by editing config.toml here.
     # Passed only for auto-harness sessions so a pinned or plain codex launch
     # keeps main's kwargs exactly.
-    routed_spawn_extras: dict[str, str] = {}
+    _codex_routing_note: str | None = None
     if launch_config.auto_harness:
         from omnigent.inner.hook_scripts.subagent_router import smart_routing_spawn_note
 
-        routed_spawn_extras["developer_instructions"] = smart_routing_spawn_note("codex-native")
+        _codex_routing_note = smart_routing_spawn_note("codex-native")
+    _codex_developer_instructions = (
+        "\n\n".join(
+            x
+            for x in [
+                _native_startup_raw_instructions_from_spec(agent_spec),
+                _codex_routing_note,
+            ]
+            if x
+        )
+        or None
+    )
     app_server = build_codex_native_server(
         socket_path=socket_path,
         codex_home=codex_home,
@@ -4096,12 +4107,11 @@ async def _auto_create_codex_terminal(
         ap_server_url=launch_config.policy_server_url,
         ap_auth_headers=policy_headers,
         bypass_sandbox=launch_config.bypass_sandbox,
-        developer_instructions=_native_startup_raw_instructions_from_spec(agent_spec),
+        developer_instructions=_codex_developer_instructions,
         # Codex can show project-trust and legacy-model migration prompts before
         # creating a thread. This TUI runs detached for the web UI, so persist
         # the runner-owned acknowledgements in the private session config.
         trust_project=True,
-        **routed_spawn_extras,
     )
     # Generate routing hooks.json (and bypass codex's hook-trust prompt): the
     # app-server reads the endpoint out of its own process env at start, and

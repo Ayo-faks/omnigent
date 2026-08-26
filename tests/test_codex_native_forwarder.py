@@ -2869,8 +2869,6 @@ def test_default_collaboration_mode_sends_none_when_confirmed_absent() -> None:
     assert mode["settings"]["developer_instructions"] is None
 
 
-
-
 def test_default_collaboration_mode_reuses_current_developer_instructions() -> None:
     """A Default-mode ``turn/start`` must not silently wipe developer_instructions.
 
@@ -2889,8 +2887,6 @@ def test_default_collaboration_mode_reuses_current_developer_instructions() -> N
 
     assert mode is not None
     assert mode["settings"]["developer_instructions"] == "Be a concise coding assistant."
-
-
 
 
 def test_note_thread_settings_updated_whitespace_nested_value_not_confirmed() -> None:
@@ -2922,8 +2918,6 @@ def test_note_thread_settings_updated_whitespace_nested_value_not_confirmed() ->
     assert state.developer_instructions_known is False
 
 
-
-
 def test_note_developer_instructions_fields_whitespace_flat_falls_through_to_nested() -> None:
     """
     A whitespace-only FLAT ``developer_instructions`` must not
@@ -2946,8 +2940,6 @@ def test_note_developer_instructions_fields_whitespace_flat_falls_through_to_nes
     assert state.developer_instructions_known is True
 
 
-
-
 def test_note_developer_instructions_fields_whitespace_flat_value_not_confirmed() -> None:
     """
     A whitespace-only FLAT ``developer_instructions`` in a live payload
@@ -2964,8 +2956,6 @@ def test_note_developer_instructions_fields_whitespace_flat_value_not_confirmed(
 
     assert state.developer_instructions is None
     assert state.developer_instructions_known is False
-
-
 
 
 def test_note_thread_settings_updated_reads_nested_developer_instructions() -> None:
@@ -2998,8 +2988,6 @@ def test_note_thread_settings_updated_reads_nested_developer_instructions() -> N
     assert state.developer_instructions == "Be a concise assistant."
 
 
-
-
 def test_note_developer_instructions_fields_updates_from_settings_payload() -> None:
     """A flat top-level settings payload updates developer_instructions too."""
     state = fwd._CodexForwarderState()
@@ -3011,8 +2999,6 @@ def test_note_developer_instructions_fields_updates_from_settings_payload() -> N
     # read, resolving the never-yet-confirmed ambiguity independent of
     # any config.toml read.
     assert state.developer_instructions_known is True
-
-
 
 
 def test_read_developer_instructions_collapsed_wrapper_matches_tri_state_value(
@@ -3036,8 +3022,6 @@ def test_read_developer_instructions_collapsed_wrapper_matches_tri_state_value(
     assert read_codex_config_developer_instructions_from_home(tmp_path) == "Present value."
 
 
-
-
 def test_read_developer_instructions_state_unreadable_bad_encoding(tmp_path: Path) -> None:
     """Non-UTF-8 bytes read UNREADABLE, not ABSENT — the failure this whole
     tri-state exists to distinguish from genuine absence."""
@@ -3051,8 +3035,6 @@ def test_read_developer_instructions_state_unreadable_bad_encoding(tmp_path: Pat
 
     assert result.state is DeveloperInstructionsReadState.UNREADABLE
     assert result.value is None
-
-
 
 
 def test_read_developer_instructions_state_absent_missing_file(tmp_path: Path) -> None:
@@ -3078,8 +3060,6 @@ def test_read_developer_instructions_state_absent_missing_file(tmp_path: Path) -
     assert result.value is None
 
 
-
-
 def test_read_developer_instructions_state_whitespace_only_is_unreadable(
     tmp_path: Path,
 ) -> None:
@@ -3102,8 +3082,6 @@ def test_read_developer_instructions_state_whitespace_only_is_unreadable(
     assert result.value is None
 
 
-
-
 def test_read_developer_instructions_state_empty_string_is_unreadable(
     tmp_path: Path,
 ) -> None:
@@ -3119,8 +3097,6 @@ def test_read_developer_instructions_state_empty_string_is_unreadable(
 
     assert result.state is DeveloperInstructionsReadState.UNREADABLE
     assert result.value is None
-
-
 
 
 def test_read_developer_instructions_state_malformed_shape_is_unreadable(
@@ -3149,8 +3125,6 @@ def test_read_developer_instructions_state_malformed_shape_is_unreadable(
     assert result.value is None
 
 
-
-
 def test_read_developer_instructions_state_absent(tmp_path: Path) -> None:
     """A config with no top-level key reads ABSENT, distinct from unreadable."""
     from omnigent.codex_native_bridge import (
@@ -3163,8 +3137,6 @@ def test_read_developer_instructions_state_absent(tmp_path: Path) -> None:
 
     assert result.state is DeveloperInstructionsReadState.ABSENT
     assert result.value is None
-
-
 
 
 def test_read_developer_instructions_state_present(tmp_path: Path) -> None:
@@ -3185,8 +3157,6 @@ def test_read_developer_instructions_state_present(tmp_path: Path) -> None:
     )
 
 
-
-
 def test_refresh_developer_instructions_from_config_present_to_absent_transition(
     tmp_path: Path,
 ) -> None:
@@ -3203,8 +3173,6 @@ def test_refresh_developer_instructions_from_config_present_to_absent_transition
     _write_session_config(tmp_path, '[mcp_servers.fast]\ncommand = "x"\n')
     fwd._refresh_developer_instructions_from_config(tmp_path, state)
     assert state.developer_instructions is None
-
-
 
 
 def test_refresh_developer_instructions_from_config_preserves_on_unreadable(
@@ -3233,8 +3201,6 @@ def test_refresh_developer_instructions_from_config_preserves_on_unreadable(
     assert state.developer_instructions == "Prior known instructions."
 
 
-
-
 def test_refresh_developer_instructions_from_config_clears_on_genuine_absence(
     tmp_path: Path,
 ) -> None:
@@ -3257,8 +3223,6 @@ def test_refresh_developer_instructions_from_config_clears_on_genuine_absence(
     assert state.developer_instructions is None
 
 
-
-
 def test_refresh_developer_instructions_from_config_reads_current_value(
     tmp_path: Path,
 ) -> None:
@@ -3272,5 +3236,3 @@ def test_refresh_developer_instructions_from_config_reads_current_value(
     fwd._refresh_developer_instructions_from_config(tmp_path, state)
 
     assert state.developer_instructions == "Be a concise coding assistant."
-
-
