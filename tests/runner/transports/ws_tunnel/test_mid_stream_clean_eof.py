@@ -1,4 +1,4 @@
-"""Regression test for OMNI-2812.
+"""Regression test: ws_tunnel mid-stream failures must not read as clean EOF.
 
 ws_tunnel: a runner-side session-stream generator that raises mid-stream
 causes ``dispatch_via_asgi`` to send a plain ``ResponseEndFrame`` instead of
@@ -88,7 +88,7 @@ async def test_dispatch_via_asgi_mid_stream_generator_raise_emits_error_signal()
     """
     app = _make_streaming_app_that_raises()
     sent: list[str] = []
-    frame = RequestFrame(id="req-2812", method="GET", path="/stream")
+    frame = RequestFrame(id="req-mid-stream", method="GET", path="/stream")
 
     with contextlib.suppress(Exception):
         await dispatch_via_asgi(app, frame, lambda t: _async_append(sent, t))
@@ -153,10 +153,11 @@ async def test_ws_tunnel_mid_stream_failure_raises_at_consumer() -> None:
         harnesses=[],
         envs=[],
     )
-    session: RunnerSession = registry.register("runner-2812", fake_ws, hello)
+    runner_id = "runner-mid-stream"
+    session: RunnerSession = registry.register(runner_id, fake_ws, hello)
 
-    req_id = "test-req-2812"
-    state = registry.open_request("runner-2812", req_id)
+    req_id = "test-req-mid-stream"
+    state = registry.open_request(runner_id, req_id)
 
     # Simulate the runner sending: head → body → error-flagged end.
     head_frame = ResponseHeadFrame(id=req_id, status=200, headers=[])
@@ -164,9 +165,9 @@ async def test_ws_tunnel_mid_stream_failure_raises_at_consumer() -> None:
     end_frame = ResponseEndFrame(id=req_id, error="runner_stream_error")
 
     # Route frames on the same event loop (simulating server-side receive).
-    registry.route_response_frame("runner-2812", head_frame, session=session)
-    registry.route_response_frame("runner-2812", body_frame, session=session)
-    registry.route_response_frame("runner-2812", end_frame, session=session)
+    registry.route_response_frame(runner_id, head_frame, session=session)
+    registry.route_response_frame(runner_id, body_frame, session=session)
+    registry.route_response_frame(runner_id, end_frame, session=session)
 
     # Give the loop a tick to process the callbacks.
     await asyncio.sleep(0)
