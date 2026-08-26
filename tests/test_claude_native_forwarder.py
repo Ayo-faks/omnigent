@@ -5171,18 +5171,18 @@ async def test_subagent_watcher_forwards_transcript_items_to_child_session(
         server.server_close()
 
 
-async def test_subagent_watcher_eof_skips_preexisting_history_on_resume(
+async def test_subagent_watcher_advances_cursor_per_record_on_partial_drain(
     tmp_path: Path,
 ) -> None:
     """
-    On a resume, a sub-agent already tracked in state at ``byte_offset=0``
-    has its pre-existing transcript skipped to EOF instead of re-uploaded.
+    A drain cut short by a failed post commits the cursor to the last
+    fully-posted record, so the retry resumes there instead of re-reading
+    (and re-posting) the whole transcript from offset 0.
 
-    This is the resume re-upload bug: a prior run whose drain the stall
-    deadline cancelled leaves the cursor at 0, so every accumulated
-    sub-agent would otherwise re-post its whole transcript. The first tail
-    pass (id in ``cold_start_eof_pending``) must post nothing and jump the
-    cursor to end-of-file; a later append then forwards normally.
+    Three records; the third's post fails transiently once. The first pass
+    must leave ``byte_offset`` at the boundary after the second record — not
+    at 0 (the old behaviour) and not at EOF — and the retry must post only
+    the third record.
     """
     bridge_dir = tmp_path / "bridge"
     bridge_dir.mkdir()
@@ -5190,52 +5190,67 @@ async def test_subagent_watcher_eof_skips_preexisting_history_on_resume(
     transcript_path.write_text("", encoding="utf-8")
     subagent_jsonl = _seed_subagent_on_disk(
         transcript_path=transcript_path,
-        subagent_id="old1",
+        subagent_id="rec1",
         agent_type="Explore",
-        description="finished last run",
-        tool_use_id="toolu_old",
+        description="per-record cursor",
+        tool_use_id="toolu_rec",
         transcript_records=[
             {
                 "isSidechain": True,
                 "type": "user",
-                "uuid": "sa-user-old",
+                "uuid": "sa-user",
                 "message": {"role": "user", "content": "go"},
             },
             {
                 "isSidechain": True,
                 "type": "assistant",
-                "uuid": "sa-assistant-old",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "done"}],
-                },
+                "uuid": "sa-one",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "one"}]},
+            },
+            {
+                "isSidechain": True,
+                "type": "assistant",
+                "uuid": "sa-two",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "two"}]},
             },
         ],
     )
-    # Tracked from a prior run, cursor stuck at 0 (drain never completed).
+    # Byte offset immediately after the second record — the boundary the
+    # cut-short drain must commit to. Robust to serialization: the position
+    # right after the second newline.
+    data = subagent_jsonl.read_bytes()
+    newlines = [i for i, byte in enumerate(data) if byte == 0x0A]
+    boundary_after_second = newlines[1] + 1
+
     state = forwarder.SubagentForwardState(
         subagents={
-            "old1": forwarder.SubagentEntry(
-                subagent_id="old1",
-                child_conversation_id="conv_child_old",
+            "rec1": forwarder.SubagentEntry(
+                subagent_id="rec1",
+                child_conversation_id="conv_child_rec",
             )
         }
     )
     posted_items: list[str] = []
+    fail_two_once = {"count": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         """
-        Record any conversation-item posts; accept everything.
+        Fail the third record's item once; accept everything else.
 
         :param request: Request issued by the forwarder.
         :returns: Canned Omnigent response.
         """
         body = json.loads(request.content.decode("utf-8"))
-        if body.get("type") == "external_conversation_item":
-            posted_items.append(body["data"]["item_data"]["content"][0]["text"])
+        if body.get("type") != "external_conversation_item":
+            return httpx.Response(202, json={})
+        text = body["data"]["item_data"]["content"][0]["text"]
+        posted_items.append(text)
+        if text == "two" and fail_two_once["count"] == 0:
+            fail_two_once["count"] += 1
+            return httpx.Response(503, json={"error": "try again"})
         return httpx.Response(202, json={})
 
-    pending = {"old1"}
+    item_retry_tracker = forwarder._PostRetryTracker(base_delay_s=0.0)
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
         base_url="http://ap",
@@ -5248,32 +5263,15 @@ async def test_subagent_watcher_eof_skips_preexisting_history_on_resume(
             state=state,
             agent_name="claude-native-ui",
             start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=item_retry_tracker,
             status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            start_at_end=True,
-            cold_start_eof_pending=pending,
         )
-        # Nothing re-uploaded; cursor jumped to EOF; id drained from pending.
-        assert posted_items == []
-        assert first.subagents["old1"].byte_offset == subagent_jsonl.stat().st_size
-        assert pending == set()
+        # First two records posted; the third failed. The cursor sits at the
+        # boundary after the second record — durable progress, not 0, not EOF.
+        assert posted_items == ["go", "one", "two"]
+        assert first.subagents["rec1"].byte_offset == boundary_after_second
+        assert 0 < boundary_after_second < subagent_jsonl.stat().st_size
 
-        # A new append after the resume tails normally (not skipped again).
-        with subagent_jsonl.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "isSidechain": True,
-                        "type": "assistant",
-                        "uuid": "sa-assistant-new",
-                        "message": {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "after resume"}],
-                        },
-                    }
-                )
-                + "\n"
-            )
         second = await forwarder._forward_available_subagents(
             client=client,
             parent_session_id="conv_parent",
@@ -5282,14 +5280,19 @@ async def test_subagent_watcher_eof_skips_preexisting_history_on_resume(
             state=first,
             agent_name="claude-native-ui",
             start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
+            item_retry_tracker=item_retry_tracker,
             status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            start_at_end=True,
-            cold_start_eof_pending=pending,
         )
 
-    assert posted_items == ["after resume"]
-    assert second.subagents["old1"].byte_offset == subagent_jsonl.stat().st_size
+    # The retry resumed at the boundary and re-posted only the third record
+    # ("go"/"one" were not re-read), then advanced to EOF.
+    assert posted_items == ["go", "one", "two", "two"]
+    assert second.subagents["rec1"].byte_offset == subagent_jsonl.stat().st_size
+    assert set(second.subagents["rec1"].seen_source_ids) == {
+        "sa-user:0:message",
+        "sa-one:0:message",
+        "sa-two:0:message",
+    }
 
 
 async def test_subagent_watcher_retry_skips_previously_posted_items(
@@ -5400,80 +5403,6 @@ async def test_subagent_watcher_retry_skips_previously_posted_items(
         "sa-user-retry:0:message",
         "sa-assistant-retry:0:message",
     }
-
-
-async def test_subagent_watcher_skips_pre_launch_subagents_on_resume(
-    tmp_path: Path,
-) -> None:
-    """
-    On a resume (``start_at_end=True``), a sub-agent whose metadata predates
-    the forwarder launch is historical — the prior run already forwarded it —
-    so it is not re-registered or re-uploaded. A sub-agent created after the
-    launch still registers normally.
-    """
-    transcript_path = tmp_path / "session.jsonl"
-    transcript_path.write_text("", encoding="utf-8")
-    bridge_dir = tmp_path / "bridge"
-    bridge_dir.mkdir()
-
-    old_jsonl = _seed_subagent_on_disk(
-        transcript_path=transcript_path,
-        subagent_id="old1",
-        agent_type="Explore",
-        description="ran last session",
-        tool_use_id="toolu_old",
-    )
-    new_jsonl = _seed_subagent_on_disk(
-        transcript_path=transcript_path,
-        subagent_id="new1",
-        agent_type="Explore",
-        description="spawned this session",
-        tool_use_id="toolu_new",
-    )
-    # Place the launch boundary between the two sub-agents' metadata.
-    os.utime(old_jsonl.with_name("agent-old1.meta.json"), (1_000.0, 1_000.0))
-    cold_start_ts = 2_000.0
-    os.utime(new_jsonl.with_name("agent-new1.meta.json"), (3_000.0, 3_000.0))
-
-    started: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        """
-        Record ``external_subagent_start`` ids and mint a child id.
-
-        :param request: Request issued by the forwarder.
-        :returns: Canned Omnigent response.
-        """
-        body = json.loads(request.content.decode("utf-8"))
-        if body.get("type") == "external_subagent_start":
-            sid = body["data"]["subagent_id"]
-            started.append(sid)
-            return httpx.Response(202, json={"child_session_id": f"conv_{sid}"})
-        return httpx.Response(202, json={})
-
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
-        base_url="http://ap",
-    ) as client:
-        result = await forwarder._forward_available_subagents(
-            client=client,
-            parent_session_id="conv_parent",
-            bridge_dir=bridge_dir,
-            transcript_path=transcript_path,
-            state=forwarder.SubagentForwardState(subagents={}),
-            agent_name="claude-native-ui",
-            start_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            item_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            status_retry_tracker=forwarder._PostRetryTracker(base_delay_s=0.0),
-            start_at_end=True,
-            cold_start_ts=cold_start_ts,
-        )
-
-    # The pre-launch sub-agent is skipped wholesale; the post-launch one
-    # registers and is tracked.
-    assert started == ["new1"]
-    assert "old1" not in result.subagents
-    assert result.subagents["new1"].child_conversation_id == "conv_new1"
 
 
 async def test_subagent_watcher_skips_subagents_already_in_state(

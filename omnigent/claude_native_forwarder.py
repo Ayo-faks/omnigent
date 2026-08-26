@@ -786,20 +786,6 @@ async def forward_claude_transcript_to_session(
     state = _read_forward_state(bridge_dir)
     hook_state: HookForwardState | None = None
     subagent_state = _read_subagent_forward_state(bridge_dir)
-    # Cold-start boundary for _forward_available_subagents: a sub-agent whose
-    # metadata predates this launch is historical and, on a resume, is skipped
-    # rather than re-mirrored from offset 0.
-    subagent_cold_start_ts = time.time()
-    # Sub-agents already tracked from a prior run (loaded from disk above): on a
-    # resume their pre-existing transcript is skipped to EOF once — their child
-    # conversations already hold it, and a prior run's stall-cancelled drain can
-    # leave their byte_offset at 0, which would otherwise re-upload the whole
-    # transcript. This is the parent's start_at_end, applied to sub-agents.
-    # Mutated (drained) as each is skipped; genuinely-new sub-agents spawned
-    # this run are never in this set, so they still upload from offset 0.
-    subagent_cold_start_eof_pending: set[str] = (
-        set(subagent_state.subagents) if start_at_end else set()
-    )
     # Live assistant-text streaming. The delta cursor is independent of
     # the transcript/subagent cursors and survives /clear and /fork
     # (the deltas file belongs to the long-lived Claude process). The
@@ -1000,7 +986,7 @@ async def forward_claude_transcript_to_session(
                             # (the user-message reset only fires on the next turn).
                             response_id=state.current_response_id,
                         )
-                        # Re-seed from disk (written per item): a poll the
+                        # Re-seed from disk (written per record): a poll the
                         # stall deadline cancels never returns its advanced
                         # state, so re-read to resume instead of re-uploading.
                         subagent_state = await asyncio.to_thread(
@@ -1016,9 +1002,6 @@ async def forward_claude_transcript_to_session(
                             start_retry_tracker=subagent_start_retries,
                             item_retry_tracker=subagent_item_retries,
                             status_retry_tracker=subagent_status_retries,
-                            start_at_end=start_at_end,
-                            cold_start_ts=subagent_cold_start_ts,
-                            cold_start_eof_pending=subagent_cold_start_eof_pending,
                         )
                         # Reconcile + POST cumulative cost AFTER sub-agents are
                         # forwarded so the estimate sees this poll's sub-agent
@@ -1333,9 +1316,6 @@ async def _forward_available_subagents(
     start_retry_tracker: _PostRetryTracker,
     item_retry_tracker: _PostRetryTracker,
     status_retry_tracker: _PostRetryTracker,
-    start_at_end: bool = False,
-    cold_start_ts: float = 0.0,
-    cold_start_eof_pending: set[str] | None = None,
 ) -> SubagentForwardState:
     """
     Discover new Claude Task-tool sub-agents on disk, mint Omnigent child
@@ -1347,7 +1327,11 @@ async def _forward_available_subagents(
     offset for every sub-agent already seen. Sub-agents whose
     ``.meta.json`` appears for the first time are registered with AP
     via ``external_subagent_start``; sub-agents already in ``state``
-    just have their ``.jsonl`` tailed forward.
+    just have their ``.jsonl`` tailed forward. The tail cursor advances
+    one record at a time (see ``record_byte_offset``), so a drain the
+    stall deadline cancels resumes at the last fully-posted record on the
+    next poll instead of re-reading — and a sub-agent already forwarded
+    by a prior run resumes at its persisted end offset, not offset 0.
 
     :param client: Omnigent HTTP client.
     :param parent_session_id: Parent (claude-native) conversation id.
@@ -1364,18 +1348,6 @@ async def _forward_available_subagents(
     :param status_retry_tracker: Backoff tracker for failed
         ``external_session_status`` POSTs (keyed by
         ``status:<child_id>``).
-    :param start_at_end: When ``True`` (resume/reattach), a sub-agent
-        newly discovered on disk whose metadata predates ``cold_start_ts``
-        is skipped rather than registered + mirrored from offset 0 — it was
-        already forwarded by the prior run.
-    :param cold_start_ts: Unix time of this forwarder launch; the boundary
-        for the ``start_at_end`` skip above.
-    :param cold_start_eof_pending: Ids of sub-agents already tracked in
-        ``state`` at forwarder launch. On the first tail pass that reaches
-        one (``start_at_end`` only), its cursor is jumped to end-of-file and
-        the id removed from the set — skipping pre-existing history whose
-        prior-run drain may have been stall-cancelled at offset 0, then
-        tailing new appends normally. ``None`` disables the jump.
     :returns: Updated state with new sub-agents registered and
         existing sub-agents' cursors advanced.
     """
@@ -1393,16 +1365,6 @@ async def _forward_available_subagents(
         subagent_id = meta_path.stem.removeprefix("agent-").removesuffix(".meta")
         if subagent_id in updated.subagents:
             continue
-        # Cold-start skip (resume/reattach): a sub-agent whose metadata
-        # predates this launch was already forwarded last run; re-uploading it
-        # re-broadcasts items Omnigent has, like start_at_end for the parent.
-        if start_at_end:
-            try:
-                meta_mtime: float | None = meta_path.stat().st_mtime
-            except OSError:
-                meta_mtime = None
-            if meta_mtime is not None and meta_mtime <= cold_start_ts:
-                continue
         retry_key = f"subagent_start:{subagent_id}"
         if start_retry_tracker.retry_delay_s(retry_key) is not None:
             continue
@@ -1498,32 +1460,6 @@ async def _forward_available_subagents(
         jsonl_path = subagents_dir / f"agent-{subagent_id}.jsonl"
         if not jsonl_path.exists():
             continue
-        # Cold-start EOF skip (resume): a sub-agent carried over from a prior
-        # run has its pre-existing history skipped to end-of-file once, then
-        # tails new appends normally. Without this, a prior run whose drain the
-        # stall deadline cancelled leaves byte_offset at 0, so every accumulated
-        # sub-agent re-uploads its whole transcript on resume. Mirrors the
-        # parent's start_at_end. Done before the read so this pass posts nothing.
-        if cold_start_eof_pending is not None and subagent_id in cold_start_eof_pending:
-            cold_start_eof_pending.discard(subagent_id)
-            try:
-                eof_offset = jsonl_path.stat().st_size
-            except OSError:
-                eof_offset = entry.byte_offset
-            if eof_offset > entry.byte_offset:
-                new_entry = SubagentEntry(
-                    subagent_id=entry.subagent_id,
-                    child_conversation_id=entry.child_conversation_id,
-                    byte_offset=eof_offset,
-                    seen_source_ids=entry.seen_source_ids,
-                    last_activity_ts=entry.last_activity_ts,
-                    last_status=entry.last_status,
-                )
-                updated = SubagentForwardState(
-                    subagents={**updated.subagents, subagent_id: new_entry}
-                )
-                await _write_subagent_forward_state_async(bridge_dir, updated)
-            continue
         # Reuse the parent-transcript parser, but pass
         # ``include_sidechains=True`` — every record in a sub-agent's
         # own ``agent-<id>.jsonl`` carries ``isSidechain: true``
@@ -1545,7 +1481,36 @@ async def _forward_available_subagents(
         items_failed = False
         seen_source_ids = list(entry.seen_source_ids)
         seen = set(seen_source_ids)
+        # Durable cursor advances one record at a time: ``committed_offset`` is
+        # the end offset of the last record whose items all posted (or were
+        # skipped), so a drain cut short by the stall deadline or a transient
+        # failure resumes at a record boundary rather than re-reading from the
+        # start. One record can expand to several items, so a record is only
+        # committed once we cross into the next one.
+        committed_offset = entry.byte_offset
+        current_record_offset: int | None = None
         for item in result.items:
+            # Crossing into a new record means every item of the previous one
+            # was handled without breaking — persist its end offset so the
+            # progress survives a later cancel/failure at this boundary.
+            if (
+                current_record_offset is not None
+                and item.record_byte_offset != current_record_offset
+            ):
+                committed_offset = current_record_offset
+                new_entry = SubagentEntry(
+                    subagent_id=entry.subagent_id,
+                    child_conversation_id=entry.child_conversation_id,
+                    byte_offset=committed_offset,
+                    seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
+                    last_activity_ts=now if had_item else entry.last_activity_ts,
+                    last_status=new_entry.last_status,
+                )
+                updated = SubagentForwardState(
+                    subagents={**updated.subagents, subagent_id: new_entry}
+                )
+                await _write_subagent_forward_state_async(bridge_dir, updated)
+            current_record_offset = item.record_byte_offset
             if item.source_id in seen:
                 continue
             retry_key = f"subagent_item:{entry.child_conversation_id}:{item.source_id}"
@@ -1598,7 +1563,7 @@ async def _forward_available_subagents(
                     new_entry = SubagentEntry(
                         subagent_id=entry.subagent_id,
                         child_conversation_id=entry.child_conversation_id,
-                        byte_offset=entry.byte_offset,
+                        byte_offset=committed_offset,
                         seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                         last_activity_ts=new_entry.last_activity_ts,
                         last_status=new_entry.last_status,
@@ -1627,7 +1592,7 @@ async def _forward_available_subagents(
                     new_entry = SubagentEntry(
                         subagent_id=entry.subagent_id,
                         child_conversation_id=entry.child_conversation_id,
-                        byte_offset=entry.byte_offset,
+                        byte_offset=committed_offset,
                         seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                         last_activity_ts=new_entry.last_activity_ts,
                         last_status=new_entry.last_status,
@@ -1663,37 +1628,27 @@ async def _forward_available_subagents(
             new_entry = SubagentEntry(
                 subagent_id=entry.subagent_id,
                 child_conversation_id=entry.child_conversation_id,
-                byte_offset=entry.byte_offset,
+                byte_offset=committed_offset,
                 seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                 last_activity_ts=now,
                 last_status=new_entry.last_status,
             )
             updated = SubagentForwardState(subagents={**updated.subagents, subagent_id: new_entry})
             await _write_subagent_forward_state_async(bridge_dir, updated)
-        # Only advance the cursor when every item this tick was
-        # posted successfully (or there were no items at all).
-        # Advancing past a failed item permanently skips it.
-        if not items_failed and (result.byte_offset != entry.byte_offset or had_item):
+        # A clean pass (no transient failure) consumed every record the reader
+        # returned, so advance to its end offset — this also covers trailing
+        # records that produced no items. A cut-short pass leaves ``new_entry``
+        # at ``committed_offset`` (the last fully-posted record) from the loop
+        # above, so the next poll resumes there and re-reads only the failed
+        # record; advancing past a failed item would permanently skip it.
+        if not items_failed and (result.byte_offset != new_entry.byte_offset or had_item):
             new_entry = SubagentEntry(
                 subagent_id=entry.subagent_id,
                 child_conversation_id=entry.child_conversation_id,
                 byte_offset=result.byte_offset,
                 seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
                 last_activity_ts=now if had_item else entry.last_activity_ts,
-                last_status=entry.last_status,
-            )
-        elif had_item:
-            # Items DID flow but a later post failed — still record
-            # the activity timestamp so the status badge advances,
-            # but leave byte_offset at the previous tick's value so
-            # the failed items get retried.
-            new_entry = SubagentEntry(
-                subagent_id=entry.subagent_id,
-                child_conversation_id=entry.child_conversation_id,
-                byte_offset=entry.byte_offset,
-                seen_source_ids=_bounded_seen_source_ids(seen_source_ids),
-                last_activity_ts=now,
-                last_status=entry.last_status,
+                last_status=new_entry.last_status,
             )
 
         # Quiescence-based status. Sub-agent transcripts don't carry
