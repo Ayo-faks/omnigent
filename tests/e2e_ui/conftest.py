@@ -1293,12 +1293,7 @@ def seeded_session(
     create_resp.raise_for_status()
     session_id = create_resp.json()["session_id"]
 
-    patch_resp = httpx.patch(
-        f"{live_server}/v1/sessions/{session_id}",
-        json={"runner_id": runner_id},
-        timeout=10.0,
-    )
-    patch_resp.raise_for_status()
+    _bind_session_runner(live_server, session_id, runner_id)
 
     try:
         yield (live_server, session_id)
@@ -1339,12 +1334,7 @@ def _create_runner_bound_session(base_url: str, runner_id: str) -> str:
     create_resp.raise_for_status()
     session_id = create_resp.json()["session_id"]
 
-    patch_resp = httpx.patch(
-        f"{base_url}/v1/sessions/{session_id}",
-        json={"runner_id": runner_id},
-        timeout=10.0,
-    )
-    patch_resp.raise_for_status()
+    _bind_session_runner(base_url, session_id, runner_id)
     return session_id
 
 
@@ -1666,12 +1656,7 @@ def terminal_session(
     create_resp.raise_for_status()
     session_id = create_resp.json()["session_id"]
 
-    patch_resp = httpx.patch(
-        f"{live_server}/v1/sessions/{session_id}",
-        json={"runner_id": runner_id},
-        timeout=10.0,
-    )
-    patch_resp.raise_for_status()
+    _bind_session_runner(live_server, session_id, runner_id)
 
     try:
         yield (live_server, session_id)
@@ -1897,12 +1882,7 @@ def two_agent_chat_session(
     create_resp.raise_for_status()
     session_id = create_resp.json()["session_id"]
 
-    patch_resp = httpx.patch(
-        f"{live_server}/v1/sessions/{session_id}",
-        json={"runner_id": runner_id},
-        timeout=10.0,
-    )
-    patch_resp.raise_for_status()
+    _bind_session_runner(live_server, session_id, runner_id)
 
     try:
         yield TwoAgentChatSession(
@@ -2060,12 +2040,7 @@ def approval_session(
     create_resp.raise_for_status()
     session_id = create_resp.json()["session_id"]
 
-    patch_resp = httpx.patch(
-        f"{live_server}/v1/sessions/{session_id}",
-        json={"runner_id": runner_id},
-        timeout=10.0,
-    )
-    patch_resp.raise_for_status()
+    _bind_session_runner(live_server, session_id, runner_id)
 
     try:
         yield (live_server, session_id)
