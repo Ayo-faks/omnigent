@@ -83,7 +83,12 @@ jobs:
         github.event_name == 'workflow_dispatch'
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Wall clock is set by the SLOWEST single reviewer, not by their count:
+    # measured sub-agent durations on one run were 496s / 273s / 130s / 77s for
+    # a 580s run. Observed runs have reached ~20 min, and a timeout loses the
+    # whole review (the sentinel never lands, so nothing is posted), so keep
+    # real headroom above that.
+    timeout-minutes: 45
     steps:
       - name: Validate /review command
         id: trigger
