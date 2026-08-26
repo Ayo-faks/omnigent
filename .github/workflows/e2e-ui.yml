@@ -299,8 +299,15 @@ jobs:
           # --durations surfaces the slowest test phases (setup/call/teardown)
           # at the end of each shard's log so we can see where the wall-clock
           # goes and rebalance; the 1s floor keeps trivial phases out.
+          # -n 2 runs each shard's tests across 2 xdist workers in parallel.
+          # The suite is ~150 serial tests per shard, so halving the tail is
+          # the biggest per-runner win. Each worker gets its OWN session-scoped
+          # live_server/runner/mock-LLM/browser (separate processes, separate
+          # random ports), so the module-global _server_state and the
+          # server-killing tests (test_stale_stream) stay isolated per worker.
           uv run pytest tests/e2e_ui \
             -v --tb=long --showlocals --log-level=INFO -r a \
+            -n 2 \
             --durations=25 --durations-min=1.0 \
             --ui-skip-build \
             --splits="$NUM_SHARDS" \
