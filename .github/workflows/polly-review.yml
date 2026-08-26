@@ -120,6 +120,8 @@ jobs:
           head_sha="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
+          # SMOKE ONLY: dispatch carries no comment body, so always re-review.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then exit 0; fi
           if grep -qE '^[[:space:]]*/review[[:space:]]+force([[:space:]]|$)' <<<"${COMMENT_BODY:-}"; then
             echo "::notice::'/review force': re-reviewing ${head_sha}."
             exit 0
@@ -191,7 +193,7 @@ jobs:
         if: steps.trigger.outputs.skip != 'true' && steps.creds.outputs.available == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: polly-4model-smoke  # SMOKE ONLY
           persist-credentials: false
 
       - name: Set up Python
@@ -292,8 +294,8 @@ jobs:
         if: steps.trigger.outputs.skip != 'true' && steps.creds.outputs.available == 'true'
         env:
           GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
-          OMNIGENT_ANTHROPIC_MODEL: ${{ vars.OMNIGENT_CI_ANTHROPIC_MODEL }}
-          OMNIGENT_OPENAI_MODEL: ${{ vars.OMNIGENT_CI_OPENAI_MODEL }}
+          OMNIGENT_ANTHROPIC_MODEL: databricks-claude-opus-5  # SMOKE ONLY
+          OMNIGENT_OPENAI_MODEL: databricks-gpt-5-6-sol  # SMOKE ONLY
         run: |
           : "${OMNIGENT_ANTHROPIC_MODEL:?Set OMNIGENT_CI_ANTHROPIC_MODEL}"
           : "${OMNIGENT_OPENAI_MODEL:?Set OMNIGENT_CI_OPENAI_MODEL}"
@@ -339,8 +341,8 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           # Extra pi-hosted reviewers. Either may be empty; the prompt then
           # omits that reviewer instead of asking for a model that can't run.
-          OMNIGENT_OSS_MODEL: ${{ vars.OMNIGENT_CI_OSS_MODEL }}
-          OMNIGENT_GROK_MODEL: ${{ vars.OMNIGENT_CI_GROK_MODEL }}
+          OMNIGENT_OSS_MODEL: databricks-kimi-k3  # SMOKE ONLY
+          OMNIGENT_GROK_MODEL: databricks-grok-4-6  # SMOKE ONLY
         run: |
           set -euo pipefail
 
