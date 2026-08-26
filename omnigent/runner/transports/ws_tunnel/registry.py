@@ -768,9 +768,7 @@ class TunnelRegistry:
                     f"runner stream error: {frame.error}",
                     request=None,  # type: ignore[arg-type]
                 )
-                if _call_soon_threadsafe(
-                    state, lambda: _abort_request_state(state, err)
-                ):
+                if _call_soon_threadsafe(state, lambda: _abort_request_state(state, err)):
                     return True
             else:
                 if _call_soon_threadsafe(state, lambda: _end_response_body(state)):
