@@ -1856,6 +1856,10 @@ def _has_fresh_native_pane_running(
     A pane in ``"running"`` state is actively computing; one in ``"waiting"``
     is awaiting user input (elicitation). Both keep the runner alive — the
     freshness bound prevents an abandoned pane from pinning the runner forever.
+
+    Note: the effective keep-alive window for ``"waiting"`` panes is
+    ``min(idle_timeout_s, _NATIVE_PANE_RUNNING_STALE_S)``; with the default
+    1-hour idle timeout the freshness bound is the binding limit.
     """
     stamp = time.monotonic() if now is None else now
     return any(
