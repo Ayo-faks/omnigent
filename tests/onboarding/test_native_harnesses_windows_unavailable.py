@@ -50,7 +50,6 @@ import omnigent.onboarding.harness_install as hi
 from omnigent.harness_aliases import NATIVE_HARNESSES
 from omnigent.onboarding.harness_readiness import configured_harness_map
 
-
 # ---------------------------------------------------------------------------
 # Autouse isolation (mirrors tests/onboarding/test_harness_readiness.py)
 # ---------------------------------------------------------------------------
@@ -68,9 +67,11 @@ def _isolate_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         monkeypatch.delenv(var, raising=False)
 
     import omnigent.onboarding.copilot_auth as _ca
+
     monkeypatch.setattr(_ca, "gh_cli_github_token", lambda host=None: None)
 
     import omnigent._platform as _plat
+
     monkeypatch.delenv("OMNIGENT_CODEX_PATH", raising=False)
     monkeypatch.setattr(_plat, "_cli_fallback_dirs", lambda: ())
 
@@ -121,6 +122,7 @@ def test_native_terminal_harness_unavailable_on_windows(
 
     # Simulate a Windows host: patch IS_WINDOWS in harness_readiness.
     import omnigent._platform as _plat
+
     monkeypatch.setattr(_plat, "IS_WINDOWS", True)
     # Patch the name in the readiness module's own namespace so calls
     # inside that module see the patched value.
@@ -154,6 +156,7 @@ def test_sdk_harnesses_remain_available_on_windows(
     _all_clis_installed(monkeypatch)
 
     import omnigent._platform as _plat
+
     monkeypatch.setattr(_plat, "IS_WINDOWS", True)
     monkeypatch.setattr(readiness_mod, "IS_WINDOWS", True, raising=False)
 

@@ -71,7 +71,9 @@ _HOST_ID = "host_e2e_windows"
 # This is the value that causes the picker to show NO warning badge (the bug).
 # After the fix, the daemon will return False (or a structured reason), which
 # harnessUnavailableReasonOnHost maps to a visible warning badge.
-_BUGGY_WINDOWS_NATIVE_AVAILABILITY: bool = False  # False = what the fixed daemon returns on Windows
+_BUGGY_WINDOWS_NATIVE_AVAILABILITY: bool = (
+    False  # False = what the fixed daemon returns on Windows
+)
 
 # Canonical native terminal harness that the picker must warn about on Windows.
 _TESTED_NATIVE_HARNESS = "claude-native"
@@ -259,14 +261,10 @@ def test_native_agents_show_warning_badge_on_windows_host(
     sentinel and the badge will render → assertion passes.
     """
     base_url, session_id = seeded_session
-    _run_in_fresh_loop(
-        _drive_windows_host_picker_warning(base_url, session_id)
-    )
+    _run_in_fresh_loop(_drive_windows_host_picker_warning(base_url, session_id))
 
 
-async def _drive_windows_host_picker_warning(
-    base_url: str, session_id: str
-) -> None:
+async def _drive_windows_host_picker_warning(base_url: str, session_id: str) -> None:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         page = await browser.new_page()
@@ -282,9 +280,7 @@ async def _drive_windows_host_picker_warning(
                     body=json.dumps({"data": []}),
                 )
 
-            await page.route(
-                re.compile(r"/v1/sessions\?.*kind=any"), handle_agent_scan
-            )
+            await page.route(re.compile(r"/v1/sessions\?.*kind=any"), handle_agent_scan)
 
             # Seed a recent working directory so the Send button can be
             # enabled without touching the (unavailable) host filesystem API.
@@ -304,9 +300,7 @@ async def _drive_windows_host_picker_warning(
             await page.get_by_test_id("new-chat-landing-agent-select").click()
 
             # The claude-native-ui row should be visible in the picker.
-            native_row = page.get_by_test_id(
-                "new-chat-landing-agent-ag_claude_native_e2e"
-            )
+            native_row = page.get_by_test_id("new-chat-landing-agent-ag_claude_native_e2e")
             await expect(native_row).to_be_visible()
 
             # Assert that the warning badge IS visible.
