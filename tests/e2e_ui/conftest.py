@@ -143,6 +143,14 @@ _server_state: dict[str, int | str] = {}
 _WEB_DIR = _REPO_ROOT / "web"
 _BUILD_OUTPUT = _REPO_ROOT / "omnigent" / "server" / "static" / "web-ui"
 
+# Cross-worker lock serializing the heavy real-CLI boots (see the
+# ``heavy_native_cli`` marker). Under ``-n`` xdist, two of these booting at
+# once starve the 2-core CI runner's CPU and the CLI never reaches
+# "connected" in time; holding this lock caps concurrent real-CLI boots at
+# one while lighter tests keep the other worker busy. Same primitive as
+# ``built_spa``'s ``web/.build.lock``.
+_HEAVY_NATIVE_CLI_LOCK = _REPO_ROOT / "tests" / "e2e_ui" / ".heavy_native_cli.lock"
+
 # ``omnigent server --agent`` runs the spec through the strict
 # validator at registration time (no shim defaults applied), so the
 # YAML must carry an explicit ``executor`` block — otherwise the
@@ -407,6 +415,25 @@ def pytest_collection_modifyitems(
     if not 1 <= group <= splits:
         raise pytest.UsageError(f"--group must be between 1 and {splits}")
     items[:] = items[group - 1 :: splits]
+
+
+@pytest.fixture(autouse=True)
+def _serialize_heavy_native_cli(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Hold a cross-worker lock for ``heavy_native_cli``-marked tests.
+
+    A no-op for the ~150 ordinary tests. For a test that boots a real coding
+    agent CLI, this acquires :data:`_HEAVY_NATIVE_CLI_LOCK` before the test's
+    own fixtures spawn the CLI and releases it after teardown, so at most one
+    real-CLI boot runs at a time across all xdist workers. Without it, two
+    concurrent boots starve the 2-core CI runner and the CLI never reaches
+    "connected". Autouse (not a dependency) so a test only needs the marker,
+    and the lock wraps the heavy per-test server/CLI fixtures too.
+    """
+    if request.node.get_closest_marker("heavy_native_cli") is None:
+        yield
+        return
+    with filelock.FileLock(str(_HEAVY_NATIVE_CLI_LOCK), timeout=600):
+        yield
 
 
 def _register_agent_yaml(
