@@ -98,7 +98,7 @@
       }
     },
     {
-      "files": ["src/lib/identity.ts", "src/lib/sessionHost.ts"],
+      "files": ["src/lib/identity.ts", "src/lib/sessionHost.ts", "src/lib/testTimers.ts"],
       "rules": {
         "no-underscore-dangle": "off"
       }

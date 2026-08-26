@@ -6,10 +6,12 @@
 // the same abort-and-reopen the client already performs on the
 // ingress' ~5-min stream recycle. See `designs/UI/PRESENCE.md`.
 
+import { resolveTestTimer } from "./testTimers";
+
 /** Hidden-tab dwell before this tab reports itself idle. Long enough
  * that alt-tabbing to copy something never reaches the wire; short
  * enough that co-viewers' headers stay honest. */
-export const PRESENCE_IDLE_AFTER_MS = 30_000;
+export const PRESENCE_IDLE_AFTER_MS = resolveTestTimer("presenceIdleMs", 30_000);
 
 export interface PresenceIdleTracker {
   /**

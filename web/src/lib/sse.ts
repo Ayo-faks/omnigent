@@ -70,6 +70,7 @@ import type {
 } from "./events";
 import { NATIVE_TOOL_TYPES } from "./events";
 import { routingExtrasFromWire } from "./routingDecision";
+import { resolveTestTimer } from "./testTimers";
 import type { BackgroundTaskInfo, ErrorInfo, ModelUsage, RememberScope, Response } from "./types";
 
 /**
@@ -88,7 +89,7 @@ export interface SseStreamResult {
 // a close) `reader.read()` blocks forever and the transcript silently
 // freezes. Three missed heartbeats in a row trip the guard; one late
 // heartbeat doesn't.
-export const SSE_STALL_TIMEOUT_MS = 45_000;
+export const SSE_STALL_TIMEOUT_MS = resolveTestTimer("sseStallMs", 45_000);
 
 /**
  * Wrap an SSE byte stream with a silence watchdog.

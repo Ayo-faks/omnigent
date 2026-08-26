@@ -51,6 +51,7 @@ import {
   setBadgeCount,
 } from "@/lib/nativeBridge";
 import { fetchLastAssistantText } from "@/lib/lastAssistantText";
+import { resolveTestTimer } from "@/lib/testTimers";
 import {
   buildElicitationMap,
   buildStatusMap,
@@ -69,7 +70,7 @@ const ELICITATION_BODY = "Agent is asking for your input.";
 // "actually done" and notified — long enough that an imminent next step (the
 // agent resuming to `running`) cancels the cue, so step-by-step agents don't
 // fire a notification per step.
-const IDLE_SETTLE_MS = 10_000;
+const IDLE_SETTLE_MS = resolveTestTimer("idleNotificationSettleMs", 10_000);
 
 /**
  * Attach a one-shot listener that requests notification permission on the

@@ -35,6 +35,13 @@ import uuid
 import httpx
 from playwright.sync_api import Browser, expect
 
+from tests.e2e_ui.conftest import test_timer_init_script
+
+# Shorten the SPA's 30 s hidden-tab debounce so the idle-greying assertion does
+# not wait it out. 3 s still proves the debounce (a visible tab never greys)
+# without the full production dwell.
+_PRESENCE_IDLE_MS = 3_000
+
 
 def test_two_browser_contexts_sync_message_realtime(
     browser: Browser,
@@ -248,6 +255,8 @@ def test_presence_idle_greys_backgrounded_viewer(
 
     alice_ctx = browser.new_context(extra_http_headers={"X-Forwarded-Email": alice_email})
     bob_ctx = browser.new_context(extra_http_headers={"X-Forwarded-Email": bob_email})
+    # Only Bob's tab goes idle, so only his SPA needs the shortened debounce.
+    bob_ctx.add_init_script(test_timer_init_script(presenceIdleMs=_PRESENCE_IDLE_MS))
     try:
         alice = alice_ctx.new_page()
         bob = bob_ctx.new_page()
@@ -272,12 +281,12 @@ def test_presence_idle_greys_backgrounded_viewer(
             "}"
         )
 
-        # The grey lands only after the SPA's 30s hidden-debounce plus
-        # the reconnect/broadcast round trip — 60s bounds that without
-        # masking a stall. (An instant grey would ALSO be a bug — it
-        # would mean alt-tabs flicker — but that direction is pinned by
-        # the tracker unit tests, not re-asserted here.)
-        expect(bob_circle).to_have_class(re.compile(r"opacity-40"), timeout=60_000)
+        # The grey lands only after the SPA's hidden-debounce
+        # (_PRESENCE_IDLE_MS here) plus the reconnect/broadcast round trip;
+        # 15s bounds that without masking a stall. (An instant grey would ALSO
+        # be a bug — it would mean alt-tabs flicker — but that direction is
+        # pinned by the tracker unit tests, not re-asserted here.)
+        expect(bob_circle).to_have_class(re.compile(r"opacity-40"), timeout=15_000)
 
         # Restore visibility: un-greying skips the debounce, so it must
         # land within one reconnect round trip.

@@ -96,6 +96,26 @@ def fetch_with_retry(route: Route, *, attempts: int = 3) -> APIResponse:
     return route.fetch()
 
 
+def test_timer_init_script(**overrides_ms: int) -> str:
+    """Build an init script that shortens long UI timers for a test.
+
+    The SPA reads ``window.__omniTestTimers`` once at module load (see
+    ``web/src/lib/testTimers.ts``); setting it via ``page.add_init_script``
+    before ``goto`` lets a test trade a real wall-clock wait for a short one
+    without weakening the assertion (a 3 s stall guard proves the same
+    self-heal a 45 s one does). Keys mirror ``TestTimerOverrides``:
+    ``sseStallMs``, ``presenceIdleMs``, ``idleNotificationSettleMs``.
+
+    :param overrides_ms: Timer key → milliseconds. Only the passed keys are
+        set; every other timer keeps its production default.
+    :returns: A JS snippet for ``page.add_init_script`` /
+        ``context.add_init_script``.
+    """
+    import json as _json
+
+    return f"window.__omniTestTimers = {_json.dumps(overrides_ms)};"
+
+
 def open_right_rail(page: Page) -> None:
     """Expand the right "Workspace" rail if it is collapsed.
 

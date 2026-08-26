@@ -25,7 +25,13 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.e2e_ui.conftest import _server_state, configure_mock_llm
+from tests.e2e_ui.conftest import _server_state, configure_mock_llm, test_timer_init_script
+
+# Shorten the client's 45 s SSE stall guard so the self-heal assertion does not
+# sit idle waiting it out. 5 s is well clear of the 3 s heartbeat cadence (so a
+# healthy stream never trips it) yet proves the same recover-from-byte-silence
+# behaviour the production window does.
+_STALL_GUARD_MS = 5_000
 
 
 def _find_runner_pids() -> list[int]:
@@ -173,6 +179,7 @@ def test_silent_stream_stall_self_heals(
         lambda msg: stall_warnings.append(msg.text) if "no stream bytes" in msg.text else None,
     )
 
+    page.add_init_script(test_timer_init_script(sseStallMs=_STALL_GUARD_MS))
     page.goto(f"{live_server}/c/{session_id}")
     expect(page.get_by_placeholder("Ask the agent anything…")).to_be_visible()
     for _ in range(100):
@@ -186,19 +193,19 @@ def test_silent_stream_stall_self_heals(
     server_pid = int(_server_state["pid"])
     os.kill(server_pid, signal.SIGSTOP)
     try:
-        # The stall guard trips after 45 s of silence; poll to 70 s.
-        # wait_for_timeout (not time.sleep) keeps dispatching this
-        # page's console/request callbacks while we wait.
-        for _ in range(700):
+        # The stall guard trips after _STALL_GUARD_MS of silence; poll to a
+        # generous multiple of that. wait_for_timeout (not time.sleep) keeps
+        # dispatching this page's console/request callbacks while we wait.
+        for _ in range(int(_STALL_GUARD_MS / 100) + 150):
             if stall_warnings:
                 break
             page.wait_for_timeout(100)
     finally:
         os.kill(server_pid, signal.SIGCONT)
     assert stall_warnings, (
-        "the client never declared the byte-silent stream dead within 70s -- "
-        "without the stall guard it blocks in reader.read() forever and the "
-        "transcript freezes until a manual reload"
+        "the client never declared the byte-silent stream dead -- without the "
+        "stall guard it blocks in reader.read() forever and the transcript "
+        "freezes until a manual reload"
     )
 
     # The recycle issues a fresh /stream open (it may have been pending

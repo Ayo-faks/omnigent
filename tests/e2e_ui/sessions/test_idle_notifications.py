@@ -35,6 +35,15 @@ from __future__ import annotations
 
 from playwright.sync_api import Page, expect
 
+from tests.e2e_ui.conftest import test_timer_init_script
+
+# Shorten the SPA's 10 s idle-notification settle window so these tests do not
+# wait it out before the cue fires. 5 s still proves the deferral: it stays
+# comfortably above the 3 s "not fired yet" probe in
+# test_idle_notification_deferred_until_settle (so that assertion holds) while
+# cutting the wait for the notification to land.
+_IDLE_SETTLE_MS = 5_000
+
 # Records constructed notifications and makes visibility/focus controllable
 # from the test via window.__hidden. Runs before any app script on every
 # navigation (add_init_script), so the SPA's feature detection and
@@ -146,7 +155,7 @@ Object.defineProperty(document, "hidden", {
   get() { return window.__hidden; },
 });
 document.hasFocus = function () { return !window.__hidden; };
-"""
+""" + test_timer_init_script(idleNotificationSettleMs=_IDLE_SETTLE_MS)
 
 # Kept deliberately tiny: these tests only need a real ``running`` ->
 # ``idle`` turn to observe, not a long generation. A short reply still
