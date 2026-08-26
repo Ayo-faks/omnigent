@@ -4708,9 +4708,7 @@ def create_runner_app(
             read_codex_config_developer_instructions_state_from_home,
         )
 
-        _di_read = read_codex_config_developer_instructions_state_from_home(
-            Path(state.codex_home)
-        )
+        _di_read = read_codex_config_developer_instructions_state_from_home(Path(state.codex_home))
         if _di_read.state is DeveloperInstructionsReadState.UNREADABLE:
             _logger.warning(
                 "Codex-native plan-mode update skipped for %s: developer_instructions "
@@ -6976,6 +6974,14 @@ def create_runner_app(
             dispatch.spawn_env if dispatch else cast(dict[str, str] | None, body.get("spawn_env"))
         )
         _note_session_harness_override(conv_id, cast(str | None, body.get("harness_override")))
+        # Mirror the background path's agent-switch invalidation so both dispatch
+        # paths use the shared _invalidate_session_agent_state routine.
+        _ds_agent_id = dispatch.agent_id if dispatch else cast(str | None, body.get("agent_id"))
+        _ds_prior = _session_agent_ids.get(conv_id)
+        if _ds_agent_id and _ds_prior is not None and _ds_prior != _ds_agent_id:
+            await _invalidate_session_agent_state(conv_id, _ds_agent_id)
+        if _ds_agent_id:
+            _session_agent_ids[conv_id] = _ds_agent_id
         startup_envelope = _fresh_session_init_envelope(conv_id)
         startup_labels = startup_envelope.snapshot.labels if startup_envelope is not None else None
         if not harness_name:
@@ -7060,24 +7066,6 @@ def create_runner_app(
             )
 
         _turn_agent_id = dispatch.agent_id if dispatch else cast(str | None, body.get("agent_id"))
-        # Mirror the background path's agent-switch invalidation so both dispatch
-        # paths route through the same shared routine (_invalidate_session_agent_state).
-        _direct_prior_agent_id = _session_agent_ids.get(conv_id)
-        if (
-            _turn_agent_id
-            and _direct_prior_agent_id is not None
-            and _direct_prior_agent_id != _turn_agent_id
-        ):
-            _logger.info(
-                "agent switch on direct-stream turn for %s: %s -> %s",
-                conv_id,
-                _direct_prior_agent_id,
-                _turn_agent_id,
-                extra={"session_id": conv_id},
-            )
-            await _invalidate_session_agent_state(conv_id, _turn_agent_id)
-        if _turn_agent_id:
-            _session_agent_ids[conv_id] = _turn_agent_id
         _has_mcp_hint = dispatch.has_mcp_servers if dispatch else body.get("has_mcp_servers")
         _turn_spec: object | None = None
         _turn_spec_entry: object | None = None
@@ -7200,15 +7188,18 @@ def create_runner_app(
                 return
 
             # Compose instructions from the spec's authored text + the caller's
-            # per-request text, mirroring the background-turn path so both dispatch
-            # paths produce the same result for the same inputs.
-            _instr_entry, _ = await _resolve_turn_spec_lazy()
-            _instr_spec = _unwrap_resolved_spec(_instr_entry)
+            # per-request text only for the DIRECT stream path (dispatch is None).
+            # When called from _run_turn_bg_setup_and_stream, dispatch is set and
+            # harness_body already carries composed instructions — composing again
+            # would double-count the authored text.
             _instr_body = body
-            if _instr_spec is not None:
-                _per_req_instr = cast(str | None, body.get("instructions"))
-                _composed_instr = build_instructions(_instr_spec, _per_req_instr, [])
-                _instr_body = {**body, "instructions": _composed_instr}
+            if dispatch is None:
+                _instr_entry, _ = await _resolve_turn_spec_lazy()
+                _instr_spec = _unwrap_resolved_spec(_instr_entry)
+                if _instr_spec is not None:
+                    _per_req_instr = cast(str | None, body.get("instructions"))
+                    _composed_instr = build_instructions(_instr_spec, _per_req_instr, [])
+                    _instr_body = {**body, "instructions": _composed_instr}
             event_body = _wrap_as_message_event(_instr_body)
             _inject_mcp_schemas(event_body, _mcp_schemas)
             _response_id: str | None = None
@@ -9931,9 +9922,7 @@ def create_runner_app(
         if agent_id:
             _spec_cache.pop(agent_id, None)
 
-    async def _invalidate_session_agent_state(
-        session_id: str, new_agent_id: str | None
-    ) -> None:
+    async def _invalidate_session_agent_state(session_id: str, new_agent_id: str | None) -> None:
         """Clear all agent-derived caches and release the harness subprocess.
 
         Both dispatch paths (background ``_run_turn_bg_setup_and_stream`` and
