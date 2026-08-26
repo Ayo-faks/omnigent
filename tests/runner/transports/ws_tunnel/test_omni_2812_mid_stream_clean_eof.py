@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from typing import Any
 
 import httpx
 import pytest
@@ -39,11 +38,9 @@ from omnigent.runner.transports.ws_tunnel.frames import (
     ResponseEndFrame,
     ResponseHeadFrame,
     decode_frame,
-    encode_frame,
 )
 from omnigent.runner.transports.ws_tunnel.registry import RunnerSession, TunnelRegistry
 from omnigent.runner.transports.ws_tunnel.serve import dispatch_via_asgi
-from omnigent.runner.transports.ws_tunnel.transport import WSTunnelTransport
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +172,6 @@ async def test_ws_tunnel_mid_stream_failure_raises_at_consumer() -> None:
     # Give the loop a tick to process the callbacks.
     await asyncio.sleep(0)
 
-    # Consume the body: this should raise, not return cleanly.
-    consumer_exception: Exception | None = None
-    body_bytes = b""
-    transport = WSTunnelTransport(registry=registry, runner_id="runner-2812")
-
-    # Re-open a fresh request state to test the body iterator path directly.
     # The abort should have been set on the existing state; verify it now.
     assert state.aborted_with is not None, (
         f"registry did not set aborted_with after error-flagged ResponseEndFrame. "

@@ -266,9 +266,7 @@ async def dispatch_via_asgi(
                     )
                 )
             )
-        await send_text(
-            encode_frame(ResponseEndFrame(id=frame.id, error="runner_stream_error"))
-        )
+        await send_text(encode_frame(ResponseEndFrame(id=frame.id, error="runner_stream_error")))
         raise
 
 
