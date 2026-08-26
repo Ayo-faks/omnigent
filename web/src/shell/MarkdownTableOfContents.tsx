@@ -110,6 +110,13 @@ export function MarkdownTableOfContents({
     return () => window.removeEventListener("keydown", handleEscape);
   }, [open, onClose]);
 
+  // Filter headings based on search text
+  const filteredHeadings = useMemo(() => {
+    if (!filterText.trim()) return headings;
+    const lower = filterText.toLowerCase();
+    return headings.filter((h) => h.text.toLowerCase().includes(lower));
+  }, [headings, filterText]);
+
   if (headings.length === 0 || !open) return null;
 
   const handleClick = (id: string) => {
@@ -120,13 +127,6 @@ export function MarkdownTableOfContents({
     target.scrollIntoView({ behavior: "smooth", block: "start" });
     onClose?.();
   };
-
-  // Filter headings based on search text
-  const filteredHeadings = useMemo(() => {
-    if (!filterText.trim()) return headings;
-    const lower = filterText.toLowerCase();
-    return headings.filter((h) => h.text.toLowerCase().includes(lower));
-  }, [headings, filterText]);
 
   return (
     <>
