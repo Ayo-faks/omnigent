@@ -244,9 +244,9 @@ async def dispatch_via_asgi(
     except Exception:
         # If the app crashed BEFORE sending head, surface a 500 so
         # the server's request-side awaiter doesn't hang. If it
-        # crashed AFTER head, it's already streaming — best we can
-        # do is end the response so the consumer doesn't wait
-        # forever.
+        # crashed AFTER head, it's already streaming — send an
+        # error-flagged ResponseEndFrame so the server-side consumer
+        # sees an exception rather than a clean EOF after partial body.
         if not head_sent_to_ws:
             await send_text(
                 encode_frame(
@@ -266,7 +266,9 @@ async def dispatch_via_asgi(
                     )
                 )
             )
-        await send_text(encode_frame(ResponseEndFrame(id=frame.id)))
+        await send_text(
+            encode_frame(ResponseEndFrame(id=frame.id, error="runner_stream_error"))
+        )
         raise
 
 
