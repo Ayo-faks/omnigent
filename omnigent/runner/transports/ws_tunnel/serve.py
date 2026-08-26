@@ -268,6 +268,8 @@ async def dispatch_via_asgi(
             )
         # Only flag the end frame as an error when head was already sent;
         # the pre-head path delivers a well-formed 500 that should close cleanly.
+        # If a clean end was already sent (more_body=False), this is a second end
+        # frame; the server's route_response_frame will drop it as an orphan.
         end_error = "runner_stream_error" if head_sent_to_ws else None
         await send_text(encode_frame(ResponseEndFrame(id=frame.id, error=end_error)))
         raise
