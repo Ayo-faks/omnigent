@@ -2316,16 +2316,27 @@ executor:
 def _bind_session_runner(base_url: str, session_id: str, runner_id: str) -> None:
     """PATCH *session_id* onto *runner_id* so ``POST /v1/responses`` dispatches.
 
+    Retries a transient ``503`` on the bind: under xdist the runner can briefly
+    flap unreachable between the fixture's health poll and this PATCH while
+    sibling workers saturate the CI runner's CPU. The bind is idempotent, so a
+    short bounded re-poll turns that contention blip into a wait instead of a
+    hard failure. Non-503 errors surface immediately.
+
     :param base_url: Spawned server base URL, e.g. ``"http://127.0.0.1:51234"``.
     :param session_id: The session/conversation id to bind.
     :param runner_id: The token-bound runner id the session dispatches to.
     """
-    patch = httpx.patch(
-        f"{base_url}/v1/sessions/{session_id}",
-        json={"runner_id": runner_id},
-        timeout=10.0,
-    )
-    patch.raise_for_status()
+    deadline = time.monotonic() + _HEALTH_TIMEOUT_S
+    while True:
+        patch = httpx.patch(
+            f"{base_url}/v1/sessions/{session_id}",
+            json={"runner_id": runner_id},
+            timeout=10.0,
+        )
+        if patch.status_code != 503 or time.monotonic() >= deadline:
+            patch.raise_for_status()
+            return
+        time.sleep(_HEALTH_POLL_INTERVAL_S)
 
 
 def _create_bundled_session(base_url: str, runner_id: str, yaml_text: str) -> str:
