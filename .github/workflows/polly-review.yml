@@ -261,7 +261,7 @@ jobs:
           # outside the checked-out tree for the same reason as the others.
           PI_CLI_DIR="${RUNNER_TEMP}/omnigent-pi-cli"
           mkdir -p "$PI_CLI_DIR" && cd "$PI_CLI_DIR"
-          npm install --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@0.84.2
+          npm install --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@0.79.0
           echo "$PI_CLI_DIR/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Set LLM credentials
@@ -395,9 +395,18 @@ jobs:
           # Extra reviewers, each a `pi` dispatch pinned to one gateway model.
           # An unset variable drops that reviewer rather than naming a model the
           # deployment can't run (a bad model/worker pair fails the dispatch).
+          def _model_var(name):
+              # A gateway endpoint name only. Anything else (notably a newline or
+              # a quote) could append instructions to a prompt that runs with
+              # LLM_API_KEY in the environment.
+              value = os.environ.get(name, '').strip()
+              if value and not re.fullmatch(r'[A-Za-z0-9._-]+', value):
+                  raise SystemExit(f"{name} is not a bare model id: {value!r}")
+              return value
+
           extra_reviewers = [
-              (os.environ.get('OMNIGENT_OSS_MODEL', '').strip(), 'open-weights'),
-              (os.environ.get('OMNIGENT_GROK_MODEL', '').strip(), 'xAI'),
+              (_model_var('OMNIGENT_OSS_MODEL'), 'open-weights'),
+              (_model_var('OMNIGENT_GROK_MODEL'), 'xAI'),
           ]
           extra_reviewer_lines = "\n".join(
               f"- `pi` with `args.model: \"{model}\"` ({label})"
@@ -628,8 +637,27 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/comment.md
           echo "Created new comment"
 
-      - name: Upload logs on failure
-        if: failure()
+      # Redact before upload: ``::add-mask::`` hides the key from LOGS but not
+      # from artifact files, and this repo is public.
+      - name: Redact credentials from the log
+        if: always()
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          set -euo pipefail
+          [ -f polly-stderr.log ] || exit 0
+          if [ -n "${LLM_API_KEY:-}" ]; then
+            python3 - "$LLM_API_KEY" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path("polly-stderr.log")
+          p.write_text(p.read_text(errors="replace").replace(sys.argv[1], "***REDACTED***"))
+          PY
+          fi
+
+      # Uploaded on success too: ``-p`` prints only the final assistant text, so
+      # stderr is the sole record of how long each turn and sub-agent took.
+      - name: Upload logs
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: polly-review-logs-${{ github.run_id }}

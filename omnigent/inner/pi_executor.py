@@ -910,12 +910,14 @@ def _pi_provider_for_model(
         )
     if "gpt" in lower:
         return "databricks-openai" if _pi_needs_responses_api(model, wire_apis) else "databricks"
-    # A model can advertise Responses without being a GPT (e.g. grok, whose
-    # only surfaces are ``openai/v1/responses`` and the MLflow chat gateway).
-    # Routing it to ``databricks-completions`` sends it at /serving-endpoints
-    # chat, the one surface it rejects, so consult the catalog wire APIs before
-    # defaulting. With no metadata this still falls through unchanged.
-    if _pi_needs_responses_api(model, wire_apis):
+    # grok advertises only ``openai/v1/responses`` and the MLflow chat gateway,
+    # so ``databricks-completions`` aims it at the one surface it rejects.
+    # Deliberately scoped to the grok family rather than "advertises Responses":
+    # ``_databricks_model_wire_catalog`` indexes wire metadata under BOTH the
+    # ``system.ai.*`` and ``databricks-*`` spellings, and the gateway rejects
+    # Responses for the ``databricks-*`` alias of kimi / glm / qwen3 (see
+    # ``pi_model_compatibility``), so the broader condition would misroute those.
+    if "grok" in lower and _pi_needs_responses_api(model, wire_apis):
         return "databricks-openai"
     return "databricks-completions"
 

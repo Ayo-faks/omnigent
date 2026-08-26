@@ -411,6 +411,16 @@ class TestPiProviderForModel(unittest.TestCase):
             "databricks-completions",
         )
 
+    def test_databricks_alias_of_responses_model_stays_on_chat(self):
+        # Wire metadata is indexed under both spellings, so these aliases DO
+        # carry OPENAI_RESPONSES. The gateway still rejects Responses for the
+        # ``databricks-`` spelling ("Responses API passthrough is not supported
+        # for model databricks-kimi-k3"), so they must stay on chat.
+        both = frozenset({ModelWireAPI.OPENAI_CHAT, ModelWireAPI.OPENAI_RESPONSES})
+        for model in ("databricks-kimi-k3", "databricks-glm-5-2", "databricks-qwen3-next-80b"):
+            with self.subTest(model=model):
+                self.assertEqual(_pi_provider_for_model(model, both), "databricks-completions")
+
 
 # ---------------------------------------------------------------------------
 # _split_pi_prompt tests
