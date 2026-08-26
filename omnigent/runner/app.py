@@ -1851,10 +1851,15 @@ def _has_fresh_native_pane_running(
     *,
     now: float | None = None,
 ) -> bool:
-    """Return whether a native pane has recently shown running activity."""
+    """Return whether a native pane has recently shown active or waiting activity.
+
+    A pane in ``"running"`` state is actively computing; one in ``"waiting"``
+    is awaiting user input (elicitation). Both keep the runner alive — the
+    freshness bound prevents an abandoned pane from pinning the runner forever.
+    """
     stamp = time.monotonic() if now is None else now
     return any(
-        status == "running"
+        status in ("running", "waiting")
         and (seen_at := activity_at.get(session_id)) is not None
         and stamp - seen_at <= _NATIVE_PANE_RUNNING_STALE_S
         for session_id, status in statuses.items()
