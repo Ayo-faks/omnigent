@@ -4703,6 +4703,32 @@ def create_runner_app(
                     "detail": "Codex-native plan-mode update requires a current model.",
                 },
             )
+        from omnigent.codex_native_bridge import (
+            DeveloperInstructionsReadState,
+            read_codex_config_developer_instructions_state_from_home,
+        )
+
+        _di_read = read_codex_config_developer_instructions_state_from_home(
+            Path(state.codex_home)
+        )
+        if _di_read.state is DeveloperInstructionsReadState.UNREADABLE:
+            _logger.warning(
+                "Codex-native plan-mode update skipped for %s: developer_instructions "
+                "config unreadable — refusing to guess and risk wiping live state.",
+                conv_id,
+                extra={"session_id": conv_id},
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "codex_native_settings_update_failed",
+                    "detail": (
+                        "Codex-native plan-mode update requires reading the current "
+                        "developer_instructions config; it could not be read."
+                    ),
+                },
+            )
+        developer_instructions = _di_read.value
         return await _handle_codex_native_settings_update(
             conv_id,
             {
@@ -4711,7 +4737,7 @@ def create_runner_app(
                     "settings": {
                         "model": model,
                         "reasoning_effort": effort,
-                        "developer_instructions": None,
+                        "developer_instructions": developer_instructions,
                     },
                 },
             },
@@ -6544,15 +6570,7 @@ def create_runner_app(
                 _dispatched_agent_id,
                 extra={"session_id": conv},
             )
-            _session_spec_cache.pop(conv, None)
-            _session_harness_overrides.pop(conv, None)
-            _session_skills_cache.pop(conv, None)
-            _session_cursor_model_names.pop(conv, None)
-            _drop_session_claude_launch_config(conv)
-            _session_tool_schemas.pop(conv, None)
-            _session_snapshot_cache.pop(conv, None)
-            if process_manager is not None:
-                await process_manager.release(conv)
+            await _invalidate_session_agent_state(conv, _dispatched_agent_id)
         if _dispatched_agent_id:
             _session_agent_ids[conv] = _dispatched_agent_id
 
@@ -6600,10 +6618,11 @@ def create_runner_app(
         if _sa_name and cached_spec is not None:
             sub_entry = _native_runtime._resolve_sub_agent_spec_entry(cached_spec_entry, _sa_name)
             if sub_entry is None:
-                # Suppress if the cache already holds the child spec (prior turn
-                # or POST /v1/sessions already swapped it in).
-                if cached_spec.name != _sa_name:
-                    _warn_unresolved_sub_agent(conv, _sa_name)
+                # Always warn — a parent whose own name matches the requested
+                # sub-agent would silently satisfy a name-equality identity check
+                # on every later turn, hiding the permanent miss. The warning is
+                # the only signal that the session is running on the parent spec.
+                _warn_unresolved_sub_agent(conv, _sa_name)
             else:
                 cached_spec_entry = sub_entry
                 cached_spec = _unwrap_resolved_spec(sub_entry)
@@ -7041,6 +7060,24 @@ def create_runner_app(
             )
 
         _turn_agent_id = dispatch.agent_id if dispatch else cast(str | None, body.get("agent_id"))
+        # Mirror the background path's agent-switch invalidation so both dispatch
+        # paths route through the same shared routine (_invalidate_session_agent_state).
+        _direct_prior_agent_id = _session_agent_ids.get(conv_id)
+        if (
+            _turn_agent_id
+            and _direct_prior_agent_id is not None
+            and _direct_prior_agent_id != _turn_agent_id
+        ):
+            _logger.info(
+                "agent switch on direct-stream turn for %s: %s -> %s",
+                conv_id,
+                _direct_prior_agent_id,
+                _turn_agent_id,
+                extra={"session_id": conv_id},
+            )
+            await _invalidate_session_agent_state(conv_id, _turn_agent_id)
+        if _turn_agent_id:
+            _session_agent_ids[conv_id] = _turn_agent_id
         _has_mcp_hint = dispatch.has_mcp_servers if dispatch else body.get("has_mcp_servers")
         _turn_spec: object | None = None
         _turn_spec_entry: object | None = None
@@ -7162,7 +7199,17 @@ def create_runner_app(
                 yield _response_failed_event({"message": _err_msg, "type": _err_type})
                 return
 
-            event_body = _wrap_as_message_event(body)
+            # Compose instructions from the spec's authored text + the caller's
+            # per-request text, mirroring the background-turn path so both dispatch
+            # paths produce the same result for the same inputs.
+            _instr_entry, _ = await _resolve_turn_spec_lazy()
+            _instr_spec = _unwrap_resolved_spec(_instr_entry)
+            _instr_body = body
+            if _instr_spec is not None:
+                _per_req_instr = cast(str | None, body.get("instructions"))
+                _composed_instr = build_instructions(_instr_spec, _per_req_instr, [])
+                _instr_body = {**body, "instructions": _composed_instr}
+            event_body = _wrap_as_message_event(_instr_body)
             _inject_mcp_schemas(event_body, _mcp_schemas)
             _response_id: str | None = None
             try:
@@ -9868,7 +9915,13 @@ def create_runner_app(
 
     def _clear_session_agent_caches(session_id: str, agent_id: str | None = None) -> None:
         _session_spec_cache.pop(session_id, None)
+        _session_agent_ids.pop(session_id, None)
         _session_harness_overrides.pop(session_id, None)
+        # Bump so any in-flight fill discards its write rather than reinstating it.
+        _session_cache_generations[session_id] = (
+            _session_cache_generations.get(session_id, 0) + 1
+        )
+        _session_snapshot_cache.pop(session_id, None)
         _session_skills_cache.pop(session_id, None)
         _session_cursor_model_names.pop(session_id, None)
         _drop_session_claude_launch_config(session_id)
@@ -9877,6 +9930,20 @@ def create_runner_app(
         _session_snapshot_cache.pop(session_id, None)
         if agent_id:
             _spec_cache.pop(agent_id, None)
+
+    async def _invalidate_session_agent_state(
+        session_id: str, new_agent_id: str | None
+    ) -> None:
+        """Clear all agent-derived caches and release the harness subprocess.
+
+        Both dispatch paths (background ``_run_turn_bg_setup_and_stream`` and
+        direct-stream ``_stream_message_to_harness``) call this shared routine
+        on an in-conversation agent switch, so the eviction scope cannot
+        diverge between the two paths.
+        """
+        _clear_session_agent_caches(session_id, new_agent_id)
+        if process_manager is not None:
+            await process_manager.release(session_id)
 
     @app.delete("/v1/sessions/{session_id}/resources")
     async def cleanup_session_resources(
