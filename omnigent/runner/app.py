@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import enum
 import functools
 import itertools
 import json
@@ -25,7 +24,7 @@ import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeAlias, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast, overload
 
 if TYPE_CHECKING:
     # Type-only import: the runner keeps codex deps out of its runtime import
@@ -60,7 +59,9 @@ from omnigent.harness_aliases import (
     native_terminal_name,
 )
 from omnigent.harness_availability import CODEX_CANONICAL_HARNESSES
+from omnigent.harness_capabilities import InstructionDelivery
 from omnigent.harness_plugins import (
+    harness_capabilities,
     load_object,
     model_env_keys,
     spawn_env_builders,
@@ -158,7 +159,11 @@ from omnigent.runner.subagent_routing import (
     session_routing_class,
 )
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager, NoLiveHarnessError
-from omnigent.runtime.prompt import build_instructions
+from omnigent.runtime.prompt import (
+    build_instructions,
+    build_instructions_nullable,
+    raw_author_instructions,
+)
 from omnigent.server.schemas import (
     BackgroundSessionTitleRequest,
     BackgroundSessionTitleResponse,
@@ -194,41 +199,10 @@ _CLAUDE_MODEL_LATE_DIALOG_BUDGET_S = 1200.0
 _CLAUDE_MODEL_LATE_DIALOG_POLL_S = 2.0
 
 
-class _SubAgentProvenance(enum.Enum):
-    """How a cached session spec relates to the session's ``sub_agent_name``.
-
-    Three states, because the fact has three: the entry IS the requested
-    child (or the session names no sub-agent), the entry is the PARENT kept
-    after a miss, or nobody has decided yet. The third is carried by
-    :data:`UNDETERMINED`; the second by the plain ``str`` name that failed to
-    resolve, so the reader that reports it has the name to report.
-
-    A two-state encoding folds "not decided" into "resolved", and a reader
-    then treats an entry published mid-resolution — or one published after a
-    session-snapshot fetch failed, where the name was never recoverable — as
-    an authoritative child. Both used to happen.
-    """
-
-    RESOLVED = "resolved"
-    UNDETERMINED = "undetermined"
-
-
-# What a cache entry records about its sub-agent: the name that failed to
-# resolve, or one of the two states above.
-_SubAgentProvenanceValue: TypeAlias = "str | _SubAgentProvenance"
-
-
-class _SubAgentRecovery(NamedTuple):
-    """The outcome of recovering a session's ``sub_agent_name``.
-
-    ``known`` is what separates "this session names no sub-agent" from "the
-    lookup failed and the answer is still unknown" — two facts a bare
-    ``str | None`` return cannot tell apart, and conflating them publishes a
-    cache entry claiming a resolution nobody performed.
-    """
-
-    name: str | None
-    known: bool
+# Provenance tag for the session spec cache: either the name of a
+# sub-agent that failed to resolve (a plain str) or None for a
+# positively-resolved entry.
+_SubAgentProvenanceValue: TypeAlias = "str | None"
 
 
 def _warn_unresolved_sub_agent(session_id: str | None, sub_agent_name: str) -> None:
@@ -1043,46 +1017,6 @@ class _CommentRelayBinding:
     relay: ClaudeNativeToolRelay
     spec_entry: _SpecEntry | None
     bridge_dir: Path
-
-
-def _cache_get_for_agent(
-    cache: dict[str, tuple[str | None, Any]], conv_id: str, agent_id: str | None
-) -> Any | None:
-    """Read an agent-tagged per-session cache entry.
-
-    Every entry is a ``(tagged_agent_id, value)`` pair written by
-    :func:`_cache_set_for_agent` — provenance travels with the value
-    itself instead of a parallel marker dict that a write could touch
-    without the paired cache write (or vice versa). A read only returns
-    *value* when the stored tag is ``None`` (agent-independent — e.g. no
-    spec resolver is configured, so the entry is valid regardless of who
-    this turn is for) or matches *agent_id* exactly.
-
-    A concretely-tagged entry left over from a DIFFERENT agent is always
-    a miss — including when *agent_id* is ``None``, i.e. this turn's
-    agent is not positively known. "Unknown" must never be treated as
-    "no conflict" with a previously-cached agent's data; that conflation
-    is exactly the leak this accessor closes.
-    """
-    entry = cache.get(conv_id)
-    if entry is None:
-        return None
-    tagged_agent_id, value = entry
-    if tagged_agent_id is not None and tagged_agent_id != agent_id:
-        return None
-    return value
-
-
-def _cache_set_for_agent(
-    cache: dict[str, tuple[str | None, Any]],
-    conv_id: str,
-    agent_id: str | None,
-    value: Any,
-) -> None:
-    """Write *value* into *cache*, tagged with *agent_id* for
-    :func:`_cache_get_for_agent` to verify on later reads.
-    """
-    cache[conv_id] = (agent_id, value)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2477,6 +2411,10 @@ def create_runner_app(
 
     _session_agent_ids = _session_agent_ids_ref  # shared with module-level get_session_agent_id
     _session_sub_agent_names: dict[str, str] = {}
+    # Per-conversation set of (harness, InstructionDelivery) pairs already
+    # warned about. Keyed by conversation so a session that switches harnesses
+    # warns again for the new pair rather than inheriting the old one's silence.
+    _instruction_delivery_warned: dict[str, set[tuple[str, InstructionDelivery]]] = {}
     _session_tool_schemas: dict[str, list[_JsonObject]] = {}  # session_id → cached tool schemas
     _session_mcp_spec_hash: dict[str, str] = {}  # session_id → last MCP spec hash
     _session_comment_relays: dict[str, _CommentRelayBinding] = {}
@@ -6658,13 +6596,33 @@ def create_runner_app(
                 model_override=cast(str | None, msg_body.get("model_override")),
                 session_id=conv,
             )
-            # The turn's own per-request text composes with the agent's
-            # authored instructions rather than being dropped.
-            instructions = build_instructions(
-                cached_spec,
-                _raw_per_request_instructions,
-                [],
-            )
+            # Compose instructions. For gated harnesses that read the wire
+            # instructions field directly (opencode-native, hermes), use the
+            # nullable form so the "You are a helpful assistant." fallback
+            # never reaches them when no real content exists.
+            _authored_bg = raw_author_instructions(cached_spec) is not None
+            if harness_name in _GATED_COMPOSED_INSTRUCTION_HARNESSES:
+                instructions = build_instructions_nullable(
+                    cached_spec, _raw_per_request_instructions, []
+                )
+            else:
+                instructions = build_instructions(
+                    cached_spec,
+                    _raw_per_request_instructions,
+                    [],
+                )
+            # Warn once per (conversation, harness, delivery) if the agent has
+            # authored instructions but the harness can't deliver them.
+            if _authored_bg and harness_name:
+                _bg_caps = harness_capabilities().get(harness_name)
+                _bg_delivery = (
+                    _bg_caps.instruction_delivery
+                    if _bg_caps is not None
+                    else InstructionDelivery.UNKNOWN
+                )
+                _bg_warn_key = (harness_name, _bg_delivery)
+                if _bg_warn_key not in _instruction_delivery_warned.get(conv, ()):
+                    _instruction_delivery_warned.setdefault(conv, set()).add(_bg_warn_key)
 
         ctx = TurnDispatch(
             agent_id=_dispatched_agent_id,
@@ -7187,13 +7145,11 @@ def create_runner_app(
                 yield _response_failed_event({"message": _err_msg, "type": _err_type})
                 return
 
-            # Compose instructions from the spec's authored text + the caller's
-            # per-request text only for the DIRECT stream path (dispatch is None).
-            # When called from _run_turn_bg_setup_and_stream, dispatch is set and
+            # Compose instructions for the direct-stream path (dispatch is None).
+            # When called from _run_turn_bg_setup_and_stream dispatch is set and
             # harness_body already carries composed instructions — composing again
             # would double-count the authored text.
-            # Use _resolve_session_spec_entry (not _resolve_turn_spec_lazy) so the
-            # sub-agent swap is applied and the CHILD spec's instructions are used.
+            # Use _resolve_session_spec_entry so the sub-agent swap is applied.
             _instr_body = body
             if dispatch is None:
                 with contextlib.suppress(OmnigentError, httpx.HTTPError, RuntimeError, ValueError):
@@ -7201,8 +7157,46 @@ def create_runner_app(
                     _instr_spec_ds = _unwrap_resolved_spec(_instr_entry_ds)
                     if _instr_spec_ds is not None:
                         _per_req_instr = cast(str | None, body.get("instructions"))
-                        _composed_instr = build_instructions(_instr_spec_ds, _per_req_instr, [])
-                        _instr_body = {**body, "instructions": _composed_instr}
+                        _authored_ds = raw_author_instructions(_instr_spec_ds) is not None
+                        _ic_ds = InstructionComposition(
+                            authored_present=_authored_ds,
+                            composed=build_instructions_nullable(
+                                _instr_spec_ds, _per_req_instr, []
+                            ),
+                        )
+                        # Gated harnesses (opencode-native, hermes) must not
+                        # receive the fabricated "You are a helpful assistant."
+                        # fallback — use the nullable composed value (None when
+                        # nothing meaningful to send).
+                        if harness_name in _GATED_COMPOSED_INSTRUCTION_HARNESSES:
+                            _instr_val = _ic_ds.composed
+                            if _instr_val is not None:
+                                _instr_body = {**body, "instructions": _instr_val}
+                        elif _ic_ds.composed is not None:
+                            _instr_body = {
+                                **body,
+                                "instructions": build_instructions(
+                                    _instr_spec_ds, _per_req_instr, []
+                                ),
+                            }
+                        # Warn once per (conversation, harness, delivery) when the
+                        # agent has authored instructions but the harness can't
+                        # deliver them.
+                        if _authored_ds and harness_name:
+                            _ds_caps = harness_capabilities().get(harness_name)
+                            _ds_delivery = (
+                                _ds_caps.instruction_delivery
+                                if _ds_caps is not None
+                                else InstructionDelivery.UNKNOWN
+                            )
+                            _ds_warn_key = (harness_name, _ds_delivery)
+                            _already_warned_ds = _ds_warn_key in _instruction_delivery_warned.get(
+                                conv_id, ()
+                            )
+                            if not _already_warned_ds:
+                                _instruction_delivery_warned.setdefault(conv_id, set()).add(
+                                    _ds_warn_key
+                                )
             # Re-emit the unresolvable-sub-agent warning on every turn so callers
             # that missed the session-create warning (e.g. a reconnect) still see it.
             _ds_sa = _session_sub_agent_names.get(conv_id)
