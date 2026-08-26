@@ -12,6 +12,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import tomllib
@@ -506,7 +507,6 @@ def read_codex_config_developer_instructions_from_home(codex_home: Path) -> str 
     """
     result = read_codex_config_developer_instructions_state_from_home(codex_home)
     return result.value
-
 
 
 def write_codex_config_model(bridge_dir: Path, model: str) -> bool:

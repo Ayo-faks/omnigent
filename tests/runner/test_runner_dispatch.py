@@ -90,7 +90,7 @@ from omnigent.runtime.harnesses._scaffold import ToolResultEvent as _ToolResultE
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
 from omnigent.server.schemas import CreateResponseRequest as _CreateResponseRequest
 from omnigent.session_lifecycle import CLOSED_LABEL_KEY, CLOSED_LABEL_VALUE
-from omnigent.spec.types import AgentSpec, ExecutorSpec, MCPServerConfig, SharePolicy
+from omnigent.spec.types import AgentSpec, ExecutorSpec, SharePolicy
 from tests.runner.conftest import (
     _FakeProcessManager as _RecoveryFakeProcessManager,
 )
@@ -1412,35 +1412,15 @@ async def test_runner_stream_emits_failed_when_tool_spec_resolver_fails() -> Non
     assert "stream spec resolver unavailable for ag_stream" not in response.text
 
 
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> None:
     """
     Both the direct-stream and background-dispatch agent-switch/
@@ -1488,23 +1468,11 @@ def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> 
     )
 
 
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 def test_agent_cache_reset_clears_the_agent_id_marker_too() -> None:
     """
     ``_clear_session_agent_caches`` (shared by the ``/reset-state`` and
@@ -1538,50 +1506,8 @@ def test_agent_cache_reset_clears_the_agent_id_marker_too() -> None:
     )
 
 
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
 class _RecordingHarnessClient:
     """Fake harness client that records the event body posted to it."""
 
@@ -1602,29 +1528,13 @@ class _RecordingHarnessClient:
         return _FakeHarnessStream(self._chunks)
 
 
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 async def _post_stream_message(http: httpx.AsyncClient, conv: str, **body: Any) -> httpx.Response:
     """POST a minimal ``?stream=true`` message body for the warn-site tests.
 
@@ -1724,11 +1634,7 @@ def test_build_spawn_env_routes_hermes(tmp_path: Path, monkeypatch: pytest.Monke
     assert overridden["HARNESS_HERMES_MODEL"] == "hermes-4-70b"
 
 
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_resolve_harness_config_applies_harness_override(
@@ -7744,23 +7650,11 @@ async def test_create_session_reinit_preserves_existing_inbox() -> None:
 # ── approval-event flattening (elicitation-approval hang regression) ──────
 
 
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.parametrize("second_turn", ["background", "known_harness"])
-
-
 @pytest.mark.asyncio
-
-
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_approval_event_flattened_for_harness_scaffold() -> None:
@@ -10084,13 +9978,146 @@ async def test_factor3_new_message_lands_in_real_buffer(
     assert buffered[-1]["conversation_id"] == conv
 
 
-@pytest.mark.asyncio
+# The real defect was that the divergence was undocumented and unpinned, so any
+# path could drift silently. The table below records it. It deliberately does NOT
+# assert sameness where the semantics differ: asserting sameness would be false
+# and would force a bad unification later. Changing any single path's
+# behaviour makes this table fail, which is the point.
+
+_CONTRACT_PARENT_WITH_CHILD = {
+    "name": "root",
+    "instructions": "Root instructions.",
+    "child": "worker",
+    "child_instructions": "Worker instructions.",
+}
 
 
-@pytest.mark.asyncio
+def _contract_root_spec(*, with_child: bool) -> AgentSpec:
+    """Build the contract test's parent spec, with or without the child."""
+    return AgentSpec(
+        spec_version=1,
+        name=_CONTRACT_PARENT_WITH_CHILD["name"],
+        instructions=_CONTRACT_PARENT_WITH_CHILD["instructions"],
+        executor=ExecutorSpec(type="omnigent", config={"harness": "hermes"}),
+        sub_agents=(
+            [
+                AgentSpec(
+                    spec_version=1,
+                    name=_CONTRACT_PARENT_WITH_CHILD["child"],
+                    instructions=_CONTRACT_PARENT_WITH_CHILD["child_instructions"],
+                    executor=ExecutorSpec(type="omnigent", config={"harness": "hermes"}),
+                )
+            ]
+            if with_child
+            else []
+        ),
+    )
 
 
-@pytest.mark.asyncio
+class _ContractSnapshotClient(NullServerClient):
+    """Session snapshot naming the requested sub-agent."""
+
+    def __init__(self, conv: str) -> None:
+        super().__init__()
+        self._conv = conv
+
+    async def get(self, url: str, **kwargs: object) -> NullServerClient._Response:
+        del kwargs
+        _conv = self._conv
+
+        class _Resp(NullServerClient._Response):
+            status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return {"agent_id": "ag_contract_root", "sub_agent_name": "worker"}
+
+        if url.endswith(f"/v1/sessions/{_conv}"):
+            return _Resp()
+        return await super().get(url)
+
+
+_CONTRACT_CALLER_INSTRUCTIONS = "Caller-supplied instructions."
+
+
+async def _contract_run_no_harness(
+    http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
+) -> dict[str, Any]:
+    """Adapter 1: direct ``?stream=true`` with no harness in the body."""
+    resp = await http.post(
+        f"/v1/sessions/{conv}/events?stream=true",
+        json={
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "model": "x",
+            "content": [],
+        },
+    )
+    return {
+        "status": resp.status_code,
+        "error": (resp.json().get("error") if resp.status_code >= 400 else None),
+        "instructions": (
+            recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
+        ),
+    }
+
+
+async def _contract_run_known_harness(
+    http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
+) -> dict[str, Any]:
+    """Adapter 2: direct ``?stream=true`` with the harness already known."""
+    resp = await http.post(
+        f"/v1/sessions/{conv}/events?stream=true",
+        json={
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "harness": "hermes",
+            "model": "x",
+            "content": [],
+            "instructions": _CONTRACT_CALLER_INSTRUCTIONS,
+        },
+    )
+    return {
+        "status": resp.status_code,
+        "error": (resp.json().get("error") if resp.status_code >= 400 else None),
+        "instructions": (
+            recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
+        ),
+    }
+
+
+async def _contract_run_background(
+    http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
+) -> dict[str, Any]:
+    """Adapter 3: background non-stream dispatch."""
+    resp = await http.post(
+        f"/v1/sessions/{conv}/events",
+        json={
+            "type": "message",
+            "role": "user",
+            "agent_id": "ag_contract_root",
+            "model": "x",
+            "content": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    await _await_bg_turn_task(conv)
+    statuses = await _drain_published_statuses(conv, until="failed", timeout=1.0)
+    return {
+        "status": resp.status_code,
+        "terminal_status": statuses[-1] if statuses else None,
+        "instructions": (
+            recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
+        ),
+    }
+
+
+_CONTRACT_ADAPTERS = {
+    "no_harness": _contract_run_no_harness,
+    "known_harness": _contract_run_known_harness,
+    "background": _contract_run_background,
+}
 
 
 def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
@@ -10280,8 +10307,6 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
         ),
     ],
 )
-
-
 async def _contract_run_background(
     http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
 ) -> dict[str, Any]:
@@ -10320,8 +10345,6 @@ _CONTRACT_ADAPTERS = {
 }
 
 
-
-
 async def _contract_run_known_harness(
     http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
 ) -> dict[str, Any]:
@@ -10347,8 +10370,6 @@ async def _contract_run_known_harness(
     }
 
 
-
-
 async def _contract_run_no_harness(
     http: httpx.AsyncClient, conv: str, recording: _RecordingHarnessClient
 ) -> dict[str, Any]:
@@ -10370,8 +10391,6 @@ async def _contract_run_no_harness(
             recording.posted_bodies[-1].get("instructions") if recording.posted_bodies else None
         ),
     }
-
-
 
 
 class _ContractSnapshotClient(NullServerClient):
@@ -10404,8 +10423,6 @@ class _ContractSnapshotClient(NullServerClient):
 _CONTRACT_CALLER_INSTRUCTIONS = "Caller-supplied instructions."
 
 
-
-
 def _contract_root_spec(*, with_child: bool) -> AgentSpec:
     """Build the contract test's parent spec, with or without the child.
 
@@ -10430,29 +10447,3 @@ def _contract_root_spec(*, with_child: bool) -> AgentSpec:
             else []
         ),
     )
-
-
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
