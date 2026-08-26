@@ -42,7 +42,6 @@ from omnigent.runner.transports.ws_tunnel.frames import (
 from omnigent.runner.transports.ws_tunnel.registry import RunnerSession, TunnelRegistry
 from omnigent.runner.transports.ws_tunnel.serve import dispatch_via_asgi
 
-
 # ---------------------------------------------------------------------------
 # Helpers shared by both tests
 # ---------------------------------------------------------------------------
