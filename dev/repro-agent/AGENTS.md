@@ -97,9 +97,35 @@ Your first turn is a fixed checklist — do all of it before Step 1:
    whether the recorders are available (Playwright browsers for
    `pytest --video`, `vhs` for CLI tapes): Step 4 degrades gracefully when they
    are missing.
+3. **Detect the CI real-turn lane without printing credentials:**
+   `test "${REPRO_AGENT_REAL_TURNS:-}" = 1 && echo real || echo standard`. In
+   the real lane, confirm `LLM_API_KEY` is set with `test -n "$LLM_API_KEY"`
+   and both `claude` and `codex` resolve with `command -v`. Never echo, inspect,
+   or include the token in evidence. If any prerequisite is missing, stop with
+   `needs_more_info` and name the missing CI setup; do not continue on a mock.
 
 If you cannot reach the app at all, stop and say so. Don't narrate a clean
 preflight.
+
+## Real turns in scheduled CI
+
+When `REPRO_AGENT_REAL_TURNS=1`, bugs involving Claude Code, Codex, or OpenAI
+Agents must be reproduced with at least one real turn through the affected
+harness (`claude-native`, `codex-native`, or `openai-agents`). The driver has
+installed a dual-family provider config: Claude uses the Anthropic gateway
+surface; Codex and OpenAI Agents use the OpenAI Responses surface. Create the
+same agent/session a user creates and send the turn through it. In `evidence`,
+name the harness and model and cite the observed response or terminal state,
+but never include credential values.
+
+Do not silently replace a real turn with a canned assistant item, a queued mock
+response, or a direct internal call. A missing CLI, rejected credential, or
+unavailable model is an environment failure (`needs_more_info` with the exact
+failure), not evidence that the product bug does or does not reproduce. The mock
+LLM remains appropriate only when the reported journey explicitly requires a
+controlled model fault such as a 429, truncated stream, or blocked response; in
+that case the injected fault is the real user-path precondition and must be
+called out in evidence.
 
 ## Step 1 — Reconstruct the user journey
 
@@ -240,7 +266,8 @@ truly cannot be made to run here do you fall back (naming the specific blocker i
 direct call or a hand-written end-state as if it were the reproduction.
 
 **When the failure only appears under a fault, the fault *is* the trigger —
-inject it.** A whole class of bugs is an error/recovery state that the happy
+inject it.** This is the explicit exception to the CI real-turn rule: a whole
+class of bugs is an error/recovery state that the happy
 path never reaches: the model errors mid-turn, a stream dies before completing,
 a dependency 500s, a sub-agent fails. For these the user's journey is "drive a
 normal turn *while* the dependency misbehaves", so you reproduce by making it
@@ -424,12 +451,15 @@ cause is named from what you observed rather than guessed.
   by the facet's verdict, as above). Save `tmux capture-pane -e` text dumps
   alongside as machine-checkable evidence. **For a native-harness pane
   (claude/codex/cursor/goose/hermes/kiro/… — the bug is in a real harness CLI's
-  output), don't hand-roll the launch: the existing render-parity tests already
-  drive the *real* CLI against the mock LLM with the terminal view shown, so copy
-  the closest one** (`tests/e2e_ui/messages/test_native_<harness>_render_parity.py`,
-  which use the `native_<harness>_session` / `native_<harness>_mock_session`
-  fixtures in `tests/e2e_ui/conftest.py`) and adapt its scripted turns to your
-  journey. The `--video on` recorder captures the pane with no extra plumbing.
+  output), don't hand-roll the launch: copy the closest existing render-parity
+  test** (`tests/e2e_ui/messages/test_native_<harness>_render_parity.py`, which
+  uses the `native_<harness>_mock_session` fixture in
+  `tests/e2e_ui/conftest.py`) and adapt it to the journey. Despite the legacy
+  fixture name, it deliberately uses the existing real gateway config whenever
+  `LLM_API_KEY` is set; it writes a mock provider only when the key is absent.
+  In the CI real-turn lane, do not queue or assert canned mock tokens—assert the
+  reported observable behavior around the real response instead. The
+  `--video on` recorder captures the pane with no extra plumbing.
   These tests skip when the harness CLI isn't installed; if the one your bug needs
   is unavailable here, keep `recordings: []` and name the missing CLI in
   `evidence` (a real environment limit, not a `not_reproduced`).

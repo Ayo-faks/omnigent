@@ -27,6 +27,10 @@
 # (`omnigent setup` — an Anthropic key, a Claude subscription, an
 # OpenAI-compatible gateway, or a Databricks workspace). It drives the app via
 # the framework browser tools (auto-registered) and sys_session_* / HTTP.
+# Scheduled CI uses `python dev/repro.py <bug> --ci-real-turns`, which writes an
+# isolated dual-family gateway provider for the brain and for real Claude Code,
+# Codex, and OpenAI Agents reproduction turns. Missing CI credentials fail
+# closed; the agent must not replace those turns with the mock LLM.
 
 spec_version: 1
 name: repro_agent

@@ -19,6 +19,10 @@ reproduction test into **this** checkout.
   Playwright browsers (`playwright install chromium`) so the authored e2e_ui
   test can run with `--video on`, [`vhs`](https://github.com/charmbracelet/vhs)
   for CLI-journey tapes, and `ffmpeg` for `.mp4` conversion.
+- For the CI real-turn lane: the repository gateway values
+  `GATEWAY_BASE_URL`, `LLM_API_KEY`, `OMNIGENT_CI_ANTHROPIC_MODEL`, and
+  `OMNIGENT_CI_OPENAI_MODEL`, plus the pinned `claude` and `codex` CLIs from
+  `.github/ci-deps`.
 
 ## Usage
 
@@ -56,6 +60,32 @@ after it starts — useful for watching a live run or reproducing against a shar
 
 It always keeps the worktree and prints its path + branch at the end; remove it
 with `git worktree remove <path>` when done.
+
+### CI real turns
+
+The scheduled CI caller adds `--ci-real-turns` to make the reproduction capable
+of driving real Claude Code, Codex, and OpenAI Agents turns. The driver writes an
+isolated dual-family provider config whose credential is an
+`env:LLM_API_KEY` reference; the token is never persisted in the config. It also
+fails before creating a worktree when a credential, model, or native CLI is
+missing. There is no silent mock fallback in this mode.
+
+The runner setup is:
+
+```bash
+uv sync --extra all --group test
+npm --prefix .github/ci-deps install --ignore-scripts
+node .github/ci-deps/node_modules/@anthropic-ai/claude-code/install.cjs
+export PATH="$PWD/.github/ci-deps/node_modules/.bin:$PATH"
+
+uv run python dev/repro.py "$BUG_URL" --ci-real-turns
+```
+
+`GATEWAY_BASE_URL` and `LLM_API_KEY` come from repository secrets; the two
+model IDs come from repository variables. GitHub Actions callers should mask
+the token and scan the agent output and authored artifacts before upload. This
+is a self-contained runner lane and cannot be combined with `--server`; a remote
+host has its own filesystem and credential boundary.
 
 ## What it does
 

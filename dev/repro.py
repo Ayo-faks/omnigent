@@ -22,6 +22,7 @@ Usage (from the repo root):
   python dev/repro.py https://github.com/omnigent-ai/omnigent/issues/1234
   python dev/repro.py OMNI-1234 --server http://localhost:6767
   python dev/repro.py <bug_url> --public  # share the session public-read at start
+  python dev/repro.py <bug_url> --ci-real-turns  # CI gateway; no mock fallback
 
 Reproducing runs against whatever server ``omnigent run`` uses (the local server
 it spins up by default, or the one you pass with ``--server``).
@@ -30,17 +31,30 @@ it spins up by default, or the one you pass with ``--server``).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.parse
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn
 
 # dev/repro.py → repo root is the parent of dev/.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AGENT_REL = "dev/repro-agent"
+
+_CI_GATEWAY_ENV_VARS = (
+    "GATEWAY_BASE_URL",
+    "LLM_API_KEY",
+    "OMNIGENT_CI_ANTHROPIC_MODEL",
+    "OMNIGENT_CI_OPENAI_MODEL",
+)
+_CI_REAL_TURNS_ENV_VAR = "REPRO_AGENT_REAL_TURNS"
 
 
 def _die(msg: str) -> NoReturn:
@@ -79,6 +93,82 @@ def _launch_env(bug_url: str) -> dict[str, str]:
         names.append("DATABRICKS_LINEAR_API_KEY")
     env["OMNIGENT_RUNNER_ENV_PASSTHROUGH"] = ",".join(names)
     return env
+
+
+def build_ci_provider_config(env: Mapping[str, str]) -> dict[str, object]:
+    """Build the dual-family provider used by CI repro runs.
+
+    The repository's CI gateway serves Claude over its Anthropic surface and
+    Codex / OpenAI Agents over its Responses surface. The token stays in the
+    process environment: the config contains only ``env:LLM_API_KEY`` so it can
+    be forwarded to runner children without being written to disk.
+
+    :param env: Environment containing the CI gateway URL, token, and models.
+    :returns: An Omnigent ``config.yaml`` mapping.
+    :raises ValueError: If a required value is absent or the URL is invalid.
+    """
+    missing = [name for name in _CI_GATEWAY_ENV_VARS if not env.get(name, "").strip()]
+    if missing:
+        raise ValueError(f"missing CI real-turn environment: {', '.join(missing)}")
+
+    gateway = env["GATEWAY_BASE_URL"].strip().rstrip("/")
+    parsed = urllib.parse.urlparse(gateway)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("GATEWAY_BASE_URL must be an absolute http(s) URL")
+    gateway_host = gateway.removesuffix("/serving-endpoints")
+
+    return {
+        "providers": {
+            "repro-ci-gateway": {
+                "kind": "gateway",
+                "default": ["anthropic", "openai"],
+                "anthropic": {
+                    "base_url": f"{gateway}/anthropic",
+                    "api_key_ref": "env:LLM_API_KEY",
+                    "models": {"default": env["OMNIGENT_CI_ANTHROPIC_MODEL"].strip()},
+                },
+                "openai": {
+                    "base_url": f"{gateway_host}/ai-gateway/codex/v1",
+                    "api_key_ref": "env:LLM_API_KEY",
+                    "wire_api": "responses",
+                    "models": {"default": env["OMNIGENT_CI_OPENAI_MODEL"].strip()},
+                },
+            }
+        }
+    }
+
+
+def configure_ci_real_turns(env: dict[str, str], config_home: Path) -> None:
+    """Write an isolated CI provider config and mark the repro run as live.
+
+    ``OMNIGENT_RUNNER_ENV_PASSTHROUGH`` carries the mode marker to the agent's
+    runner. ``LLM_API_KEY`` itself is discovered from the provider's env ref and
+    forwarded by the normal provider credential path.
+
+    :param env: Child environment mutated for the repro-agent launch.
+    :param config_home: Empty temporary config directory owned by this run.
+    """
+    config = build_ci_provider_config(env)
+    config_home.mkdir(parents=True, exist_ok=True)
+    config_path = config_home / "config.yaml"
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    config_path.chmod(0o600)
+
+    env["OMNIGENT_CONFIG_HOME"] = str(config_home)
+    env[_CI_REAL_TURNS_ENV_VAR] = "1"
+    passthrough = [
+        name.strip()
+        for name in env.get("OMNIGENT_RUNNER_ENV_PASSTHROUGH", "").split(",")
+        if name.strip()
+    ]
+    if _CI_REAL_TURNS_ENV_VAR not in passthrough:
+        passthrough.append(_CI_REAL_TURNS_ENV_VAR)
+    env["OMNIGENT_RUNNER_ENV_PASSTHROUGH"] = ",".join(passthrough)
+
+
+def missing_ci_harness_clis() -> list[str]:
+    """Return native harness CLIs the all-surface CI repro lane is missing."""
+    return [name for name in ("claude", "codex") if shutil.which(name) is None]
 
 
 def _slug_from_bug_url(bug_url: str) -> str:
@@ -151,6 +241,14 @@ def _parse_args() -> argparse.Namespace:
         "the server) right after it starts. Off by default — useful when "
         "watching a live run or reproducing against a shared --server.",
     )
+    p.add_argument(
+        "--ci-real-turns",
+        action="store_true",
+        help="Configure the repository CI gateway for real Claude Code, Codex, "
+        "and OpenAI Agents turns. Requires GATEWAY_BASE_URL, LLM_API_KEY, "
+        "OMNIGENT_CI_ANTHROPIC_MODEL, OMNIGENT_CI_OPENAI_MODEL, and the "
+        "claude/codex CLIs; never falls back to mock turns.",
+    )
     return p.parse_args()
 
 
@@ -168,6 +266,26 @@ def main() -> None:
     bug_url = args.bug_url or input("Bug URL (GitHub issue or Linear ticket): ").strip()
     if not bug_url:
         _die("no bug URL given")
+
+    # Validate the live lane before creating a worktree: a missing secret or
+    # binary is CI setup failure and must not leave an empty repro branch behind.
+    if args.ci_real_turns:
+        if args.server is not None:
+            _die(
+                "--ci-real-turns is the self-contained CI-runner lane and cannot "
+                "be combined with --server; configure the remote host separately"
+            )
+        try:
+            build_ci_provider_config(os.environ)
+        except ValueError as exc:
+            _die(str(exc))
+        missing_clis = missing_ci_harness_clis()
+        if missing_clis:
+            _die(
+                "--ci-real-turns requires the native harness CLIs: "
+                + ", ".join(missing_clis)
+                + ". Install the pinned packages from .github/ci-deps first."
+            )
 
     # The agent's input contract is the bug URL (it always reproduces against the
     # running build, so there's no version to pass), plus an optional `public`
@@ -210,10 +328,26 @@ def main() -> None:
         cmd += ["--server", args.server]
 
     env = _launch_env(bug_url)
-    print(f"→ running: {' '.join(cmd)}")
-    print(f"→ cwd:     {worktree}\n")
+    config_context: contextlib.AbstractContextManager[str | None]
+    if args.ci_real_turns:
+        config_context = tempfile.TemporaryDirectory(prefix="omnigent-repro-ci-")
+    else:
+        config_context = contextlib.nullcontext(None)
 
-    result = subprocess.run(cmd, cwd=str(worktree), env=env, check=False)
+    with config_context as config_dir:
+        if config_dir is not None:
+            try:
+                configure_ci_real_turns(env, Path(config_dir))
+            except ValueError as exc:
+                _die(str(exc))
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                # GitHub consumes this command before rendering the line and
+                # masks the value in all subsequent logs.
+                print(f"::add-mask::{env['LLM_API_KEY']}")
+
+        print(f"→ running: {' '.join(cmd)}")
+        print(f"→ cwd:     {worktree}\n")
+        result = subprocess.run(cmd, cwd=str(worktree), env=env, check=False)
 
     # Always keep the worktree; the authored test (if any) lives on its branch.
     print(
