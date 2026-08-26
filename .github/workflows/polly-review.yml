@@ -40,6 +40,11 @@ env:
   OMNIGENT_SKIP_WEB_UI: "true"
   UV_INDEX_URL: https://pypi.org/simple
   PIP_INDEX_URL: https://pypi.org/simple
+  # Pin the data dir into the workspace: server / runner / harness process logs
+  # land in <data-dir>/logs, and `-p` prints only the final assistant text, so
+  # these files are the only record of where a run's wall clock went.
+  OMNIGENT_DATA_DIR: ${{ github.workspace }}/.omnigent-data
+  OMNIGENT_LOG_LEVEL: DEBUG
 
 jobs:
   # Security precondition gate (security-gate.yml): untrusted PRs wait for
@@ -554,6 +559,8 @@ jobs:
           set -euo pipefail
 
           prompt=$(cat /tmp/review_prompt.txt)
+          echo "::notice::polly start $(date -u +%H:%M:%S)"
+          started=$SECONDS
 
           # Run Polly headlessly with -p; it starts a local server, sends
           # one turn, prints the assistant response, and exits.
@@ -564,6 +571,8 @@ jobs:
             2>polly-stderr.log \
             | tee /tmp/polly_output.txt \
             || { echo "::warning::Polly review exited non-zero"; cat polly-stderr.log; }
+
+          echo "::notice::polly finished in $((SECONDS - started))s"
 
           # Strip any sub-agent coordination preamble that leaks before
           # the actual review.  Primary: look for the sentinel we asked the
@@ -637,22 +646,40 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/comment.md
           echo "Created new comment"
 
+      # Where the run's wall clock went. `-p` prints only the final assistant
+      # text, so the process logs are the sole per-turn record; print the
+      # biggest stalls into the step log so no artifact download is needed.
+      - name: Summarize run timeline
+        if: always()
+        run: |
+          set -euo pipefail
+          logs="${OMNIGENT_DATA_DIR}/logs"
+          [ -d "$logs" ] || { echo "no process logs at $logs"; exit 0; }
+          python3 .github/scripts/polly_timeline.py "$logs" 25 || true
+
       # Redact before upload: ``::add-mask::`` hides the key from LOGS but not
       # from artifact files, and this repo is public.
-      - name: Redact credentials from the log
+      - name: Redact credentials from the logs
         if: always()
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
           set -euo pipefail
-          [ -f polly-stderr.log ] || exit 0
-          if [ -n "${LLM_API_KEY:-}" ]; then
-            python3 - "$LLM_API_KEY" <<'PY'
-          import pathlib, sys
-          p = pathlib.Path("polly-stderr.log")
-          p.write_text(p.read_text(errors="replace").replace(sys.argv[1], "***REDACTED***"))
+          [ -n "${LLM_API_KEY:-}" ] || exit 0
+          python3 - "$LLM_API_KEY" <<'PY'
+          import os, pathlib, sys
+          key = sys.argv[1]
+          targets = [pathlib.Path("polly-stderr.log")]
+          logs = pathlib.Path(os.environ["OMNIGENT_DATA_DIR"]) / "logs"
+          targets += [p for p in logs.rglob("*.log") if p.is_file()] if logs.is_dir() else []
+          for path in targets:
+              if not path.is_file():
+                  continue
+              text = path.read_text(errors="replace")
+              if key in text:
+                  path.write_text(text.replace(key, "***REDACTED***"))
+                  print(f"redacted {path}")
           PY
-          fi
 
       # Uploaded on success too: ``-p`` prints only the final assistant text, so
       # stderr is the sole record of how long each turn and sub-agent took.
@@ -664,5 +691,7 @@ jobs:
           path: |
             polly-stderr.log
             /tmp/polly_output.txt
+            /tmp/review_prompt.txt
+            ${{ github.workspace }}/.omnigent-data/logs/
           retention-days: 7
           if-no-files-found: ignore
