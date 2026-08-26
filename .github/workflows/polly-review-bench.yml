@@ -1,0 +1,332 @@
+name: Polly Review Benchmark
+
+# Attributes a Polly review's wall clock to its causes. Between the 2-reviewer
+# baseline (~6 min) and the 4-reviewer run (~19 min) THREE things changed at
+# once: the brain model, the codex model, and the reviewer count. One sample per
+# config cannot separate them, especially since a single reviewer's duration was
+# measured swinging 131s (~35%) between runs on the same diff.
+#
+# So: one matrix leg per (config, replicate), all against the SAME PR diff, in a
+# single run so the per-PR concurrency group cannot cancel siblings. Legs never
+# post a PR comment -- this measures time, it does not review.
+#
+# Configs isolate one variable per step:
+#   baseline -> models   : the model upgrade
+#   models   -> panel    : the reviewer count
+#
+# Benchmark harness. Not part of the review pipeline; do not merge to main.
+
+on:
+  # A push trigger runs the copy on the pushed commit, so this benchmark works
+  # from its own branch. workflow_dispatch only resolves workflows that exist on
+  # the default branch, which a throwaway harness deliberately does not.
+  push:
+    branches: [polly-bench]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number whose diff every leg reviews.
+        required: false
+        default: "5487"
+        type: string
+      replicates:
+        description: Runs per config (3 gives a usable mean against ~35% variance).
+        required: false
+        default: "3"
+        type: choice
+        options: ["1", "2", "3"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polly-bench-${{ inputs.pr || '5487' }}
+  cancel-in-progress: false
+
+env:
+  OMNIGENT_SKIP_WEB_UI: "true"
+  UV_INDEX_URL: https://pypi.org/simple
+  PIP_INDEX_URL: https://pypi.org/simple
+  OMNIGENT_LOG_LEVEL: DEBUG
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.build.outputs.legs }}
+    steps:
+      - name: Build the matrix
+        id: build
+        env:
+          REPLICATES: ${{ inputs.replicates || '3' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          reps = int(os.environ["REPLICATES"])
+          configs = [
+              # name, anthropic model (brain + claude_code), openai model (codex), reviewers
+              ("baseline", "databricks-claude-opus-4-8", "databricks-gpt-5-5", 2),
+              ("models", "databricks-claude-opus-5", "databricks-gpt-5-6-sol", 2),
+              ("panel", "databricks-claude-opus-5", "databricks-gpt-5-6-sol", 4),
+          ]
+          legs = [
+              {"name": name, "anthropic": a, "openai": o, "reviewers": r, "rep": rep}
+              for name, a, o, r in configs
+              for rep in range(1, reps + 1)
+          ]
+          print(f"legs={json.dumps(legs)}")
+          PY
+
+  bench:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        leg: ${{ fromJson(needs.plan.outputs.legs) }}
+    steps:
+      - name: Check out this ref
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Report runner size
+        run: |
+          echo "cores=$(nproc) mem=$(free -m | awk 'NR==2{print $2}')MB"
+          echo "RUNNER_CORES=$(nproc)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: ".python-version"
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Cache virtualenv
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: uv sync --extra all
+
+      - name: Install worker CLIs
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+        run: |
+          set -euo pipefail
+          # Versions match .github/ci-deps/package.json.
+          for spec in "@anthropic-ai/claude-code@2.1.212" "@openai/codex@0.139.0" \
+                      "@earendil-works/pi-coding-agent@0.79.0"; do
+            dir="${RUNNER_TEMP}/cli-$(echo "$spec" | tr '/@.' '___')"
+            mkdir -p "$dir" && (cd "$dir" && npm install --ignore-scripts --no-audit --no-fund "$spec")
+            echo "$dir/node_modules/.bin" >> "$GITHUB_PATH"
+          done
+          node "${RUNNER_TEMP}"/cli-_anthropic-ai_claude-code_2_1_212/node_modules/@anthropic-ai/claude-code/install.cjs
+
+      - name: Write credentials and provider config
+        env:
+          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LEG_ANTHROPIC: ${{ matrix.leg.anthropic }}
+          LEG_OPENAI: ${{ matrix.leg.openai }}
+        run: |
+          set -euo pipefail
+          [ -n "$LLM_API_KEY" ] || { echo "::error::LLM_API_KEY missing"; exit 1; }
+          echo "::add-mask::${LLM_API_KEY}"
+          echo "LLM_API_KEY=${LLM_API_KEY}" >> "$GITHUB_ENV"
+          echo "DATABRICKS_BEARER=${LLM_API_KEY}" >> "$GITHUB_ENV"
+          echo "OMNIGENT_DATA_DIR=${GITHUB_WORKSPACE}/.omnigent-data" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import json, os, pathlib
+          gw = os.environ["GATEWAY_BASE_URL"]
+          host = gw.removesuffix("/serving-endpoints")
+          pathlib.Path.home().joinpath(".databrickscfg").write_text(
+              f"[default]\nhost  = {host}\ntoken = {os.environ['LLM_API_KEY']}\n"
+          )
+          cfg = {"providers": {"databricks-gateway": {
+              "kind": "gateway", "default": ["anthropic", "openai"],
+              "anthropic": {"base_url": gw + "/anthropic", "api_key_ref": "env:LLM_API_KEY",
+                            "models": {"default": os.environ["LEG_ANTHROPIC"]}},
+              "openai": {"base_url": host + "/ai-gateway/codex/v1", "api_key_ref": "env:LLM_API_KEY",
+                         "wire_api": "responses",
+                         "models": {"default": os.environ["LEG_OPENAI"]}}}}}
+          d = pathlib.Path.home() / ".omnigent"
+          d.mkdir(exist_ok=True)
+          (d / "config.yaml").write_text(json.dumps(cfg, indent=2))
+          PY
+
+      - name: Build the prompt for this leg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr || '5487' }}
+          REVIEWERS: ${{ matrix.leg.reviewers }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+            -H "Accept: application/vnd.github.v3.diff" > /tmp/pr_diff.txt
+          gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json title,body,baseRefName,headRefName,additions,deletions,changedFiles > /tmp/pr_meta.json
+          python3 - <<'PY'
+          import json, os, pathlib
+          meta = json.loads(pathlib.Path("/tmp/pr_meta.json").read_text())
+          reviewers = ["- `claude_code` (its default model)", "- `codex` (its default model)"]
+          if int(os.environ["REVIEWERS"]) == 4:
+              reviewers += ['- `pi` with `args.model: "databricks-kimi-k3"` (open-weights)',
+                            '- `pi` with `args.model: "databricks-grok-4-6"` (xAI)']
+          body = (meta.get("body") or "")[:4096]
+          prompt = f"""Review this pull request and provide structured feedback.
+
+          ## PR Metadata
+          - **Title:** {meta['title']}
+          - **Stats:** +{meta['additions']} / -{meta['deletions']} across {meta['changedFiles']} file(s)
+
+          ## PR Description
+          {body}
+
+          ## Instructions
+
+          **Step 1 - read the diff.** The full PR diff is at `/tmp/pr_diff.txt`. Read it with
+          `sys_os_shell("cat /tmp/pr_diff.txt")`. The codebase is checked out here; read
+          source files freely for context.
+
+          **Reviewer panel.** Dispatch these reviewers IN PARALLEL in one turn, each with
+          `purpose: "review"` and a distinct `title`, giving each the diff and asking for
+          blocking / non-blocking findings with `file:line` evidence:
+          {chr(10).join(reviewers)}
+          Then synthesize ONE review from all of their reports. If a reviewer fails to boot,
+          drop it and continue with the rest.
+
+          **Step 2 - review.** Report blocking issues, security vulnerabilities, non-blocking
+          notes, then a one-paragraph summary. Skip style and formatting entirely. Be concise.
+
+          Begin your response with the exact marker <!-- POLLY_REVIEW_START --> on its own
+          line, then the review content.
+          """
+          pathlib.Path("/tmp/review_prompt.txt").write_text(prompt)
+          print("prompt bytes:", len(prompt), "reviewers:", len(reviewers))
+          PY
+
+      - name: Run Polly (timed)
+        id: run
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          set +e
+          timeout 2700 uv run omnigent run examples/polly/ \
+            -p "$(cat /tmp/review_prompt.txt)" --no-session \
+            >/tmp/polly_out.txt 2>/tmp/polly_err.txt
+          rc=$?
+          set -e
+          elapsed=$(( $(date +%s) - started ))
+          posted=no
+          grep -q 'POLLY_REVIEW_START' /tmp/polly_out.txt && posted=yes
+          echo "elapsed=${elapsed}" >> "$GITHUB_OUTPUT"
+          echo "rc=${rc}" >> "$GITHUB_OUTPUT"
+          echo "produced=${posted}" >> "$GITHUB_OUTPUT"
+          echo "::notice::leg=${{ matrix.leg.name }} rep=${{ matrix.leg.rep }} elapsed=${elapsed}s rc=${rc} produced=${posted}"
+
+      - name: Per-session durations
+        if: always()
+        run: |
+          set -euo pipefail
+          logs="${OMNIGENT_DATA_DIR}/logs"
+          [ -d "$logs" ] || exit 0
+          python3 .github/scripts/polly_timeline.py "$logs" 10 || true
+          # Sub-agent wall time is the real driver, so report each session's window.
+          python3 - "$logs" <<'PY'
+          import collections, pathlib, re, sys
+          tpat = re.compile(r"^\w+\s+\d{2}-\d{2}\s+(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
+          spat = re.compile(r"/v1/sessions/([0-9a-f]{16,})")
+          win = collections.defaultdict(lambda: [1e9, -1e9, 0])
+          for path in pathlib.Path(sys.argv[1]).rglob("*.log"):
+              for line in path.read_text(errors="replace").splitlines():
+                  m = tpat.match(line)
+                  if not m:
+                      continue
+                  hh, mm, ss, ms = m.groups()
+                  t = int(hh) * 3600 + int(mm) * 60 + int(ss) + int(ms) / 1000
+                  for sid in set(spat.findall(line)):
+                      w = win[sid]
+                      w[0], w[1], w[2] = min(w[0], t), max(w[1], t), w[2] + 1
+          durs = sorted(((b - a) for a, b, n in win.values() if n > 20), reverse=True)
+          print("session durations (s):", [round(d) for d in durs])
+          if len(durs) > 1:
+              print(f"slowest sub-agent {durs[1]:.0f}s, brain span {durs[0]:.0f}s, "
+                    f"orchestration overhead {durs[0] - durs[1]:.0f}s")
+          PY
+
+      - name: Record the result
+        if: always()
+        run: |
+          mkdir -p bench
+          printf '%s,%s,%s,%s,%s,%s,%s\n' \
+            "${{ matrix.leg.name }}" "${{ matrix.leg.rep }}" \
+            "${{ matrix.leg.anthropic }}" "${{ matrix.leg.openai }}" \
+            "${{ matrix.leg.reviewers }}" \
+            "${{ steps.run.outputs.elapsed }}" "${{ steps.run.outputs.produced }}" \
+            > "bench/${{ matrix.leg.name }}-${{ matrix.leg.rep }}.csv"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: bench-${{ matrix.leg.name }}-${{ matrix.leg.rep }}
+          path: bench/
+          retention-days: 7
+          if-no-files-found: warn
+
+  summarize:
+    needs: bench
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: bench-*
+          merge-multiple: true
+          path: bench
+      - name: Attribute the wall clock
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import pathlib, statistics, collections
+          rows = collections.defaultdict(list)
+          meta = {}
+          for f in sorted(pathlib.Path("bench").rglob("*.csv")):
+              for line in f.read_text().strip().splitlines():
+                  name, rep, anth, oai, revs, elapsed, produced = line.split(",")
+                  if not elapsed.isdigit():
+                      continue
+                  rows[name].append(int(elapsed))
+                  meta[name] = (anth, oai, revs)
+          print("## Polly review wall clock, attributed\n")
+          print("| config | brain / codex model | reviewers | n | median | min | max | spread |")
+          print("|---|---|---|---|---|---|---|---|")
+          order = [k for k in ("baseline", "models", "panel") if k in rows]
+          med = {}
+          for name in order:
+              vals = sorted(rows[name])
+              anth, oai, revs = meta[name]
+              med[name] = statistics.median(vals)
+              spread = f"{100 * (max(vals) - min(vals)) / statistics.median(vals):.0f}%"
+              print(f"| {name} | {anth.replace('databricks-','')} / {oai.replace('databricks-','')} "
+                    f"| {revs} | {len(vals)} | {med[name]:.0f}s | {min(vals)}s | {max(vals)}s | {spread} |")
+          print()
+          if "baseline" in med and "models" in med:
+              print(f"- model upgrade: {med['models'] - med['baseline']:+.0f}s "
+                    f"({med['baseline']:.0f}s -> {med['models']:.0f}s)")
+          if "models" in med and "panel" in med:
+              print(f"- +2 reviewers: {med['panel'] - med['models']:+.0f}s "
+                    f"({med['models']:.0f}s -> {med['panel']:.0f}s)")
+          print("\nCompare each delta against that config's own spread before "
+                "attributing it: a delta smaller than the spread is not resolved at this n.")
+          PY
