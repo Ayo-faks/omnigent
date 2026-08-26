@@ -186,18 +186,22 @@ function MarkdownPreview({
   content,
   rootRef,
   onScroll,
+  tocOpen,
+  onTocOpenChange,
 }: {
   content: string;
   rootRef?: RefObject<HTMLDivElement | null>;
   onScroll?: (event: UIEvent<HTMLElement>) => void;
+  tocOpen: boolean;
+  onTocOpenChange: (open: boolean) => void;
 }) {
   return (
-    <div className="flex h-full">
+    <>
       <div
         ref={rootRef}
         data-preview-scroll
         onScroll={onScroll}
-        className="markdown-preview flex-1 px-6 py-4 overflow-auto prose dark:prose-invert prose-sm max-w-none"
+        className="markdown-preview px-6 py-4 overflow-auto h-full prose dark:prose-invert prose-sm max-w-none"
       >
         <ReactMarkdown
           remarkPlugins={MARKDOWN_REMARK_PLUGINS}
@@ -207,10 +211,13 @@ function MarkdownPreview({
           {content}
         </ReactMarkdown>
       </div>
-      <aside className="hidden xl:block w-64 shrink-0">
-        <MarkdownTableOfContents content={content} containerRef={rootRef} />
-      </aside>
-    </div>
+      <MarkdownTableOfContents
+        content={content}
+        containerRef={rootRef}
+        open={tocOpen}
+        onClose={() => onTocOpenChange(false)}
+      />
+    </>
   );
 }
 
@@ -227,6 +234,8 @@ function PreviewWithSearch({
   searchInputRef,
   scrollKey,
   scrollReady,
+  tocOpen,
+  onTocOpenChange,
 }: {
   content: string;
   isNotebook: boolean;
@@ -238,6 +247,8 @@ function PreviewWithSearch({
   scrollKey: string | null;
   /** True once the file content backing the preview is present. */
   scrollReady: boolean;
+  tocOpen: boolean;
+  onTocOpenChange: (open: boolean) => void;
 }) {
   const previewRef = useRef<HTMLDivElement>(null);
   // The preview div (not the FileViewer content area) is the real scroller
@@ -255,7 +266,13 @@ function PreviewWithSearch({
   const preview = isNotebook ? (
     <NotebookPreview content={content} rootRef={previewRef} onScroll={handleScroll} />
   ) : (
-    <MarkdownPreview content={content} rootRef={previewRef} onScroll={handleScroll} />
+    <MarkdownPreview
+      content={content}
+      rootRef={previewRef}
+      onScroll={handleScroll}
+      tocOpen={tocOpen}
+      onTocOpenChange={onTocOpenChange}
+    />
   );
   // The find bar sits above the preview; a truncated preview also shows the
   // banner. The bar renders nothing when closed, so layout is unchanged then.
@@ -372,6 +389,10 @@ export interface CodeViewerProps {
   onSaveStatusChange?: (status: SaveStatus) => void;
   /** Forwarded to MarkdownRichTextViewer → MarkdownCommentPlugin. */
   pendingBodyRef?: RefObject<string>;
+  /** Whether the TOC panel is open (for markdown preview). */
+  tocOpen?: boolean;
+  /** Callback to toggle TOC panel. */
+  onTocToggle?: () => void;
 }
 
 export function CodeViewer({
@@ -389,6 +410,8 @@ export function CodeViewer({
   onDirtyChange,
   onSaveStatusChange,
   pendingBodyRef,
+  tocOpen = false,
+  onTocToggle,
 }: CodeViewerProps) {
   const canEdit = useCanEdit(conversationId);
 
@@ -769,6 +792,8 @@ export function CodeViewer({
         searchInputRef={searchInputRef}
         scrollKey={conversationId && path ? `viewer-preview:${conversationId}:${path}` : null}
         scrollReady={fileQuery.data !== undefined}
+        tocOpen={tocOpen}
+        onTocOpenChange={(open) => !open && onTocToggle?.()}
       />
     );
   }

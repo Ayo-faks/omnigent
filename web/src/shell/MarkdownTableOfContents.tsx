@@ -1,6 +1,7 @@
 // Table of contents for markdown files, extracted from heading structure.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { SearchIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface TocItem {
@@ -49,11 +50,22 @@ interface MarkdownTableOfContentsProps {
   content: string;
   /** Ref to the scrollable container so TOC clicks can scroll to the target. */
   containerRef?: React.RefObject<HTMLElement | null>;
+  /** Whether the TOC is open (for overlay mode). */
+  open?: boolean;
+  /** Callback when TOC should close. */
+  onClose?: () => void;
 }
 
-export function MarkdownTableOfContents({ content, containerRef }: MarkdownTableOfContentsProps) {
+export function MarkdownTableOfContents({
+  content,
+  containerRef,
+  open = true,
+  onClose,
+}: MarkdownTableOfContentsProps) {
   const headings = useMemo(() => extractHeadings(content), [content]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [filterText, setFilterText] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Track which heading is currently visible at the top of the viewport.
   useEffect(() => {
@@ -79,7 +91,26 @@ export function MarkdownTableOfContents({ content, containerRef }: MarkdownTable
     return () => observer.disconnect();
   }, [headings, containerRef]);
 
-  if (headings.length === 0) return null;
+  // Auto-focus search input when TOC opens
+  useEffect(() => {
+    if (open && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [open]);
+
+  // Close on Escape key
+  useEffect(() => {
+    if (!open || !onClose) return;
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [open, onClose]);
+
+  if (headings.length === 0 || !open) return null;
 
   const handleClick = (id: string) => {
     const container = containerRef?.current;
@@ -87,34 +118,95 @@ export function MarkdownTableOfContents({ content, containerRef }: MarkdownTable
     const target = container.querySelector(`#${CSS.escape(id)}`);
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "start" });
+    onClose?.();
   };
 
+  // Filter headings based on search text
+  const filteredHeadings = useMemo(() => {
+    if (!filterText.trim()) return headings;
+    const lower = filterText.toLowerCase();
+    return headings.filter((h) => h.text.toLowerCase().includes(lower));
+  }, [headings, filterText]);
+
   return (
-    <nav
-      className="sticky top-0 max-h-screen overflow-y-auto border-l border-border bg-card/95 backdrop-blur-sm px-4 py-4"
-      aria-label="Table of contents"
-    >
-      <h2 className="mb-3 text-sm font-semibold text-foreground">On this page</h2>
-      <ul className="space-y-1.5 text-sm">
-        {headings.map((heading) => (
-          <li
-            key={heading.id}
-            style={{ paddingLeft: `${(heading.level - 1) * 0.75}rem` }}
-            className="leading-snug"
-          >
-            <button
-              type="button"
-              onClick={() => handleClick(heading.id)}
-              className={cn(
-                "block w-full text-left transition-colors hover:text-foreground",
-                activeId === heading.id ? "font-medium text-foreground" : "text-muted-foreground",
-              )}
-            >
-              {heading.text}
-            </button>
-          </li>
-        ))}
-      </ul>
-    </nav>
+    <>
+      {/* Backdrop */}
+      {onClose && (
+        <div
+          className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* TOC Panel */}
+      <nav
+        className={cn(
+          "fixed top-0 right-0 bottom-0 z-50 w-80 bg-card border-l border-border flex flex-col",
+          "shadow-xl",
+        )}
+        aria-label="Table of contents"
+      >
+        {/* Header with search */}
+        <div className="shrink-0 border-b border-border p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-foreground">On this page</h2>
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded p-1 hover:bg-muted transition-colors"
+                aria-label="Close table of contents"
+              >
+                <XIcon className="size-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Filter input */}
+          <div className="relative">
+            <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              placeholder="Filter headings"
+              className="w-full rounded-md border border-border bg-background pl-9 pr-3 py-1.5 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        </div>
+
+        {/* Scrollable headings list */}
+        <div className="flex-1 overflow-y-auto px-4 py-2">
+          {filteredHeadings.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4 text-center">No matching headings</p>
+          ) : (
+            <ul className="space-y-1.5 text-sm">
+              {filteredHeadings.map((heading) => (
+                <li
+                  key={heading.id}
+                  style={{ paddingLeft: `${(heading.level - 1) * 0.75}rem` }}
+                  className="leading-snug"
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleClick(heading.id)}
+                    className={cn(
+                      "block w-full text-left transition-colors hover:text-foreground rounded px-2 py-1",
+                      activeId === heading.id
+                        ? "font-medium text-foreground bg-muted"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {heading.text}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </nav>
+    </>
   );
 }
