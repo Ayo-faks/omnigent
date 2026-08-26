@@ -51,10 +51,7 @@ interface MarkdownTableOfContentsProps {
   containerRef?: React.RefObject<HTMLElement | null>;
 }
 
-export function MarkdownTableOfContents({
-  content,
-  containerRef,
-}: MarkdownTableOfContentsProps) {
+export function MarkdownTableOfContents({ content, containerRef }: MarkdownTableOfContentsProps) {
   const headings = useMemo(() => extractHeadings(content), [content]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -110,9 +107,7 @@ export function MarkdownTableOfContents({
               onClick={() => handleClick(heading.id)}
               className={cn(
                 "block w-full text-left transition-colors hover:text-foreground",
-                activeId === heading.id
-                  ? "font-medium text-foreground"
-                  : "text-muted-foreground",
+                activeId === heading.id ? "font-medium text-foreground" : "text-muted-foreground",
               )}
             >
               {heading.text}
