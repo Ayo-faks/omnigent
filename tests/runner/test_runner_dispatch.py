@@ -1531,40 +1531,8 @@ async def test_runner_stream_emits_failed_when_tool_spec_resolver_fails() -> Non
     assert "stream spec resolver unavailable for ag_stream" not in response.text
 
 
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
 def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> None:
-    """
-    Both the direct-stream and background-dispatch agent-switch/
-    provenance-reject sites in ``_stream_message_to_harness`` and
-    ``_run_turn_bg_setup_and_stream`` must call the SAME shared
-    invalidation routine (``_invalidate_session_agent_state``) — not two
-    independently-maintained inline cache-pop lists.
-
-    Regression: the direct-stream site used to inline its own narrower
-    list (spec + snapshot only), while the background site inlined a
-    different, wider list (spec + skills + claude-launch-config + tool
-    schemas + snapshot, but still missing the MCP spec hash that
-    ``_clear_session_agent_caches`` — used elsewhere, e.g. the explicit
-    ``/agent-cache/reset`` route). Three independently
-    maintained enumerations of "the agent-derived cache set" is how a gap
-    like this recurs: a cache added to one list silently isn't added to
-    the others. The check here is structural/source-level rather than
-    runtime behavioural because the caches in question — skills, tool
-    schemas, MCP spec hash, claude launch config — are all closures local
-    to ``create_runner_app``, with no attribute or endpoint exposing them
-    for a test to poke or observe directly; asserting the single shared
-    call site is what actually guards against the divergence: both
-    dispatch paths must route through the one shared invalidation routine
-    rather than each maintaining its own eviction list.
-    """
+    """Both dispatch paths must call the shared `_invalidate_session_agent_state` helper — not inline cache-pop lists."""
     import inspect
 
     import omnigent.runner.app as runner_app_mod
@@ -1587,29 +1555,8 @@ def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> 
     )
 
 
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
-@pytest.mark.asyncio
 def test_agent_cache_reset_clears_the_agent_id_marker_too() -> None:
-    """
-    ``_clear_session_agent_caches`` (shared by the ``/reset-state`` and
-    ``/agent-cache/reset`` routes, and by ``_invalidate_session_agent_state``
-    on an in-conversation switch) must pop ``_session_agent_ids`` along
-    with the tagged caches it already pops.
-
-    Source-level guard, matching the established pattern for this
-    closure-local, HTTP-unobservable state (see
-    ``test_direct_and_background_switch_sites_share_one_invalidation_routine``
-    above): every tagged cache entry carries its own provenance now, so a
-    stale ``_session_agent_ids`` value can no longer cause a WRONG spec to
-    be trusted — but it can still cause an informational reader (MCP
-    execute, background-title, ``_session_harness_name``, ...) to look up
-    the wrong agent's tag right after a reset. Leaving the reset routes'
-    shared cache-clearing helper without this pop would silently
-    reintroduce that staleness.
-    """
+    """`_clear_session_agent_caches` must pop `_session_agent_ids` alongside the other tagged caches it clears."""
     import inspect
 
     import omnigent.runner.app as runner_app_mod
@@ -10411,10 +10358,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
 @pytest.mark.parametrize(
     "scenario, path, expected",
     [
-        # ── Child present: the one scenario where all three genuinely agree.
-        # Each selects the SAME child identity, to the extent its transport
-        # lets us observe it (the two direct paths reach the harness and can be
-        # read off the wire; background does too).
+        # child present: all paths select the same child spec.
         pytest.param(
             "child_present",
             "no_harness",
@@ -10424,11 +10368,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
         pytest.param(
             "child_present",
             "known_harness",
-            # Same child selected; the trailing caller text is this adapter's
-            # own per-request instructions composing additively on top (only
-            # the known-harness adapter sends any, because its degradation
-            # rows need something to preserve). The CHILD half is the shared
-            # assertion — the suffix is adapter asymmetry, not divergence.
+            # same child; caller text composes additively on top.
             {
                 "status": 200,
                 "instructions": (f"Worker instructions.\n\n{_CONTRACT_CALLER_INSTRUCTIONS}"),
@@ -10441,14 +10381,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
             {"terminal_status": "idle", "instructions": "Worker instructions."},
             id="child_present-background",
         ),
-        # ── Missing child: all three paths AGREE, and the agreement is the
-        # point. A ``sub_agent_name`` that no longer resolves is one question,
-        # and the answer does not depend on which transport asked it: warn,
-        # then run the PARENT's spec. The rows below pin the parent's authored
-        # text on every path, so a path that reverted to erroring — or to
-        # dropping the spec — fails here rather than drifting quietly.
-        # These paths used to answer 503, degrade to no spec, and fail the
-        # turn respectively.
+        # child missing: all paths agree — warn, fall back to the parent spec.
         pytest.param(
             "child_missing",
             "no_harness",
@@ -10458,9 +10391,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
         pytest.param(
             "child_missing",
             "known_harness",
-            # The caller's own per-request text still composes additively on
-            # top of the parent's authored instructions rather than being
-            # replaced by them — the same shape as the child_present row.
+            # same shape as child_present — caller text still composes additively.
             {
                 "status": 200,
                 "instructions": (f"Root instructions.\n\n{_CONTRACT_CALLER_INSTRUCTIONS}"),
@@ -10492,11 +10423,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
             {"status": 202, "terminal_status": "failed"},
             id="resolver_raises-background-async-failure",
         ),
-        # ── Resolver returns None: treated the same as resolver_raises after
-        # fix(runner): raise on unresolvable harness (#5505). A configured
-        # resolver returning None now raises RuntimeError in
-        # _resolve_harness_config so both failure modes surface as 503 on the
-        # no-harness path and as a failed async turn on the background path.
+        # resolver returns None: treated the same as resolver_raises after #5505.
         pytest.param(
             "resolver_none",
             "no_harness",
@@ -10512,9 +10439,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
         pytest.param(
             "resolver_none",
             "background",
-            # ``resolver_calls == 2`` is pinned: once in background setup
-            # (returns None, no cache), once in _resolve_harness_config
-            # (returns None, raises RuntimeError → failed turn).
+            # resolver called twice: once in bg setup, once in _resolve_harness_config.
             {
                 "status": 202,
                 "terminal_status": "failed",
@@ -10522,11 +10447,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
             },
             id="resolver_none-background",
         ),
-        # ── Cache already holds the effective child. Session-create resolved
-        # and cached "worker" itself; the dispatch must reuse that entry.
-        # ``resolver_calls == 1`` is the load-bearing assertion — it is the
-        # create's own resolution and nothing more, so a second resolve would
-        # mean the shortcut was lost.
+        # cache hit: resolver_calls == 1 is the load-bearing assertion.
         pytest.param(
             "cache_holds_child",
             "background",
@@ -10547,12 +10468,7 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
             },
             id="cache_holds_child-known_harness-shortcut",
         ),
-        # Pinned SEPARATELY, and it genuinely differs: this path does
-        # NOT take the cached-child shortcut. It resolves a second time
-        # (``resolver_calls == 2``) and arrives at the same child, so the
-        # observable instructions match while the work done does not. Recorded
-        # as-is rather than "corrected" — whether the extra resolve is worth
-        # removing is a separate question from pinning today's behaviour.
+        # no_harness path resolves a second time even with a cached child.
         pytest.param(
             "cache_holds_child",
             "no_harness",
