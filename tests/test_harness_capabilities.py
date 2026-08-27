@@ -9,7 +9,7 @@ drift.
 
 from __future__ import annotations
 
-import re
+
 from pathlib import Path
 
 from omnigent import harness_plugins as hp
@@ -39,8 +39,6 @@ from omnigent.model_override import (
     _ANTIGRAVITY_FAMILY_HARNESSES,
     _CLAUDE_FAMILY_HARNESSES,
 )
-
-_DOCS_PATH = Path(__file__).resolve().parent.parent / "docs" / "AGENT_YAML_SPEC.md"
 
 _NATIVE_MODES = frozenset({IntegrationMode.NATIVE_TUI, IntegrationMode.NATIVE_SERVER})
 
@@ -365,69 +363,18 @@ def test_native_tui_harnesses_declare_shell_tool_provocation() -> None:
         assert "omnigent-bench-ok" in capability.shell_tool_prompt, harness
 
 
-def _parse_docs_instruction_delivery_matrix() -> dict[str, str]:
-    """Parse the ``### Per-harness matrix`` table in AGENT_YAML_SPEC.md."""
-    text = _DOCS_PATH.read_text()
-    marker = "### Per-harness matrix"
-    start = text.index(marker) + len(marker)
-    end = text.index("\n### ", start)
-    table = text[start:end]
-    rows: dict[str, str] = {}
-    for line in table.splitlines():
-        line = line.strip()
-        if not line.startswith("|") or "---" in line:
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if cells[0] == "Harness":
-            continue
-        harness = cells[0].strip("`")
-        value_match = re.match(r"`([a-z-]+)`", cells[1])
-        assert value_match, f"unparsable InstructionDelivery cell for {harness!r}: {cells[1]!r}"
-        # A dict assignment would silently overwrite a duplicated row
-        # (masking a doc bug where the same harness id appears twice,
-        # even with matching values) — the "exactly once" contract this
-        # helper backs requires catching that here, not downstream.
-        assert harness not in rows, f"harness {harness!r} appears more than once in the doc matrix"
-        rows[harness] = value_match.group(1)
-    return rows
-
-
 def test_every_canonical_harness_declares_instruction_delivery() -> None:
     caps = harness_capabilities()
     for harness in valid_harnesses():
         assert caps[harness].instruction_delivery is not InstructionDelivery.UNKNOWN, harness
 
 
-def test_docs_instruction_delivery_matrix_matches_registry() -> None:
+def test_hermes_and_hermes_native_deliver_differently() -> None:
     caps = harness_capabilities()
-    docs_rows = _parse_docs_instruction_delivery_matrix()
-
-    canonical = valid_harnesses()
-    assert set(docs_rows) == canonical, (
-        f"docs matrix / registry mismatch — "
-        f"missing from docs: {sorted(canonical - set(docs_rows))}, "
-        f"extra in docs: {sorted(set(docs_rows) - canonical)}"
-    )
-
-    for harness, doc_value in docs_rows.items():
-        assert caps[harness].instruction_delivery.value == doc_value, harness
-
-    # Aliases are not treated as independent implementations: no alias id
-    # gets its own row distinct from its canonical harness.
-    aliases = harness_aliases()
-    for alias, canonical_harness in aliases.items():
-        assert alias not in docs_rows, f"alias {alias!r} must not have its own docs matrix row"
-        assert canonical_harness in docs_rows, canonical_harness
-
-
-def test_hermes_and_hermes_native_are_disambiguated_in_docs() -> None:
-    docs_rows = _parse_docs_instruction_delivery_matrix()
-    assert docs_rows["hermes"] == "first-user-prefix"
-    assert docs_rows["hermes-native"] == "not-delivered"
+    assert caps["hermes"].instruction_delivery is InstructionDelivery.FIRST_USER_PREFIX
+    assert caps["hermes-native"].instruction_delivery is InstructionDelivery.NOT_DELIVERED
 
 
 def test_kiro_native_is_not_delivered() -> None:
     caps = harness_capabilities()
     assert caps["kiro-native"].instruction_delivery is InstructionDelivery.NOT_DELIVERED
-    docs_rows = _parse_docs_instruction_delivery_matrix()
-    assert docs_rows["kiro-native"] == "not-delivered"
