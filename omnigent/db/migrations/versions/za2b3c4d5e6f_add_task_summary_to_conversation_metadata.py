@@ -29,10 +29,13 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Add ``task_summary`` to ``omnigent_conversation_metadata``."""
-    op.add_column(
-        "omnigent_conversation_metadata",
-        sa.Column("task_summary", sa.String(128), nullable=True),
-    )
+    bind = op.get_bind()
+    existing = {c["name"] for c in sa.inspect(bind).get_columns("omnigent_conversation_metadata")}
+    if "task_summary" not in existing:
+        op.add_column(
+            "omnigent_conversation_metadata",
+            sa.Column("task_summary", sa.String(128), nullable=True),
+        )
 
 
 def downgrade() -> None:
