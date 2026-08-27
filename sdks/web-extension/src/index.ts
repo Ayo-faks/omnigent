@@ -37,6 +37,7 @@ export interface ExtensionContext {
   view: string;
   apiVersion: number;
   capabilities: readonly string[];
+  invocation: Readonly<Record<string, string>>;
   navigation: {
     openPage(
       pageId: string,
@@ -95,6 +96,7 @@ export function defineExtension(lifecycle: ExtensionLifecycle): void {
   const pending = new Map<string, PendingRequest>();
   const listeners = new Map<string, Set<(value: unknown) => void>>();
   let grantedCapabilities = new Set<string>();
+  let invocationContext: Readonly<Record<string, string>> = {};
 
   const rejectPending = () => {
     for (const request of pending.values()) {
@@ -167,6 +169,7 @@ export function defineExtension(lifecycle: ExtensionLifecycle): void {
     view: identity.view,
     apiVersion: identity.apiVersion,
     capabilities: [...grantedCapabilities].sort(),
+    invocation: invocationContext,
     navigation: {
       async openPage(pageId, params) {
         await request("navigation.openPage", { pageId, params });
@@ -216,12 +219,16 @@ export function defineExtension(lifecycle: ExtensionLifecycle): void {
       init.type !== "init" ||
       !matchesIdentity(init, identity) ||
       !Array.isArray(init.capabilities) ||
-      !init.capabilities.every((item) => typeof item === "string")
+      !init.capabilities.every((item) => typeof item === "string") ||
+      !init.context ||
+      typeof init.context !== "object" ||
+      !Object.values(init.context).every((item) => typeof item === "string")
     ) {
       return;
     }
     port = event.ports[0];
     grantedCapabilities = new Set(init.capabilities);
+    invocationContext = Object.freeze({ ...init.context });
     active = true;
     window.removeEventListener("message", handleInit);
     port.onmessage = (portEvent: MessageEvent<unknown>) => {

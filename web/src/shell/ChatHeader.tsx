@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { TAB_BADGE_BASE } from "./railTabs";
 import { ViewModeToggle } from "./ViewModeToggle";
 import { useCallback, useEffect, useRef } from "react";
+import { ExtensionSlotHost } from "@/extensions/ExtensionSlot";
 
 /**
  * Gating flags + handlers for the mobile-only session-menu FAB (the
@@ -332,7 +333,13 @@ export function ChatHeader({
         {conversationId && <AgentInfoButton agent={boundAgent} sessionId={conversationId} />}
         {/* Chat/Terminal switcher for terminal-first sessions — self-gates to
             null otherwise (and in the iOS shell, where it's the native bar). */}
-        {conversationId && <ViewModeToggle />}
+        <ExtensionSlotHost
+          slot="chat.header.actions"
+          context={{ conversationId }}
+          instance="chat-header"
+        >
+          {conversationId && <ViewModeToggle />}
+        </ExtensionSlotHost>
         {/* Mobile-only three-dot menu folding the action buttons above
             (Share · Agent info) so the header stays
             uncluttered on a phone. The right-panel/rail control is

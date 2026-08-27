@@ -164,6 +164,10 @@ function App({ basename }: AppProps = {}) {
               is carried in the URL (/settings/<section>); bare /settings
               defaults to Appearance. */}
           <Route path={`${prefix}/settings`} element={<SettingsPage />} />
+          <Route
+            path={`${prefix}/settings/extensions/:extensionId/*`}
+            element={<ExtensionPageRoute />}
+          />
           <Route path={`${prefix}/settings/:section`} element={<SettingsPage />} />
           <Route path={`${prefix}/extensions/:extensionId/*`} element={<ExtensionPageRoute />} />
           {/* Members / Policies are now settings sub-categories

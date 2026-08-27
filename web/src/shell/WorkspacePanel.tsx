@@ -39,6 +39,7 @@ import type { ChangedSort } from "./FlatFileList";
 import { SubagentsPanel } from "./SubagentsPanel";
 import { useTerminalStatuses } from "./useTerminalStatuses";
 import { type RightRailTab, TAB_BADGE_BASE } from "./railTabs";
+import { ExtensionSlotHost } from "@/extensions/ExtensionSlot";
 import { Button } from "../components/ui/button";
 
 function WorkspaceTabTooltip({
@@ -744,90 +745,96 @@ export function WorkspacePanel({
           (overflow-x-hidden), so the divider is a fixed boundary that doesn't
           drift when the tabs scroll. */}
       <div className="workspace-tab-strip shrink-0 flex items-center overflow-x-hidden border-b border-border px-2 py-3">
-        <Tabs
-          // Static group — never compresses (shrink-0) and stays anchored on
-          // the LEFT whether or not tabs are open. The open tabs render to its
-          // right; the maximize button owns the row's single ml-auto and pins
-          // to the right edge.
-          className="shrink-0"
-          // When a file or shell tab is active no fixed trigger should
-          // highlight, so feed the radix group a sentinel that matches none of
-          // them. The active file/shell tab carries its own highlight. Gate the
-          // shell case on the terminal actually being present (same gate as the
-          // content slot below): a sticky selection whose terminal is gone shows
-          // the fallback nav view, so its nav tab must highlight, not "__tab__".
-          value={
-            selectedFilePath !== null ||
-            (selectedTerminalKey !== null && openTerminals.includes(selectedTerminalKey))
-              ? "__tab__"
-              : rightRailTab
-          }
-          onValueChange={(v) => onRightRailTabChange(v as RightRailTab)}
-          componentId="chat.right_rail.tabs"
+        <ExtensionSlotHost
+          slot="session.rightRail.tabs"
+          context={{ conversationId }}
+          instance="right-rail"
         >
-          <TabsList variant="pill" className="gap-1">
-            {showFilesPanel && (
-              <WorkspaceTabTooltip label="Files">
+          <Tabs
+            // Static group — never compresses (shrink-0) and stays anchored on
+            // the LEFT whether or not tabs are open. The open tabs render to its
+            // right; the maximize button owns the row's single ml-auto and pins
+            // to the right edge.
+            className="shrink-0"
+            // When a file or shell tab is active no fixed trigger should
+            // highlight, so feed the radix group a sentinel that matches none of
+            // them. The active file/shell tab carries its own highlight. Gate the
+            // shell case on the terminal actually being present (same gate as the
+            // content slot below): a sticky selection whose terminal is gone shows
+            // the fallback nav view, so its nav tab must highlight, not "__tab__".
+            value={
+              selectedFilePath !== null ||
+              (selectedTerminalKey !== null && openTerminals.includes(selectedTerminalKey))
+                ? "__tab__"
+                : rightRailTab
+            }
+            onValueChange={(v) => onRightRailTabChange(v as RightRailTab)}
+            componentId="chat.right_rail.tabs"
+          >
+            <TabsList variant="pill" className="gap-1">
+              {showFilesPanel && (
+                <WorkspaceTabTooltip label="Files">
+                  <TabsTrigger
+                    value="files"
+                    aria-label="Files"
+                    className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                  >
+                    <FolderTreeIcon />
+                    <span className="sr-only">Files</span>
+                  </TabsTrigger>
+                </WorkspaceTabTooltip>
+              )}
+              {showFilesPanel && (
+                <WorkspaceTabTooltip label="Changes">
+                  <TabsTrigger
+                    value="changes"
+                    aria-label={changedCount > 0 ? `Changes ${changedCount} changed` : "Changes"}
+                    className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                  >
+                    <FileDiffIcon />
+                    <span className="sr-only">Changes</span>
+                    {changedCount > 0 && <span className="sr-only">{changedCount}</span>}
+                  </TabsTrigger>
+                </WorkspaceTabTooltip>
+              )}
+              <WorkspaceTabTooltip label="Agents">
                 <TabsTrigger
-                  value="files"
-                  aria-label="Files"
+                  value="subagents"
+                  aria-label={
+                    subagentsWorking > 0
+                      ? `Agents ${subagentsWorking}/${agentCount}`
+                      : `Agents ${agentCount}`
+                  }
                   className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
                 >
-                  <FolderTreeIcon />
-                  <span className="sr-only">Files</span>
+                  <BotIcon />
+                  <span className="sr-only">Agents</span>
+                  <span
+                    className={cn(
+                      TAB_BADGE_BASE,
+                      "sr-only",
+                      subagentsWorking > 0 ? "text-success" : "text-muted-foreground",
+                    )}
+                  >
+                    {subagentsWorking > 0 ? `${subagentsWorking}/${agentCount}` : agentCount}
+                  </span>
                 </TabsTrigger>
               </WorkspaceTabTooltip>
-            )}
-            {showFilesPanel && (
-              <WorkspaceTabTooltip label="Changes">
-                <TabsTrigger
-                  value="changes"
-                  aria-label={changedCount > 0 ? `Changes ${changedCount} changed` : "Changes"}
-                  className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
-                >
-                  <FileDiffIcon />
-                  <span className="sr-only">Changes</span>
-                  {changedCount > 0 && <span className="sr-only">{changedCount}</span>}
-                </TabsTrigger>
-              </WorkspaceTabTooltip>
-            )}
-            <WorkspaceTabTooltip label="Agents">
-              <TabsTrigger
-                value="subagents"
-                aria-label={
-                  subagentsWorking > 0
-                    ? `Agents ${subagentsWorking}/${agentCount}`
-                    : `Agents ${agentCount}`
-                }
-                className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
-              >
-                <BotIcon />
-                <span className="sr-only">Agents</span>
-                <span
-                  className={cn(
-                    TAB_BADGE_BASE,
-                    "sr-only",
-                    subagentsWorking > 0 ? "text-success" : "text-muted-foreground",
-                  )}
-                >
-                  {subagentsWorking > 0 ? `${subagentsWorking}/${agentCount}` : agentCount}
-                </span>
-              </TabsTrigger>
-            </WorkspaceTabTooltip>
-            {showBrowserTab && (
-              <WorkspaceTabTooltip label="Browser">
-                <TabsTrigger
-                  value="browser"
-                  aria-label="Browser"
-                  className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
-                >
-                  <GlobeIcon />
-                  <span className="sr-only">Browser</span>
-                </TabsTrigger>
-              </WorkspaceTabTooltip>
-            )}
-          </TabsList>
-        </Tabs>
+              {showBrowserTab && (
+                <WorkspaceTabTooltip label="Browser">
+                  <TabsTrigger
+                    value="browser"
+                    aria-label="Browser"
+                    className="size-6 shrink-0 p-0 hover:border-1 hover:border-muted rounded-md!"
+                  >
+                    <GlobeIcon />
+                    <span className="sr-only">Browser</span>
+                  </TabsTrigger>
+                </WorkspaceTabTooltip>
+              )}
+            </TabsList>
+          </Tabs>
+        </ExtensionSlotHost>
         {/* 1px divider separating the static nav tabs from the open tabs.
                 Pinned (outside the scrolling file-tabs region), so it stays put
                 at every rail width while the tabs scroll past it. */}

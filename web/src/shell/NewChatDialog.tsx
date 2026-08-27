@@ -214,6 +214,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { PoweredByOmnigent } from "@/components/PoweredByOmnigent";
 import { SkillPills } from "@/components/SkillPills";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
+import { ExtensionSlotHost } from "@/extensions/ExtensionSlot";
 import type { CostControlMode } from "@/components/CostRoutingControl";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentRowTooltip } from "@/components/AgentHoverCard";
@@ -4493,16 +4494,18 @@ export function NewChatLandingScreen() {
                   <PaperclipIcon className="size-4" data-icon-size="16" />
                   <span className="sr-only">Attach files</span>
                 </Button>
-                <ComposerMicButton
-                  enableHotkey
-                  disabled={creating}
-                  onVoiceStart={() => {
-                    voiceSnapshotRef.current = message;
-                  }}
-                  onVoiceDiscard={() => setMessage(voiceSnapshotRef.current)}
-                  onTranscript={dictation.appendFinal}
-                  onInterim={dictation.replaceInterim}
-                />
+                <ExtensionSlotHost slot="composer.actions" instance="new-chat-composer">
+                  <ComposerMicButton
+                    enableHotkey
+                    disabled={creating}
+                    onVoiceStart={() => {
+                      voiceSnapshotRef.current = message;
+                    }}
+                    onVoiceDiscard={() => setMessage(voiceSnapshotRef.current)}
+                    onTranscript={dictation.appendFinal}
+                    onInterim={dictation.replaceInterim}
+                  />
+                </ExtensionSlotHost>
               </div>
               <div className="flex items-center gap-0.5 md:gap-2">
                 <div className="flex items-center rounded-lg transition-colors has-[button:not(:disabled)]:hover:bg-muted dark:has-[button:not(:disabled)]:hover:bg-muted/50 has-aria-expanded:bg-muted dark:has-aria-expanded:bg-muted/50 [&>button]:bg-transparent!">

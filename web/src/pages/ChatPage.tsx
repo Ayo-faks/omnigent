@@ -172,6 +172,7 @@ import {
   type WorkspaceFile,
 } from "@/hooks/useWorkspaceChangedFiles";
 import { ComposerMicButton } from "@/components/ComposerMicButton";
+import { ExtensionSlotHost } from "@/extensions/ExtensionSlot";
 import { isCostRoutingSession, isSubagentRoutingSession } from "@/components/CostRoutingControl";
 import {
   SMART_ROUTING_ARMS,
@@ -5860,29 +5861,35 @@ export function Composer({
               <PaperclipIcon className="size-4" data-icon-size="16" />
               <span className="sr-only">Attach files</span>
             </Button>
-            <ComposerMicButton
-              enableHotkey
-              disabled={disabled || isReadOnly || hasPendingElicitation}
-              onVoiceStart={() => {
-                voiceSnapshotRef.current = value;
-              }}
-              onVoiceDiscard={() => {
-                setValue(voiceSnapshotRef.current);
-              }}
-              onTranscript={(text) => {
-                dictation.appendFinal(text);
-                dirtyRef.current = true;
-                // Dictation is a user-driven edit — exit prompt-recall mode
-                // so ArrowUp/ArrowDown don't clobber the dictated text.
-                resetCursor();
-                if (commandError !== null) setCommandError(null);
-              }}
-              onInterim={(text) => {
-                dictation.replaceInterim(text);
-                dirtyRef.current = true;
-                resetCursor();
-              }}
-            />
+            <ExtensionSlotHost
+              slot="composer.actions"
+              context={{ conversationId }}
+              instance="chat-composer"
+            >
+              <ComposerMicButton
+                enableHotkey
+                disabled={disabled || isReadOnly || hasPendingElicitation}
+                onVoiceStart={() => {
+                  voiceSnapshotRef.current = value;
+                }}
+                onVoiceDiscard={() => {
+                  setValue(voiceSnapshotRef.current);
+                }}
+                onTranscript={(text) => {
+                  dictation.appendFinal(text);
+                  dirtyRef.current = true;
+                  // Dictation is a user-driven edit — exit prompt-recall mode
+                  // so ArrowUp/ArrowDown don't clobber the dictated text.
+                  resetCursor();
+                  if (commandError !== null) setCommandError(null);
+                }}
+                onInterim={(text) => {
+                  dictation.replaceInterim(text);
+                  dirtyRef.current = true;
+                  resetCursor();
+                }}
+              />
+            </ExtensionSlotHost>
           </div>
           {/* Right side: read-only model/effort label + config gear + Send.
               Smart Routing lives inside the gear modal — folded into the Model
