@@ -9,9 +9,6 @@ drift.
 
 from __future__ import annotations
 
-
-from pathlib import Path
-
 from omnigent import harness_plugins as hp
 from omnigent.harness_availability import CODEX_CANONICAL_HARNESSES
 from omnigent.harness_capabilities import (
@@ -27,7 +24,6 @@ from omnigent.harness_capabilities import (
 )
 from omnigent.harness_plugins import (
     HarnessContribution,
-    harness_aliases,
     harness_capabilities,
     harness_catalog,
     harness_setup_steps_by_spelling,
