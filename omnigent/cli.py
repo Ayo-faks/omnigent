@@ -3423,23 +3423,21 @@ def _ensure_backend(server: str | None) -> str:
         # surfaces the edge redirect as an opaque non-JSON-response
         # traceback.
         #
-        # The auth probe (GET /v1/me, ~0.65s) and the daemon tunnel start
-        # (~2s) are independent — run them concurrently so the auth check
-        # is hidden under the longer daemon wait.
+        # Auth runs first on the calling (main) thread: it may drive an
+        # interactive browser login via click.echo / sys.stdin, which require
+        # TTY access and must not run on a ThreadPoolExecutor worker.  Only
+        # after auth succeeds is it safe to start the daemon — the daemon's
+        # first tunnel attempt reads the credentials auth just wrote to disk.
         import concurrent.futures
 
         server = _resolve_server_url(server).api_base
-        with (
-            runner_startup_progress(initial_message=STARTUP_PHASE_CONNECTING_REMOTE),
-            concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool,
-        ):
-            auth_future = pool.submit(_ensure_databricks_server_auth, server)
-            daemon_future = pool.submit(_ensure_host_daemon, server)
-            # Raise auth errors before daemon errors: a login failure is
-            # more actionable than a daemon-connect failure that would
-            # have been caused by the same missing credentials.
-            auth_future.result()
-            daemon_future.result()
+        with runner_startup_progress(initial_message=STARTUP_PHASE_CONNECTING_REMOTE):
+            # Step 1: auth on the calling thread (TTY-safe, sequential).
+            _ensure_databricks_server_auth(server)
+            # Step 2: daemon start after auth — dispatch to a worker so its
+            # longer connect wait (~2s) doesn't block the caller unnecessarily.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_ensure_host_daemon, server).result()
         return server
     # Local mode: the daemon spawns (or reuses) a persistent local Omnigent server.
     # On a cold start this is the longest silent gap between the user pressing
