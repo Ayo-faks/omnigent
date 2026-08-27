@@ -34,7 +34,7 @@ from pydantic import TypeAdapter
 from omnigent.server.schemas import ServerStreamEvent
 
 from ._child_status import child_summary_busy
-from ._errors import raise_for_status, require_json_object, response_body
+from ._errors import OmnigentError, raise_for_status, require_json_object, response_body
 from ._timeouts import _SSE_TIMEOUT
 
 # Default recursion cap for the sub-agent tree helpers. Mirrors web's
@@ -330,6 +330,29 @@ class RegisteredAgent:
     harness: str | None = None
 
 
+@dataclass(frozen=True)
+class PaginatedList:
+    """A single page of results from a cursor-paginated server endpoint.
+
+    Returned by :meth:`SessionsNamespace.list_items` and
+    :meth:`SessionsNamespace.child_sessions` so callers can detect
+    truncated listings and advance to the next page.
+
+    :param data: The items on this page.
+    :param has_more: Whether the server has more results beyond this page.
+    :param first_id: Cursor pointing at the first item on this page;
+        ``None`` when the page is empty or the server did not supply one.
+    :param last_id: Cursor pointing at the last item on this page; pass
+        as ``after=`` to fetch the next page.  ``None`` when the page is
+        empty or the server did not supply one.
+    """
+
+    data: builtins.list[dict[str, Any]]
+    has_more: bool
+    first_id: str | None = None
+    last_id: str | None = None
+
+
 class SessionsNamespace:
     """
     Client namespace for ``/v1/sessions`` endpoints.
@@ -526,7 +549,13 @@ class SessionsNamespace:
                 break
             last_id = listing.get("last_id")
             if not last_id:
-                break
+                # Server reports more pages but provides no cursor to advance
+                # — raise rather than silently stopping, so callers can
+                # distinguish a pagination stall from "agent not found".
+                raise OmnigentError(
+                    f"agent listing stalled: server returned has_more=True but"
+                    f" no last_id cursor (searched so far: {', '.join(names) or '<none>'})"
+                )
             after = str(last_id)
         available = ", ".join(names) + (", …" if truncated else "")
         raise LookupError(
@@ -850,7 +879,7 @@ class SessionsNamespace:
         limit: int = 100,
         after: str | None = None,
         order: str = "asc",
-    ) -> builtins.list[dict[str, Any]]:
+    ) -> PaginatedList:
         """
         List items in a session with cursor-based pagination.
 
@@ -864,7 +893,9 @@ class SessionsNamespace:
         :param after: Cursor — return items after this item ID.
         :param order: Sort order, ``"asc"`` (chronological) or
             ``"desc"``.
-        :returns: List of conversation item dicts.
+        :returns: :class:`PaginatedList` with ``data``, ``has_more``,
+            ``first_id``, and ``last_id``.  Pass ``result.last_id`` as
+            ``after=`` to fetch the next page when ``result.has_more``.
         :raises OmnigentError: On non-2xx status (404 when the
             session does not exist).
         """
@@ -877,15 +908,24 @@ class SessionsNamespace:
         )
         raise_for_status(resp.status_code, response_body(resp))
         body = require_json_object(resp, "GET /v1/sessions/{session_id}/items")
-        data = body.get("data", [])
-        return data if isinstance(data, list) else []
+        raw_data = body.get("data", [])
+        data = raw_data if isinstance(raw_data, list) else []
+        first_id_raw = body.get("first_id")
+        last_id_raw = body.get("last_id")
+        return PaginatedList(
+            data=data,
+            has_more=bool(body.get("has_more", False)),
+            first_id=str(first_id_raw) if first_id_raw is not None else None,
+            last_id=str(last_id_raw) if last_id_raw is not None else None,
+        )
 
     async def child_sessions(
         self,
         session_id: str,
         *,
         limit: int = 100,
-    ) -> builtins.list[dict[str, Any]]:
+        after: str | None = None,
+    ) -> PaginatedList:
         """
         List sub-agent (child) sessions under a parent session.
 
@@ -900,19 +940,32 @@ class SessionsNamespace:
             e.g. ``"conv_parent123"``.
         :param limit: Maximum number of children to return
             (1-1000, default 100).
-        :returns: List of child-session summary dicts (empty when the
-            session has no sub-agents).
+        :param after: Cursor — return children after this session ID.
+        :returns: :class:`PaginatedList` with ``data``, ``has_more``,
+            ``first_id``, and ``last_id``.  Pass ``result.last_id`` as
+            ``after=`` to fetch the next page when ``result.has_more``.
         :raises OmnigentError: On non-2xx status (404 when the
             session does not exist).
         """
+        params: dict[str, str | int] = {"limit": limit}
+        if after is not None:
+            params["after"] = after
         resp = await self._http.get(
             f"{self._base}/v1/sessions/{session_id}/child_sessions",
-            params={"limit": limit},
+            params=params,
         )
         raise_for_status(resp.status_code, response_body(resp))
         body = require_json_object(resp, "GET /v1/sessions/{session_id}/child_sessions")
-        data = body.get("data", [])
-        return data if isinstance(data, list) else []
+        raw_data = body.get("data", [])
+        data = raw_data if isinstance(raw_data, list) else []
+        first_id_raw = body.get("first_id")
+        last_id_raw = body.get("last_id")
+        return PaginatedList(
+            data=data,
+            has_more=bool(body.get("has_more", False)),
+            first_id=str(first_id_raw) if first_id_raw is not None else None,
+            last_id=str(last_id_raw) if last_id_raw is not None else None,
+        )
 
     async def child_sessions_tree(
         self,
@@ -948,8 +1001,8 @@ class SessionsNamespace:
         while frontier and depth < max_depth:
             next_frontier: list[str] = []
             for parent_id in frontier:
-                rows = await self.child_sessions(parent_id, limit=limit)
-                for row in rows:
+                page = await self.child_sessions(parent_id, limit=limit)
+                for row in page.data:
                     if not isinstance(row, dict):
                         continue
                     sid = row.get("id")
