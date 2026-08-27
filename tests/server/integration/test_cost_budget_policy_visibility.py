@@ -31,12 +31,11 @@ Test structure:
   mounted; asserts the agent-spec ``cost_budget`` policy IS returned.
   Fails on the buggy build (empty list).
 
-- ``test_spec_cost_budget_policy_hard_blocks_with_no_prior_ask``
+- ``test_spec_cost_budget_hard_blocks_while_invisible_in_list``
   (symptom 2): uses the plain ``client`` fixture (same as existing
   cost-aware tests) so the policy engine is wired through the agent
   spec path; asserts the DENY fires immediately with no prior soft
-  warning, AND that the list endpoint returns empty (the two symptoms
-  together = the compound bug).
+  warning when the session's cumulative spend is already above the cap.
 """
 
 from __future__ import annotations
@@ -259,12 +258,9 @@ async def test_spec_cost_budget_hard_blocks_while_invisible_in_list(
     This test uses the plain ``client`` fixture (matching
     ``test_journey_cost_aware_e2e.py``) so the policy engine evaluates
     through the agent-spec path, confirming the DENY fires correctly.
-
-    - Step A asserts the DENY fires (policy IS enforced) — this would fail if
-      the spec path is broken.
-    - Step B asserts the list is empty (policy is NOT visible) — this is the
-      bug; a fix to symptom 1 would cause Step B to fail, which is expected
-      behavior after the fix.
+    Asserts the DENY fires (policy IS enforced) — confirms the spec
+    guardrail reaches the evaluate path even when it is invisible in the
+    policy list (symptom 1).
     """
     store = SqlAlchemyConversationStore(db_uri)
 

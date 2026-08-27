@@ -296,6 +296,7 @@ def create_session_policies_router(
                         loaded = agent_cache.load(
                             agent.id,
                             agent.bundle_location,
+                            expand_env=agent.session_id is None,
                         )
                         if loaded.spec.guardrails and loaded.spec.guardrails.policies:
                             spec_data = [
