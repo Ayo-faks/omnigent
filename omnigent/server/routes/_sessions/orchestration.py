@@ -9424,22 +9424,7 @@ async def _get_session_snapshot(
                     if conv.sub_agent_name:
                         _sub_spec = _find_spec_by_name(loaded.spec, conv.sub_agent_name)
                         if _sub_spec is None:
-                            # A recorded sub_agent_name that no longer resolves
-                            # in the spec tree leaves the PARENT spec as this
-                            # snapshot's source: name, model and context window
-                            # below are the parent's. This used to report the
-                            # child's recorded name and suppress model and
-                            # context window entirely.
-                            # ``_require_declared_subagent`` rejects undeclared
-                            # names at create time, so the common way here is a
-                            # name that DID resolve then and has since been
-                            # renamed or removed. It is not the only way: that
-                            # gate skips its check when no agent cache is
-                            # available and on any bundle load failure, so a
-                            # never-declared name can reach this branch too.
-                            # The runner logs an equivalent warning at its own
-                            # spec-swap sites; this one is the server's, and
-                            # they are worded to be greppable together.
+                            # Unresolvable sub_agent_name — fall back to parent spec.
                             _logger.warning(
                                 "Sub-agent %r for session %s did not resolve in the parent "
                                 "spec; snapshot reports the parent's identity. Likely a "

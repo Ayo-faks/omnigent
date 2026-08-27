@@ -133,13 +133,8 @@ def build_instructions_nullable(
 def raw_author_instructions(spec: AgentSpec) -> str | None:
     """Return ``AgentSpec.instructions`` verbatim, or ``None`` if empty/whitespace.
 
-    Used by startup-additive delivery channels (claude-native's
-    ``--append-system-prompt``, codex-native's ``developer_instructions``)
-    that must receive only the author's own text, never the fully
-    framework-composed per-turn string. Startup is not tied to any one turn,
-    while the composed string is assembled per conversation for the turn
-    about to run, so a startup channel bound to one turn's composition would
-    address every later turn with a value chosen for an earlier one.
+    Used by startup channels that must carry only the author's text, not a
+    per-turn composed string.
 
     :param spec: The resolved ``AgentSpec``.
     :returns: The original resolved instructions text, unstripped, or
