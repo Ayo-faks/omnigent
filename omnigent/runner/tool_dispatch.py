@@ -2350,24 +2350,32 @@ async def _execute_subagent_tool(
             # child session — child_session_id is unknown to us, but the
             # (parent, agent, title) triple is. Reconcile: look up the created
             # child by its expected title so we can reap its process cluster.
-            _leaked = await _find_existing_child_session(
-                server_client=server_client,
-                conversation_id=conversation_id,
-                agent=str(sub_agent_name),
-                title=str(session_name),
-            )
-            if isinstance(_leaked, dict):
-                _leaked_id = _leaked.get("id") or _leaked.get("session_id")
-                if isinstance(_leaked_id, str) and _leaked_id:
-                    await _teardown_failed_child(
-                        server_client,
-                        _leaked_id,
-                        created_child=True,
-                    )
+            # Guard the entire reconcile path against further transport errors
+            # (the server may still be wedged) so any failure still returns
+            # the descriptive string instead of propagating.
+            _reap_warning: str = ""
+            try:
+                _leaked = await _find_existing_child_session(
+                    server_client=server_client,
+                    conversation_id=conversation_id,
+                    agent=str(sub_agent_name),
+                    title=str(session_name),
+                )
+                if isinstance(_leaked, dict):
+                    _leaked_id = _leaked.get("id") or _leaked.get("session_id")
+                    if isinstance(_leaked_id, str) and _leaked_id:
+                        _reap_warning = await _teardown_failed_child(
+                            server_client,
+                            _leaked_id,
+                            created_child=True,
+                        ) or ""
+            except Exception:
+                pass
+            _suffix = f" {_reap_warning}" if _reap_warning else ""
             return (
                 f"Error: timed out waiting for child session create response "
                 f"({sub_agent_name!r} / {session_name!r}); the server may have "
-                "committed the session — reaping any orphaned cluster. "
+                f"committed the session — reaping any orphaned cluster.{_suffix} "
                 "Retry the same send to continue in a fresh child."
             )
         if resp is None or resp.status_code >= 400:
