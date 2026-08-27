@@ -177,6 +177,15 @@ def create_auth_router(
         # before the callback redeems it. Only meaningful when invites
         # are enabled; ignored otherwise.
         invite = request.query_params.get("invite") if _invites_enabled else None
+        # Forced re-authentication for the device-consent anti-phishing
+        # gate: reauth=1 tells the IdP to require the user to
+        # re-authenticate rather than reusing an existing session
+        # (OIDC Core 3.1.2.1 `prompt=login`, `max_age=0`).
+        # Not applicable to GitHub OAuth, which has no prompt parameter.
+        reauth = (
+            request.query_params.get("reauth") == "1"
+            and config.provider_type != "github"
+        )
 
         # Store state + code_verifier in a short-lived signed cookie.
         state_payload: dict[str, str | int] = {
@@ -192,7 +201,7 @@ def create_auth_router(
         state_jwt = jwt.encode(state_payload, config.cookie_secret, algorithm="HS256")
 
         # Build the authorization URL.
-        params = {
+        params: dict[str, str] = {
             "response_type": "code",
             "client_id": config.client_id,
             "redirect_uri": config.redirect_uri,
@@ -201,6 +210,11 @@ def create_auth_router(
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if reauth:
+            # Ask the IdP to force the user to re-enter credentials
+            # rather than silently reusing an existing IdP session.
+            params["prompt"] = "login"
+            params["max_age"] = "0"
         auth_url = config.authorization_endpoint + "?" + urlencode(params)
 
         response = RedirectResponse(url=auth_url, status_code=302)

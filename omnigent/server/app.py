@@ -2829,16 +2829,16 @@ def create_app(
             )
 
         # Device Authorization Grant (RFC 8628): opt-in, default-off via
-        # OMNIGENT_DEVICE_GRANT_ENABLED, and accounts-mode only (the
-        # in-browser consent flow needs the accounts login page). Wires
-        # the full /oauth/* surface including the token endpoint. See
+        # OMNIGENT_DEVICE_GRANT_ENABLED. Supported in accounts and oidc
+        # modes (both own a server-minted session cookie). Header mode has
+        # no server-mintable identity and is excluded. See
         # designs/DEVICE_AUTH.md.
         from omnigent.server.auth import env_var_is_truthy
 
         if (
             env_var_is_truthy("OMNIGENT_DEVICE_GRANT_ENABLED", default=False)
             and isinstance(auth_provider, UnifiedAuthProvider)
-            and auth_provider._source == "accounts"
+            and auth_provider._source in ("accounts", "oidc")
             and device_grant_store is not None
         ):
             from omnigent.server.routes.device_auth import create_device_auth_router

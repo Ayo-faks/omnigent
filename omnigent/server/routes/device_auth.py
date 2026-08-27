@@ -632,20 +632,22 @@ def create_device_auth_router(
 ) -> APIRouter:
     """Build the ``/oauth/*`` device-grant router.
 
-    :param auth_provider: The active provider. Must be ``accounts`` mode;
-        its cookie config supplies the HMAC signing key and public base URL.
+    :param auth_provider: The active provider. Must be ``accounts`` or
+        ``oidc`` mode; its cookie config supplies the HMAC signing key
+        and public base URL. Header mode has no server-mintable identity
+        and raises.
     :param device_grant_store: Persistence for device grants.
     :returns: APIRouter to mount at the app root.
     """
-    if auth_provider._source != "accounts":
-        raise RuntimeError(
-            f"create_device_auth_router requires accounts auth (got {auth_provider._source!r})"
-        )
-    cookie_config = auth_provider._accounts_config
-    assert cookie_config is not None, "accounts mode must have an accounts config"
-    cookie_secret = cookie_config.cookie_secret
-    base_url = cookie_config.base_url
-    provider_name = auth_provider._source
+    cookie_secret, provider_name = _resolve_signing_config(auth_provider)
+    if auth_provider._source == "accounts":
+        assert auth_provider._accounts_config is not None
+        _mode_cfg = auth_provider._accounts_config
+    else:
+        assert auth_provider._oidc_config is not None
+        _mode_cfg = auth_provider._oidc_config
+    base_url = _mode_cfg.base_url
+    session_cookie_name: str = _mode_cfg.session_cookie_name
 
     _client_secret_ok = _make_client_secret_gate()
     # Resolve grant max lifetime once at mount (not on every purge).
@@ -770,7 +772,7 @@ def create_device_auth_router(
         time). ``None`` when absent/invalid. Used to enforce that consent
         follows a login started FOR this device flow.
         """
-        token = request.cookies.get(cookie_config.session_cookie_name)
+        token = request.cookies.get(session_cookie_name)
         if not token:
             return None
         try:

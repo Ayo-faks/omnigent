@@ -31,19 +31,43 @@ _KEY = b"k" * 32
 # ── Router mount guard (unit) ─────────────────────────────────────
 
 
-@pytest.mark.parametrize("source", ["oidc", "header"])
-def test_router_factory_rejects_non_accounts_mode(source: str, tmp_path: Path) -> None:
-    """The device grant is accounts-mode only. OIDC delegates login to the IdP
-    (cli-ticket flow) and never uses these routes; header can't mint identity.
-    ``create_device_auth_router`` must refuse to build for either."""
+@pytest.mark.parametrize("source", ["header"])
+def test_router_factory_rejects_unsupported_mode(source: str, tmp_path: Path) -> None:
+    """Header mode has no server-mintable identity; ``create_device_auth_router``
+    must refuse to build for it.  (OIDC is now supported — see the positive test
+    ``test_router_factory_builds_for_oidc_mode`` below.)"""
     from types import SimpleNamespace
 
     from omnigent.server.routes.device_auth import create_device_auth_router
 
     provider = SimpleNamespace(_source=source)
     store = DeviceGrantStore(f"sqlite:///{tmp_path}/dg.db")
-    with pytest.raises(RuntimeError, match="accounts"):
+    with pytest.raises(RuntimeError):
         create_device_auth_router(provider, store)  # type: ignore[arg-type]
+
+
+def test_router_factory_builds_for_oidc_mode(tmp_path: Path) -> None:
+    """create_device_auth_router must succeed for oidc mode.
+
+    OIDC deployments now support the device-grant flow; the factory must
+    accept an oidc provider and build a mountable router.
+    """
+    from types import SimpleNamespace
+
+    from omnigent.server.routes.device_auth import create_device_auth_router
+    from fastapi import FastAPI
+
+    oidc_cfg = SimpleNamespace(
+        cookie_secret=_KEY,
+        base_url="https://omni.example.test",
+        session_cookie_name="__Host-omni_session",
+    )
+    provider = SimpleNamespace(_source="oidc", _oidc_config=oidc_cfg)
+    store = DeviceGrantStore(f"sqlite:///{tmp_path}/dg.db")
+    # Should not raise; result is a mountable APIRouter.
+    router = create_device_auth_router(provider, store)  # type: ignore[arg-type]
+    app = FastAPI()
+    app.include_router(router)
 
 
 # ── Store invariants (unit) ───────────────────────────────────────
