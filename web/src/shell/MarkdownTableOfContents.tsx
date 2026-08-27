@@ -1,4 +1,4 @@
-// Table of contents for markdown files, extracted from heading structure.
+// Table of contents for markdown files, extracted from rendered heading elements.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SearchIcon, XIcon } from "lucide-react";
@@ -11,36 +11,25 @@ interface TocItem {
 }
 
 /**
- * Extract headings from markdown content and generate anchor IDs matching
- * GitHub's slug generation (used by react-markdown with remark-gfm).
+ * Extract headings from the rendered markdown container. This reads the actual
+ * DOM elements with their rehype-slug-generated IDs, ensuring TOC anchors match
+ * what's actually rendered (including github-slugger's Unicode/emoji/inline-md
+ * handling and any clobberPrefix from rehype-sanitize).
  */
-function extractHeadings(markdown: string): TocItem[] {
+function extractHeadings(container: HTMLElement | null): TocItem[] {
+  if (!container) return [];
+
   const headings: TocItem[] = [];
-  const lines = markdown.split("\n");
-  const slugCounts = new Map<string, number>();
+  const headingElements = container.querySelectorAll("h1, h2, h3, h4, h5, h6");
 
-  for (const line of lines) {
-    const match = line.match(/^(#{1,6})\s+(.+)$/);
-    if (!match) continue;
+  for (const el of headingElements) {
+    const id = el.id;
+    if (!id) continue; // Skip headings without IDs
 
-    const level = match[1].length;
-    const text = match[2].trim();
+    const text = el.textContent?.trim() ?? "";
+    const level = parseInt(el.tagName[1], 10); // H1 -> 1, H2 -> 2, etc.
 
-    // Generate GitHub-compatible slug: lowercase, replace spaces with hyphens,
-    // remove non-alphanumeric (except hyphens), deduplicate consecutive hyphens.
-    let slug = text
-      .toLowerCase()
-      .replace(/\s+/g, "-")
-      .replace(/[^\w-]/g, "")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-
-    // Handle duplicates by appending -1, -2, etc. (GitHub's behavior).
-    const count = slugCounts.get(slug) ?? 0;
-    slugCounts.set(slug, count + 1);
-    if (count > 0) slug = `${slug}-${count}`;
-
-    headings.push({ id: slug, text, level });
+    headings.push({ id, text, level });
   }
 
   return headings;
@@ -62,10 +51,31 @@ export function MarkdownTableOfContents({
   open = true,
   onClose,
 }: MarkdownTableOfContentsProps) {
-  const headings = useMemo(() => extractHeadings(content), [content]);
+  const [headings, setHeadings] = useState<TocItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Extract headings from rendered DOM after markdown renders
+  useEffect(() => {
+    const container = containerRef?.current;
+    if (!container) {
+      setHeadings([]);
+      return;
+    }
+
+    // Wait for markdown to render, then extract headings from the DOM
+    const updateHeadings = () => {
+      setHeadings(extractHeadings(container));
+    };
+
+    // Extract immediately and set up a mutation observer to catch late renders
+    updateHeadings();
+    const observer = new MutationObserver(updateHeadings);
+    observer.observe(container, { childList: true, subtree: true });
+
+    return () => observer.disconnect();
+  }, [containerRef, content]);
 
   // Track which heading is currently visible at the top of the viewport.
   useEffect(() => {
@@ -129,84 +139,71 @@ export function MarkdownTableOfContents({
   };
 
   return (
-    <>
-      {/* Backdrop */}
-      {onClose && (
-        <div
-          className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
-          onClick={onClose}
-          aria-hidden="true"
-        />
+    <nav
+      className={cn(
+        "sticky top-0 h-screen border-l border-border bg-card flex flex-col overflow-hidden",
       )}
-
-      {/* TOC Panel */}
-      <nav
-        className={cn(
-          "fixed top-0 right-0 bottom-0 z-50 w-80 bg-card border-l border-border flex flex-col",
-          "shadow-xl",
-        )}
-        aria-label="Table of contents"
-      >
-        {/* Header with search */}
-        <div className="shrink-0 border-b border-border p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-foreground">On this page</h2>
-            {onClose && (
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded p-1 hover:bg-muted transition-colors"
-                aria-label="Close table of contents"
-              >
-                <XIcon className="size-4" />
-              </button>
-            )}
-          </div>
-
-          {/* Filter input */}
-          <div className="relative">
-            <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-              placeholder="Filter headings"
-              className="w-full rounded-md border border-border bg-background pl-9 pr-3 py-1.5 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            />
-          </div>
-        </div>
-
-        {/* Scrollable headings list */}
-        <div className="flex-1 overflow-y-auto px-4 py-2">
-          {filteredHeadings.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">No matching headings</p>
-          ) : (
-            <ul className="space-y-1.5 text-sm">
-              {filteredHeadings.map((heading) => (
-                <li
-                  key={heading.id}
-                  style={{ paddingLeft: `${(heading.level - 1) * 0.75}rem` }}
-                  className="leading-snug"
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleClick(heading.id)}
-                    className={cn(
-                      "block w-full text-left transition-colors hover:text-foreground rounded px-2 py-1",
-                      activeId === heading.id
-                        ? "font-medium text-foreground bg-muted"
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    {heading.text}
-                  </button>
-                </li>
-              ))}
-            </ul>
+      aria-label="Table of contents"
+    >
+      {/* Header with search */}
+      <div className="shrink-0 border-b border-border p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-foreground">On this page</h2>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded p-1 hover:bg-muted transition-colors"
+              aria-label="Close table of contents"
+            >
+              <XIcon className="size-4" />
+            </button>
           )}
         </div>
-      </nav>
-    </>
+
+        {/* Filter input */}
+        <div className="relative">
+          <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="Filter headings"
+            className="w-full rounded-md border border-border bg-background pl-9 pr-3 py-1.5 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+          />
+        </div>
+      </div>
+
+      {/* Scrollable headings list */}
+      <div className="flex-1 overflow-y-auto px-4 py-2">
+        {filteredHeadings.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">No matching headings</p>
+        ) : (
+          <ul className="space-y-1.5 text-sm">
+            {filteredHeadings.map((heading) => (
+              <li
+                key={heading.id}
+                style={{ paddingLeft: `${(heading.level - 1) * 0.75}rem` }}
+                className="leading-snug"
+              >
+                <button
+                  type="button"
+                  onClick={() => handleClick(heading.id)}
+                  className={cn(
+                    "block w-full text-left transition-colors hover:text-foreground rounded px-2 py-1",
+                    activeId === heading.id
+                      ? "font-medium text-foreground bg-muted"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {heading.text}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </nav>
   );
 }

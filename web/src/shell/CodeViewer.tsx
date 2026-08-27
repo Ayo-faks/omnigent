@@ -118,6 +118,8 @@ const ALERT_TITLE_CLASS = /^markdown-alert-title$/;
 // title) only for those exact tokens. Everything else — <script>, event
 // handlers, javascript: URLs, arbitrary classes — is still stripped, so raw
 // HTML in a .md file stays safe to render inline.
+// Set clobberPrefix to empty string so rehype-slug's IDs are preserved without
+// the user-content- prefix, matching the TOC's slug algorithm.
 const MARKDOWN_SANITIZE_SCHEMA = {
   ...defaultSchema,
   attributes: {
@@ -125,6 +127,7 @@ const MARKDOWN_SANITIZE_SCHEMA = {
     div: [...(defaultSchema.attributes?.div ?? []), ["className", ALERT_CLASS]],
     p: [...(defaultSchema.attributes?.p ?? []), ["className", ALERT_TITLE_CLASS]],
   },
+  clobberPrefix: "",
 };
 
 // Markdown files routinely embed raw HTML that GitHub renders — <details>,
@@ -196,12 +199,12 @@ function MarkdownPreview({
   onTocOpenChange: (open: boolean) => void;
 }) {
   return (
-    <>
+    <div className="flex h-full">
       <div
         ref={rootRef}
         data-preview-scroll
         onScroll={onScroll}
-        className="markdown-preview px-6 py-4 overflow-auto h-full prose dark:prose-invert prose-sm max-w-none"
+        className="markdown-preview flex-1 px-6 py-4 overflow-auto prose dark:prose-invert prose-sm max-w-none"
       >
         <ReactMarkdown
           remarkPlugins={MARKDOWN_REMARK_PLUGINS}
@@ -211,13 +214,17 @@ function MarkdownPreview({
           {content}
         </ReactMarkdown>
       </div>
-      <MarkdownTableOfContents
-        content={content}
-        containerRef={rootRef}
-        open={tocOpen}
-        onClose={() => onTocOpenChange(false)}
-      />
-    </>
+      {tocOpen && (
+        <aside className="w-64 shrink-0">
+          <MarkdownTableOfContents
+            content={content}
+            containerRef={rootRef}
+            open={tocOpen}
+            onClose={() => onTocOpenChange(false)}
+          />
+        </aside>
+      )}
+    </div>
   );
 }
 
