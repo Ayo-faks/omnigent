@@ -10,6 +10,8 @@ view. Spec policies have ``id=None`` and cannot be patched or deleted.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import uuid
 from typing import Any
@@ -43,6 +45,9 @@ from omnigent.telemetry import emit as _tel_emit
 from omnigent.telemetry.events import PolicyDeletedEvent as _TelPolicyDeletedEvent
 from omnigent.telemetry.events import PolicyRegisteredEvent as _TelPolicyRegisteredEvent
 from omnigent.telemetry.installation_id import get_installation_id as _get_installation_id
+
+
+_logger = logging.getLogger(__name__)
 
 
 def _generate_policy_id() -> str:
@@ -293,7 +298,11 @@ def create_session_policies_router(
                 agent = agent_store.get(conv.agent_id)
                 if agent is not None:
                     try:
-                        loaded = agent_cache.load(
+                        # agent_cache.load may download/extract a bundle on
+                        # cache miss; run it in a thread to avoid stalling the
+                        # event loop.
+                        loaded = await asyncio.to_thread(
+                            agent_cache.load,
                             agent.id,
                             agent.bundle_location,
                             expand_env=agent.session_id is None,
@@ -304,7 +313,11 @@ def create_session_policies_router(
                                 for p in loaded.spec.guardrails.policies
                             ]
                     except Exception:  # noqa: BLE001
-                        pass
+                        _logger.debug(
+                            "Failed to load spec policies for session %s",
+                            session_id,
+                            exc_info=True,
+                        )
         return {"object": "list", "data": admin_data + session_data + spec_data}
 
     @router.get("/sessions/{session_id}/policies/{policy_id}")
