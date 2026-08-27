@@ -101,6 +101,9 @@ def test_serving_classifier_uses_online_chat_endpoint() -> None:
             "type": "Bug",
             "impact": "medium",
             "area_keys": [],
+            "evidence_kind": "observed_intermittent",
+            "information_status": "sufficient",
+            "missing_information": [],
             "reasoning": "Affects a real workflow.",
         }
     )
