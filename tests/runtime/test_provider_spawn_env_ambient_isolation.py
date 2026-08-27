@@ -177,12 +177,16 @@ def _run_affected(tests: tuple[str, ...], *, inject: str) -> int:
         bundled plugin reads it and patches the corresponding ambient helper.
     """
     node_ids = [f"{_AFFECTED_MODULE}::{name}" for name in tests]
-    env = dict(os.environ)
+    env = os.environ.copy()
     env["OMNI_REPRO_INJECT"] = inject
     # Neutralize ambient vendor keys so the ONLY variable across the two runs
     # is the injected signal under test, not a stray env credential.
-    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "DATABRICKS_TOKEN"):
+    # (The subprocess's conftest.py fixture further clears these in-process.)
+    from omnigent.onboarding.providers import PROVIDER_ENV_VARS  # noqa: PLC0415
+
+    for var in PROVIDER_ENV_VARS.values():
         env.pop(var, None)
+        env.pop(f"OMNIGENT_{var}", None)
     proc = subprocess.run(
         [
             sys.executable,
