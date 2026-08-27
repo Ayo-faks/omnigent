@@ -152,7 +152,7 @@ export function MarkdownTableOfContents({
 
     // Scroll to position the heading near the top with a small margin
     container.scrollTo({ top: offset - 16, behavior: "smooth" });
-    onClose?.();
+    // Keep TOC open after clicking to allow quick navigation between sections
   };
 
   return (

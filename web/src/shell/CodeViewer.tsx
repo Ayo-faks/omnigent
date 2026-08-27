@@ -127,14 +127,7 @@ const MARKDOWN_SANITIZE_SCHEMA = {
     ...defaultSchema.attributes,
     div: [...(defaultSchema.attributes?.div ?? []), ["className", ALERT_CLASS]],
     p: [...(defaultSchema.attributes?.p ?? []), ["className", ALERT_TITLE_CLASS]],
-    img: [
-      ...(defaultSchema.attributes?.img ?? []),
-      "alt",
-      "width",
-      "height",
-      "align",
-      "valign",
-    ],
+    img: [...(defaultSchema.attributes?.img ?? []), "alt", "width", "height", "align", "valign"],
   },
   clobberPrefix: "",
 };
