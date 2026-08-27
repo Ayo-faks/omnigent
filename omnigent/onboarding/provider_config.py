@@ -771,8 +771,7 @@ def _parse_family(provider_name: str, family_name: str, raw: dict[str, object]) 
     if context_window_raw is not None:
         if not isinstance(context_window_raw, int) or context_window_raw <= 0:
             raise OmnigentError(
-                f"{prefix}.context_window must be a positive integer, "
-                f"got {context_window_raw!r}.",
+                f"{prefix}.context_window must be a positive integer, got {context_window_raw!r}.",
                 code=ErrorCode.INVALID_INPUT,
             )
         context_window = context_window_raw
