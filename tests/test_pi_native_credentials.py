@@ -1866,6 +1866,7 @@ def test_default_claude_model_from_picks_by_tier_then_newest() -> None:
 # Tests for gateway provider metadata propagation (context/maxTokens/reasoning)
 # ---------------------------------------------------------------------------
 
+
 def test_gateway_provider_config_context_window_flows_to_models_json() -> None:
     """context_window in FamilyConfig propagates to models.json contextWindow.
 
