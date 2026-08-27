@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import dataclasses
 import json
 import logging
@@ -350,6 +351,7 @@ async def test_launch_adapters_forward_expected_kwarg_subset(
     adapter = native_dispatch.resolve_hook_for_key(
         harness.removesuffix("-native"), "auto_create_terminal"
     )
+    assert adapter is not None
     ctx = _launch_ctx()
     await adapter(ctx)
 
@@ -524,14 +526,15 @@ async def test_launch_native_terminal_resolves_spec_lazily_only_on_create(
 
     seen_spec: dict[str, Any] = {}
     resolver_calls = {"n": 0}
+    spec = AgentSpec(spec_version=1, name="resolved-spec")
 
     async def _fake_launch_pi(ctx: NativeLaunchContext) -> object:
         seen_spec["spec"] = ctx.agent_spec
         return object()
 
-    async def _resolver() -> str:
+    async def _resolver() -> AgentSpec:
         resolver_calls["n"] += 1
-        return "resolved-spec"
+        return spec
 
     monkeypatch.setattr("omnigent.runner.native._launch_pi", _fake_launch_pi)
 
@@ -540,7 +543,7 @@ async def test_launch_native_terminal_resolves_spec_lazily_only_on_create(
         "pi-native", _launch_ctx(), ensure_locks={}, resolve_agent_spec=_resolver
     )
     assert resolver_calls["n"] == 1
-    assert seen_spec["spec"] == "resolved-spec"
+    assert seen_spec["spec"] is spec
 
     # Existing terminal: resolver must NOT run.
     await _launch_native_terminal(
@@ -1550,6 +1553,349 @@ async def test_sessions_native_clears_in_flight_on_context_overflow_live_stream(
         f"in-flight marker never cleared on live-stream context overflow "
         f"(got {pm.cleared_in_flight}) -- the reaper would skip this "
         f"conversation's harness forever"
+    )
+
+
+class _SequentialHarnessClient(_ScriptedHarnessClient):
+    """Harness client that returns a different scripted stream per turn."""
+
+    def __init__(self, frame_batches: list[list[str]]) -> None:
+        """Store one frame batch per expected harness stream call."""
+        super().__init__([])
+        self._frame_batches = list(frame_batches)
+
+    def stream(self, method: str, url: str, *, json: dict[str, Any], timeout: Any) -> Any:
+        """Capture body and stream the next scripted frame batch."""
+        del method, url, timeout
+        self.posted_bodies.append(copy.deepcopy(json))
+        frames = self._frame_batches.pop(0) if self._frame_batches else []
+
+        class _StreamCtx:
+            status_code = 200
+
+            async def __aenter__(self) -> _ScriptedHarnessClient._StreamHandle:
+                return _ScriptedHarnessClient._StreamHandle(frames, None)
+
+            async def __aexit__(self, *_: Any) -> None:
+                return None
+
+        return _StreamCtx()
+
+
+class _ContextOverflowRetryServerClient:
+    """Server client that swaps history after runner-triggered compaction."""
+
+    def __init__(
+        self,
+        *,
+        before_items: list[dict[str, Any]],
+        after_items: list[dict[str, Any]],
+    ) -> None:
+        """Capture requests and serve compacted history after compact POST."""
+        self.before_items = before_items
+        self.after_items = after_items
+        self.compacted = False
+        self.get_calls: list[tuple[str, dict[str, Any]]] = []
+        self.post_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Response:
+        """Minimal HTTP response for runner tests."""
+
+        def __init__(self, status_code: int = 200, payload: dict[str, Any] | None = None) -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers: dict[str, str] = {}
+            self.content = b"{}"
+            self.text = "{}"
+
+        def json(self) -> dict[str, Any]:
+            """Return the configured JSON payload."""
+            return self._payload
+
+        def raise_for_status(self) -> None:
+            """No-op for successful fake responses."""
+
+    async def get(self, url: str, **kwargs: Any) -> _Response:
+        """Return current history for item loads; otherwise return empty 200."""
+        self.get_calls.append((url, kwargs))
+        if url.endswith("/items"):
+            items = self.after_items if self.compacted else self.before_items
+            return self._Response(payload={"data": items, "has_more": False})
+        return self._Response()
+
+    async def post(self, url: str, **kwargs: Any) -> _Response:
+        """Record compaction requests and mark future history as compacted."""
+        self.post_calls.append((url, kwargs))
+        payload = kwargs.get("json")
+        if (
+            url.endswith("/events")
+            and isinstance(payload, dict)
+            and payload.get("type") == "compact"
+        ):
+            self.compacted = True
+        return self._Response(status_code=202)
+
+
+async def _wait_until(predicate: Any, *, timeout_s: float = 5.0) -> None:
+    """Wait until *predicate* returns truthy, failing if it never does."""
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("condition was not met before timeout")
+        await asyncio.sleep(0.05)
+
+
+def _drain_runner_events(app: Any, session_id: str) -> list[dict[str, Any]]:
+    """Collect queued runner events without opening an SSE stream."""
+    queue = app.state.session_event_queues.get(session_id)
+    events: list[dict[str, Any]] = []
+    if queue is None:
+        return events
+    while not queue.empty():
+        item = queue.get_nowait()
+        if item is not None:
+            events.append(item)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_sessions_native_context_overflow_compacts_and_retries() -> None:
+    """A background SDK turn compacts and retries once after context overflow."""
+    old_history_text = "oversized history before compaction"
+    compacted_summary_text = "short summary after compaction"
+    conv_id = "e583be6f6f0f4f22ad9f85a4be356c24"
+    before_items = [
+        {
+            "id": "item_old_user",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": old_history_text}],
+        }
+    ]
+    after_items = [
+        {
+            "id": "item_compact",
+            "type": "compaction",
+            "compacted_messages": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": compacted_summary_text}],
+                }
+            ],
+        },
+        {
+            "id": "item_current_user",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "continue"}],
+        },
+    ]
+    harness_client = _SequentialHarnessClient(
+        [
+            [
+                _sse({"type": "response.created", "response": {"id": "resp_overflow"}}),
+                _sse(
+                    {
+                        "type": "response.failed",
+                        "error": {
+                            "message": (
+                                "context_length_exceeded: 5000 tokens > 4096 "
+                                "maximum context length"
+                            ),
+                            "code": "context_length_exceeded",
+                        },
+                    }
+                ),
+            ],
+            [
+                _sse({"type": "response.created", "response": {"id": "resp_retry"}}),
+                _sse({"type": "response.output_text.delta", "delta": "recovered"}),
+                _sse({"type": "response.completed", "response": {"id": "resp_retry"}}),
+            ],
+        ]
+    )
+    pm = _FakeProcessManager(harness_client)
+    server_client = _ContextOverflowRetryServerClient(
+        before_items=before_items,
+        after_items=after_items,
+    )
+    spec = AgentSpec(
+        spec_version=1,
+        name="plain-agent",
+        executor=ExecutorSpec(
+            type="omnigent",
+            model="databricks-gpt-5-4-mini",
+            config={"harness": "codex"},
+        ),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        del agent_id, session_id
+        return spec
+
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=server_client,  # type: ignore[arg-type]
+    )
+    async with _runner_client(app) as client:
+        resp = await client.post(
+            f"/v1/sessions/{conv_id}/events",
+            json={
+                "type": "message",
+                "role": "user",
+                "agent_id": "9ec9ab9af477e4cf897ae37c4a98ed05",
+                "model": "plain-agent",
+                "content": [{"type": "input_text", "text": "continue"}],
+                "harness": "codex",
+            },
+        )
+        assert resp.status_code == 202
+        await _wait_until(lambda: len(harness_client.posted_bodies) == 2)
+        await _wait_until(lambda: len(pm.cleared_in_flight) >= 2)
+
+    compact_posts = [
+        body
+        for url, kwargs in server_client.post_calls
+        if url == f"/v1/sessions/{conv_id}/events"
+        for body in [kwargs.get("json")]
+    ]
+    assert compact_posts == [
+        {
+            "type": "compact",
+            "data": {
+                "context_overflow_retry": True,
+                "model": "databricks-gpt-5-4-mini",
+            },
+        }
+    ]
+    assert len(harness_client.posted_bodies) == 2
+    first_content = harness_client.posted_bodies[0]["content"]
+    retry_content = harness_client.posted_bodies[1]["content"]
+    assert first_content == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": old_history_text}],
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "continue"}],
+        },
+    ]
+    assert retry_content == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": compacted_summary_text}],
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "continue"}],
+        },
+    ]
+    events = _drain_runner_events(app, conv_id)
+    assert [event.get("type") for event in events].count("response.failed") == 0
+    assert any(event.get("type") == "response.completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_sessions_native_context_overflow_retry_fails_once() -> None:
+    """A second overflow after compaction surfaces one context-length failure."""
+    conv_id = "af06bdc9a1374ffcab21f911c19dd48d"
+    before_items = [
+        {
+            "id": "item_old_user",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "oversized history"}],
+        }
+    ]
+    after_items = [
+        {
+            "id": "item_compact",
+            "type": "compaction",
+            "summary": "still too large",
+        }
+    ]
+    overflow_frames = [
+        _sse({"type": "response.created", "response": {"id": "resp_overflow"}}),
+        _sse(
+            {
+                "type": "response.failed",
+                "error": {
+                    "message": (
+                        "context_length_exceeded: 5000 tokens > 4096 maximum context length"
+                    ),
+                    "code": "context_length_exceeded",
+                },
+            }
+        ),
+    ]
+    harness_client = _SequentialHarnessClient([overflow_frames, overflow_frames])
+    pm = _FakeProcessManager(harness_client)
+    server_client = _ContextOverflowRetryServerClient(
+        before_items=before_items,
+        after_items=after_items,
+    )
+    spec = AgentSpec(
+        spec_version=1,
+        name="plain-agent",
+        executor=ExecutorSpec(
+            type="omnigent",
+            model="databricks-gpt-5-4-mini",
+            config={"harness": "codex"},
+        ),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        del agent_id, session_id
+        return spec
+
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=server_client,  # type: ignore[arg-type]
+    )
+    async with _runner_client(app) as client:
+        resp = await client.post(
+            f"/v1/sessions/{conv_id}/events",
+            json={
+                "type": "message",
+                "role": "user",
+                "agent_id": "9ec9ab9af477e4cf897ae37c4a98ed05",
+                "model": "plain-agent",
+                "content": [{"type": "input_text", "text": "continue"}],
+                "harness": "codex",
+            },
+        )
+        assert resp.status_code == 202
+        await _wait_until(lambda: len(harness_client.posted_bodies) == 2)
+        await _wait_until(
+            lambda: any(
+                event.get("type") == "session.status" and event.get("status") == "failed"
+                for event in list(app.state.session_event_queues[conv_id]._queue)
+                if event is not None
+            )
+        )
+
+    events = _drain_runner_events(app, conv_id)
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["error"]["code"] == "context_length_exceeded"
+    assert (
+        len(
+            [
+                kwargs
+                for url, kwargs in server_client.post_calls
+                if url == f"/v1/sessions/{conv_id}/events"
+                and (kwargs.get("json") or {}).get("type") == "compact"
+            ]
+        )
+        == 1
     )
 
 

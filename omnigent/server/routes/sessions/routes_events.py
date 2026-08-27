@@ -1034,10 +1034,23 @@ def register_events_routes(
             # drives a delivery-verified slash-command inject, and a timeout
             # here falls through to AP-side compaction on top of the
             # terminal's own still-running /compact.
+            raw_compact_model = body.data.get("model")
+            compact_model = (
+                raw_compact_model.strip()
+                if isinstance(raw_compact_model, str) and raw_compact_model.strip()
+                else None
+            )
+            compact_data = {"model": compact_model} if compact_model is not None else {}
+            compact_runner_body: dict[str, Any] = {"type": _COMPACT_TYPE}
+            if compact_data:
+                compact_runner_body["data"] = compact_data
+            allow_running_compact = body.data.get(
+                "context_overflow_retry"
+            ) is True and _has_runner_created_by_authority(request, conv)
             runner_result = await _forward_session_change_to_runner(
                 session_id,
                 runner_router,
-                {"type": _COMPACT_TYPE},
+                compact_runner_body,
                 timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
             )
             if runner_result is not None and runner_result.status_code == 200:
@@ -1067,7 +1080,7 @@ def register_events_routes(
                     runner_result = await _forward_session_change_to_runner(
                         session_id,
                         runner_router,
-                        {"type": _COMPACT_TYPE},
+                        compact_runner_body,
                         timeout_s=_TUI_INJECT_FORWARD_TIMEOUT_S,
                     )
                     if runner_result is not None and runner_result.status_code == 200:
@@ -1093,6 +1106,8 @@ def register_events_routes(
                 conv,
                 agent_store,
                 agent_cache,
+                model=compact_model,
+                allow_running=allow_running_compact,
             )
             return {"queued": False}
         if body.type == "compaction":
@@ -1860,6 +1875,7 @@ def register_events_routes(
         # asyncio.to_thread wrapper covers the rare cold-cache path
         # where the bundle is extracted from disk for the first time.
         _has_mcp_servers = False
+        _agent_spec = None
         if _agent is not None and agent_cache is not None and _agent.bundle_location:
             try:
                 _loaded_agent = await asyncio.to_thread(
@@ -1867,7 +1883,8 @@ def register_events_routes(
                     _agent.id,
                     _agent.bundle_location,
                 )
-                _has_mcp_servers = bool(_loaded_agent.spec.mcp_servers)
+                _agent_spec = _loaded_agent.spec
+                _has_mcp_servers = bool(_agent_spec.mcp_servers)
             except Exception:
                 _logger.warning(
                     "Failed to load agent spec for MCP hint for session=%s",
@@ -1931,6 +1948,7 @@ def register_events_routes(
             # Read only for the gateway-backing check that decides which router
             # serves this turn; absent, routing keeps its default posture.
             host_store=getattr(request.app.state, "host_store", None),
+            agent_spec=_agent_spec,
         )
         if pending_background_title is not None:
             pending_background_title.schedule()

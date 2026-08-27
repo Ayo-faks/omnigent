@@ -6969,6 +6969,9 @@ async def _run_compact_locked(
     conv: Conversation,
     agent_store: AgentStore,
     agent_cache: AgentCache | None,
+    *,
+    model: str | None = None,
+    allow_running: bool = False,
 ) -> None:
     """
     Run explicit compaction while holding the per-session compact lock.
@@ -6977,6 +6980,10 @@ async def _run_compact_locked(
     :param conv: Conversation row.
     :param agent_store: Agent store for spec lookup.
     :param agent_cache: Agent cache for bundle loading.
+    :param model: Optional effective turn model supplied by the runner or
+        caller. Used when the spec does not declare a server-visible model.
+    :param allow_running: Permit compaction while the session is marked
+        running. Reserved for runner-initiated context-overflow recovery.
     """
     lock = _compact_lock(session_id)
     async with lock:
@@ -6988,7 +6995,7 @@ async def _run_compact_locked(
                 code=ErrorCode.INTERNAL_ERROR,
             )
         # Recheck after acquiring — a turn may have started while waiting.
-        if _session_status_cache.get(session_id) in ("running", "waiting"):
+        if not allow_running and _session_status_cache.get(session_id) in ("running", "waiting"):
             raise OmnigentError(
                 "Cannot compact while a turn is running; cancel or wait for it to finish first",
                 code=ErrorCode.CONFLICT,
@@ -7003,12 +7010,20 @@ async def _run_compact_locked(
             agent.id, agent.bundle_location, expand_env=agent.session_id is None
         )
         spec = loaded.spec
+        effective_model = model or conv.model_override
         if spec.llm is not None:
             llm_config = spec.llm
+            model_override = effective_model
         elif spec.executor.model is not None:
             from omnigent.spec.types import LLMConfig
 
             llm_config = LLMConfig(model=spec.executor.model, connection=spec.executor.connection)
+            model_override = effective_model
+        elif effective_model is not None:
+            from omnigent.spec.types import LLMConfig
+
+            llm_config = LLMConfig(model=effective_model, connection=spec.executor.connection)
+            model_override = None
         else:
             harness = spec.executor.harness_kind
             raise OmnigentError(
@@ -7034,6 +7049,7 @@ async def _run_compact_locked(
                 spec=spec,
                 llm_config=llm_config,
                 tool_schemas=[],
+                model_override=model_override,
                 preserve_recent_window=1,
             )
         except Exception as exc:

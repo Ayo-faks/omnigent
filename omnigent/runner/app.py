@@ -1121,6 +1121,8 @@ class TurnDispatch:
     agent_version: int | None = None
     spawn_env: dict[str, str] | None = None
     client_side_tool_names: frozenset[str] = frozenset()
+    compaction_model: str | None = None
+    context_overflow_retry_attempted: bool = False
 
 
 def _wrap_as_message_event(body: _JsonObject) -> _JsonObject:
@@ -6530,12 +6532,23 @@ def create_runner_app(
         _model_override = msg_body.get("model_override")
         if isinstance(_model_override, str) and _model_override:
             harness_body["model_override"] = _model_override
+            ctx.compaction_model = _model_override
             _logger.info(
                 "_run_turn_bg: conv=%s received model_override=%s (forwarding to harness)",
                 conv,
                 _model_override,
                 extra={"session_id": conv},
             )
+        elif cached_spec is not None:
+            if cached_spec.llm is not None:
+                ctx.compaction_model = cached_spec.llm.model
+            elif cached_spec.executor.model is not None:
+                ctx.compaction_model = cached_spec.executor.model
+            elif spawn_env is not None and harness_name is not None:
+                model_key = _HARNESS_MODEL_ENV_KEY.get(harness_name)
+                env_model = spawn_env.get(model_key) if model_key is not None else None
+                if env_model:
+                    ctx.compaction_model = env_model
         # Resolve the effort for this turn — an explicit per-event value, else
         # the session's remembered one — then deliver only what this harness can
         # accept. The persisted effort is validated at create against the union
@@ -6802,6 +6815,46 @@ def create_runner_app(
                     "message": f"background turn drain failed: {exc}",
                 },
             )
+
+    async def _compact_after_context_overflow(
+        conv_id: str,
+        dispatch: TurnDispatch,
+    ) -> bool:
+        """
+        Ask the AP server to compact after a harness context overflow.
+
+        :param conv_id: Session/conversation identifier.
+        :param dispatch: Current turn dispatch state.
+        :returns: ``True`` when compaction completed and history was reloaded.
+        """
+        data: _JsonObject = {"context_overflow_retry": True}
+        if dispatch.compaction_model:
+            data["model"] = dispatch.compaction_model
+        try:
+            resp = await server_client.post(
+                f"/v1/sessions/{conv_id}/events",
+                json={"type": "compact", "data": data},
+                timeout=120.0,
+            )
+        except (httpx.HTTPError, RuntimeError):
+            _logger.warning(
+                "Context-overflow compaction request failed for session=%s",
+                conv_id,
+                exc_info=True,
+                extra={"session_id": conv_id},
+            )
+            return False
+        if resp.status_code >= 400:
+            _logger.warning(
+                "Context-overflow compaction rejected for session=%s status=%s body=%s",
+                conv_id,
+                resp.status_code,
+                _response_body_preview(resp),
+                extra={"session_id": conv_id},
+            )
+            return False
+        _session_histories[conv_id] = await _load_history_as_input(conv_id)
+        return True
 
     async def _stream_message_to_harness(
         body: _JsonObject,
@@ -7412,6 +7465,29 @@ def create_runner_app(
                     )
 
             except _ContextWindowOverflow as overflow:
+                if (
+                    dispatch is not None
+                    and not dispatch.context_overflow_retry_attempted
+                    and server_client is not None
+                ):
+                    dispatch.context_overflow_retry_attempted = True
+                    _release_live_turn_markers(conv_id)
+                    if await _compact_after_context_overflow(conv_id, dispatch):
+                        body["content"] = _session_histories.get(conv_id, [])
+                        retry_response = await _stream_message_to_harness(
+                            body,
+                            conv_id,
+                            dispatch=dispatch,
+                        )
+                        if isinstance(retry_response, StreamingResponse):
+                            async for retry_chunk in retry_response.body_iterator:
+                                if isinstance(retry_chunk, str):
+                                    yield retry_chunk.encode("utf-8")
+                                elif isinstance(retry_chunk, memoryview):
+                                    yield retry_chunk.tobytes()
+                                else:
+                                    yield retry_chunk
+                            return
                 _error = {
                     "code": "context_length_exceeded",
                     "message": (
@@ -7426,7 +7502,7 @@ def create_runner_app(
                     "error": _error,
                 }
                 _publish_event(conv_id, _overflow_fail)
-                _on_proxy_stream_end(conv_id, error=_error, owner_response_id=_response_id)
+                _on_proxy_stream_end(conv_id, error=_error)
                 yield _response_failed_event(_error)
 
             except (httpx.HTTPError, RuntimeError) as exc:

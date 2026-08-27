@@ -91,7 +91,13 @@ from omnigent.runtime.policies.builder import (
     load_session_usage,
 )
 from omnigent.runtime.policies.engine import PolicyEngine
-from omnigent.runtime.workflow import _find_spec_by_name
+from omnigent.runtime.workflow import (
+    _CompactionState,
+    _find_spec_by_name,
+    _load_initial_history,
+    _prepare_messages,
+    count_tokens,
+)
 from omnigent.server import session_live_state, shutdown_state
 from omnigent.server._elicitation_registry import (
     _harness_elicitation_owners,
@@ -331,6 +337,7 @@ from omnigent.session_lifecycle import (
 )
 from omnigent.spec.types import (
     AgentSpec,
+    LLMConfig,
     Phase,
     PolicyAction,
 )
@@ -4688,6 +4695,119 @@ def _runner_reject_detail(response: httpx.Response) -> str:
     return f"{code}: {detail}" if code else detail
 
 
+def _compaction_llm_config_for_turn(
+    spec: AgentSpec,
+    *,
+    model_override: str | None,
+) -> tuple[LLMConfig | None, str | None]:
+    """
+    Resolve the LLM config and effective override used for turn compaction.
+
+    :param spec: Agent spec bound to the session.
+    :param model_override: Per-event or persisted session model override.
+    :returns: ``(llm_config, model_override_for_workflow)``. The second value
+        is passed to ``compact_conversation_now`` when the base config still
+        needs the override applied.
+    """
+    if spec.llm is not None:
+        return spec.llm, model_override
+    if spec.executor.model is not None:
+        return (
+            LLMConfig(model=spec.executor.model, connection=spec.executor.connection),
+            model_override,
+        )
+    if model_override is not None:
+        return LLMConfig(model=model_override, connection=spec.executor.connection), None
+    return None, None
+
+
+async def _maybe_compact_before_runner_turn(
+    session_id: str,
+    body: SessionEventInput,
+    conversation_store: ConversationStore,
+    spec: AgentSpec | None,
+    *,
+    model_override: str | None,
+) -> None:
+    """
+    Proactively compact a non-native user turn before it reaches the runner.
+
+    The message has already been persisted but no ``session.status=running``
+    edge has been published yet, so server-side compaction can safely summarize
+    history and the runner's cold-history load will replay the compacted view.
+
+    :param session_id: Conversation being dispatched.
+    :param body: Client event that starts the runner turn.
+    :param conversation_store: Store containing the just-persisted item.
+    :param spec: Resolved agent spec, or ``None`` when unavailable.
+    :param model_override: Effective turn model override after routing.
+    """
+    if spec is None or body.type != "message" or body.data.get("role") != "user":
+        return
+    llm_config, workflow_model_override = _compaction_llm_config_for_turn(
+        spec,
+        model_override=model_override,
+    )
+    if llm_config is None:
+        return
+    effective_model = workflow_model_override or llm_config.model
+    try:
+        context_window = await asyncio.to_thread(
+            resolve_effective_context_window,
+            spec.executor.context_window,
+            llm_config.model,
+            model_override=workflow_model_override,
+        )
+        if context_window is None:
+            return
+        loaded = await asyncio.to_thread(
+            _load_initial_history,
+            conversation_store,
+            session_id,
+        )
+        compaction_state = _CompactionState(
+            context_window=None,
+            last_summary=None,
+            config=spec.compaction,
+            model=effective_model,
+            connection=llm_config.connection,
+            conversation_id=session_id,
+        )
+        _sys_instructions, messages, sys_tokens = await asyncio.to_thread(
+            _prepare_messages,
+            spec,
+            llm_config,
+            loaded.items,
+            None,
+            [],
+            compaction_state,
+            {},
+            conversation_id=session_id,
+        )
+        del _sys_instructions
+        trigger_threshold = spec.compaction.trigger_threshold if spec.compaction else 0.8
+        budget = int(context_window * trigger_threshold) - sys_tokens
+        if count_tokens(messages, effective_model) <= budget:
+            return
+        from omnigent.runtime import workflow as _workflow
+
+        await _workflow.compact_conversation_now(
+            task_id=f"compact_{int(time.time() * 1000)}",
+            conversation_id=session_id,
+            spec=spec,
+            llm_config=llm_config,
+            tool_schemas=[],
+            model_override=workflow_model_override,
+        )
+    except Exception:  # noqa: BLE001 - proactive compaction must never break a turn.
+        _logger.warning(
+            "Proactive compaction failed open for session=%s",
+            session_id,
+            exc_info=True,
+            extra={"session_id": session_id},
+        )
+
+
 async def _forward_event_to_runner(
     session_id: str,
     conv: Conversation,
@@ -4700,6 +4820,7 @@ async def _forward_event_to_runner(
     has_mcp_servers: bool = False,
     created_by: str | None = None,
     host_store: HostStore | None = None,
+    agent_spec: AgentSpec | None = None,
 ) -> str:
     """
     Persist a user event and forward it to the runner.
@@ -4731,6 +4852,8 @@ async def _forward_event_to_runner(
     :param host_store: Host registrations, read only to learn whether this
         session's harness is AI-Gateway-backed (which router may route it).
         ``None`` reads as unknown, which counts as backed.
+    :param agent_spec: Resolved agent spec for this session, when the caller
+        already loaded it for dispatch metadata.
     :returns: The store-assigned id of the persisted item.
     """
     import uuid
@@ -5150,6 +5273,13 @@ async def _forward_event_to_runner(
     _effective_harness = _routed_harness or conv.harness_override
     if _effective_harness is not None and _effective_harness != "auto":
         runner_body["harness_override"] = _effective_harness
+    await _maybe_compact_before_runner_turn(
+        session_id,
+        body,
+        conversation_store,
+        agent_spec,
+        model_override=effective_runner_override,
+    )
 
     # The runner's sessions-native POST returns 202 immediately
     # and starts the turn as a background task. No streaming
@@ -5412,6 +5542,7 @@ async def _dispatch_session_event_to_runner_impl(
     runner_router: RunnerRouter | None = None,
     native_terminal_ready: bool = False,
     host_store: HostStore | None = None,
+    agent_spec: AgentSpec | None = None,
 ) -> _SessionEventDispatchResult:
     """
     Forward an item-event to the runner with harness-aware dispatch.
@@ -5484,6 +5615,8 @@ async def _dispatch_session_event_to_runner_impl(
         session's harness is AI-Gateway-backed (which router may route it).
         ``None`` reads as unknown, which counts as backed — the same posture
         an older host row gets.
+    :param agent_spec: Resolved agent spec for this session, when already
+        loaded by the route.
     :returns: A :class:`_SessionEventDispatchResult` carrying the
         persisted item id (non-native) or the pending-input id
         (claude-native message bypass).
@@ -5711,6 +5844,7 @@ async def _dispatch_session_event_to_runner_impl(
         has_mcp_servers=has_mcp_servers,
         created_by=created_by,
         host_store=host_store,
+        agent_spec=agent_spec,
     )
     return _SessionEventDispatchResult(item_id=item_id, pending_id=None)
 

@@ -206,6 +206,124 @@ async def test_compact_runs_omnigent_compaction_when_runner_noops(
     )
 
 
+async def test_compact_model_less_sdk_harness_uses_event_model(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runner-supplied compact model unblocks model-less SDK agents."""
+    from omnigent.runtime import set_runner_client
+
+    calls: list[dict[str, Any]] = []
+
+    async def _record(**kwargs: Any) -> CompactionResult:
+        calls.append(kwargs)
+        return CompactionResult(messages=[], summary_metadata=None, total_tokens=1)
+
+    monkeypatch.setattr("omnigent.runtime.workflow.compact_conversation_now", _record)
+
+    runner, captured = _fake_runner_returning(204)
+    set_runner_client(runner)
+    try:
+        agent = await create_test_agent(
+            client,
+            name="model-less-event-compact",
+            executor={"type": "omnigent", "config": {"harness": "openai-agents"}},
+            include_llm=False,
+        )
+        sid = await _create_session(client, agent["id"])
+        resp = await client.post(
+            f"/v1/sessions/{sid}/events",
+            json={"type": "compact", "data": {"model": "claude-sonnet-5"}},
+        )
+    finally:
+        await runner.aclose()
+        set_runner_client(None)
+
+    assert resp.status_code == 202, resp.text
+    assert captured == [{"type": "compact", "data": {"model": "claude-sonnet-5"}}]
+    assert len(calls) == 1
+    assert calls[0]["llm_config"].model == "claude-sonnet-5"
+    assert calls[0]["model_override"] is None
+
+
+async def test_message_proactively_compacts_before_runner_forward(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Oversized non-native history compacts before the runner sees the turn."""
+    from omnigent.server.routes import sessions as sessions_mod
+
+    sequence: list[str] = []
+    compact_calls: list[dict[str, Any]] = []
+    forwarded: list[dict[str, Any]] = []
+
+    def _count_tokens(messages: list[dict[str, Any]], model: str) -> int:
+        del model
+        if messages and messages[0].get("role") == "system":
+            return 0
+        return 90
+
+    async def _compact(**kwargs: Any) -> CompactionResult:
+        sequence.append("compact")
+        compact_calls.append(kwargs)
+        return CompactionResult(messages=[], summary_metadata=None, total_tokens=40)
+
+    class _CaptureRunner:
+        async def post(self, path: str, *, json: dict[str, Any], **_: Any) -> Any:
+            del path
+            if json.get("type") == "message":
+                sequence.append("forward")
+                forwarded.append(json)
+
+            class _Resp:
+                status_code = 202
+                headers: dict[str, str] = {}
+                text = ""
+
+            return _Resp()
+
+    async def _runner_client(*_: Any, **__: Any) -> _CaptureRunner:
+        return _CaptureRunner()
+
+    monkeypatch.setattr("omnigent.runtime.workflow.count_tokens", _count_tokens)
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.count_tokens",
+        _count_tokens,
+    )
+    monkeypatch.setattr("omnigent.runtime.workflow.compact_conversation_now", _compact)
+    monkeypatch.setattr(sessions_mod, "_get_runner_client", _runner_client)
+
+    agent = await create_test_agent(
+        client,
+        name="proactive-compact",
+        executor={
+            "type": "omnigent",
+            "model": "openai/gpt-4o",
+            "context_window": 100,
+            "config": {"harness": "openai-agents"},
+        },
+        include_llm=False,
+    )
+    sid = await _create_session(client, agent["id"])
+    resp = await client.post(
+        f"/v1/sessions/{sid}/events",
+        json={
+            "type": "message",
+            "data": {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "fill the window"}],
+            },
+        },
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert sequence == ["compact", "forward"]
+    assert len(compact_calls) == 1
+    assert compact_calls[0]["conversation_id"] == sid
+    assert compact_calls[0]["llm_config"].model == "openai/gpt-4o"
+    assert forwarded and forwarded[0]["type"] == "message"
+
+
 async def test_compact_model_less_sdk_harness_returns_clear_unavailable_message(
     client: httpx.AsyncClient,
 ) -> None:
