@@ -817,21 +817,8 @@ class _CodexForwarderState:
         """
         Record ``developer_instructions`` from a Codex settings-like payload.
 
-        Sibling of :meth:`_note_model_fields`: ``developer_instructions`` is
-        part of the same ``ThreadSettings`` shape as ``model``/
-        ``reasoning_effort``, but — like ``collaborationMode`` (see
-        :meth:`_note_collaboration_mode_fields`) — the live app-server
-        ``thread/settings/updated`` notification nests it under
-        ``threadSettings.collaborationMode.settings.developer_instructions``,
-        not as a top-level ``threadSettings`` key. Check both shapes: the
-        nested live-notification shape, and a flat/top-level shape for
-        callers (e.g. tests) that hand this method a settings sub-object
-        directly.
-
-        :param payload: Settings payload possibly carrying
-            ``developer_instructions``, flat or nested under
-            ``collaborationMode.settings``.
-        :returns: None.
+        :param payload: Settings payload; checks both flat and nested
+            ``collaborationMode.settings.developer_instructions`` shapes.
         """
         # Bare truthiness on a whitespace-only string is True, which broke
         # this two ways: (1) a whitespace-only FLAT value would short-circuit
@@ -852,11 +839,6 @@ class _CodexForwarderState:
                     instructions = nested_settings.get("developer_instructions")
         if isinstance(instructions, str) and instructions.strip():
             self.developer_instructions = instructions
-            # A live notification observing a real value is itself a
-            # confirmed read — at least as authoritative as a successful
-            # config.toml read — so it also resolves the
-            # never-yet-confirmed ambiguity, independent of whether the
-            # file has ever been read successfully.
             self.developer_instructions_known = True
 
     def _note_effort_fields(self, payload: _JsonObject) -> None:
@@ -2915,39 +2897,11 @@ def _refresh_developer_instructions_from_config(
     """
     Update the forwarder's known ``developer_instructions`` from ``config.toml``.
 
-    Reads the source-of-truth tri-state value via
-    :func:`~omnigent.codex_native_bridge.read_codex_config_developer_instructions_state`
-    and updates ``forwarder_state.developer_instructions`` so
-    :func:`_default_collaboration_mode` reuses the current value instead of
-    always emitting ``null`` for a Default-mode ``turn/start`` — a naive
-    always-``None`` send would silently wipe out the instructions
-    ``build_codex_native_server`` persisted at app-server build time.
-
-    All three states are handled explicitly — a collapsed truthy check
-    (``if value: forwarder_state.x = value``) can only ever SET, never
-    CLEAR, so a config transition from PRESENT to genuinely ABSENT (the
-    user's Omnigent-appended directive removed) would keep re-sending the
-    stale prior value forever instead of the now-correct absence:
-
-    - PRESENT: set to the current value; mark ``developer_instructions_known``.
-    - ABSENT: clear to ``None``; mark ``developer_instructions_known`` — genuine
-      absence is real, actionable, CONFIRMED information, not something to
-      preserve a stale prior value over, and distinct from never having
-      confirmed anything at all.
-    - UNREADABLE: no-op on BOTH fields, leaving the prior value (and the
-      prior known/unknown status) untouched — a transient read failure must
-      never regress a known value back to unknown, and must never promote
-      "never confirmed" to "confirmed absent" either. If the very FIRST
-      read is UNREADABLE, ``developer_instructions_known`` stays ``False``
-      and :func:`_default_collaboration_mode` refuses to guess rather than
-      serializing an unconfirmed ``None`` as an explicit, potentially
-      wiping ``null``.
+    Read ``developer_instructions`` from config.toml and update ``forwarder_state``.
+    PRESENT sets, ABSENT clears, UNREADABLE is a no-op (preserves prior value).
 
     :param bridge_dir: The session's native-Codex bridge directory.
-    :param forwarder_state: Mutable forwarder state whose
-        ``developer_instructions`` / ``developer_instructions_known`` are
-        updated in place.
-    :returns: None.
+    :param forwarder_state: Updated in place.
     """
     result = read_codex_config_developer_instructions_state(bridge_dir)
     if result.state is DeveloperInstructionsReadState.PRESENT:
@@ -2956,7 +2910,7 @@ def _refresh_developer_instructions_from_config(
     elif result.state is DeveloperInstructionsReadState.ABSENT:
         forwarder_state.developer_instructions = None
         forwarder_state.developer_instructions_known = True
-    # UNREADABLE: no-op on both fields — see the state-by-state breakdown above.
+    # UNREADABLE: no-op — preserve prior value.
 
 
 async def _sync_model_change(

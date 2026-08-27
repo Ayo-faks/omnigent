@@ -469,21 +469,9 @@ def read_codex_config_developer_instructions(bridge_dir: Path) -> str | None:
     Read the active ``developer_instructions`` from this session's private
     Codex ``config.toml``, collapsing the tri-state read to ``Optional[str]``.
 
-    Standalone convenience wrapper — no production caller currently uses
-    this collapsed form. Both live production consumers now consume
-    :func:`read_codex_config_developer_instructions_state` directly and
-    handle all three states explicitly, because a collapsed ``Optional[str]``
-    genuinely lost information they each needed: the forwarder
-    (:func:`~omnigent.codex_native_forwarder._refresh_developer_instructions_from_config`)
-    must actively CLEAR its cached value on a confirmed ABSENT read, not
-    merely "never overwrite on falsy" (a collapsed ``None`` can't tell
-    "confirmed absent" apart from "unreadable", so it could only ever no-op,
-    never clear); the runner's plan-mode settings send has no persistent
-    state to fall back to and must refuse (503) on UNREADABLE rather than
-    silently guessing ``None``. Kept for callers that only need "reuse this
-    value or nothing" and are unaffected by collapsing PRESENT/ABSENT/
-    UNREADABLE into one ``None`` — verify that's actually true for a new
-    caller before reaching for this instead of the tri-state form.
+    Convenience wrapper — collapses the tri-state to ``Optional[str]``.
+    Production callers use :func:`read_codex_config_developer_instructions_state`
+    directly when they need to distinguish ABSENT from UNREADABLE.
 
     :param bridge_dir: The session's native-Codex bridge directory.
     :returns: The top-level ``developer_instructions`` string, or ``None``
