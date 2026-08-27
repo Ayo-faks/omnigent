@@ -584,7 +584,7 @@ async def _evaluate_policy_via_omnigent(
                 _default_action,
                 extra={"session_id": conversation_id},
             )
-    except Exception:  # noqa: BLE001 — fail-open (LLM phases) / fail-closed (tool phases)
+    except Exception:
         _logger.warning(
             "AP policy evaluate failed for %s; defaulting to %s",
             evaluation_id,
@@ -622,7 +622,7 @@ async def _evaluate_policy_via_omnigent(
                 extra={"session_id": conversation_id},
             )
             continue
-        except Exception:  # noqa: BLE001 — non-transport: no retry, but still signal
+        except Exception:
             _logger.warning(
                 "Failed to deliver policy verdict %s to harness (unexpected error)",
                 evaluation_id,
@@ -4554,7 +4554,7 @@ def create_runner_app(
                     **settings,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 - surface app-server settings failures.
+        except Exception as exc:
             _logger.warning(
                 "Codex-native thread/settings/update failed for session=%s thread=%s settings=%s",
                 conv_id,
@@ -4743,7 +4743,7 @@ def create_runner_app(
             await asyncio.to_thread(
                 model_catalog_store.write_catalog, "codex-native", fingerprint, shaped
             )
-        except Exception:  # noqa: BLE001 — write-back is best-effort
+        except Exception:
             _logger.debug(
                 "codex model-catalog write-back skipped",
                 exc_info=True,
@@ -4963,7 +4963,7 @@ def create_runner_app(
                 await asyncio.to_thread(
                     confirm_dialog_if_open, bridge_dir, hint=SWITCH_MODEL_DIALOG_HINT
                 )
-            except Exception:  # noqa: BLE001 — best-effort; the report reconciles
+            except Exception:
                 _logger.debug(
                     "late model-dialog watch errored for session=%s",
                     conv_id,
@@ -5177,7 +5177,7 @@ def create_runner_app(
                 verdict=verdict,
                 timeout_s=1.0,
             )
-        except Exception:  # noqa: BLE001 — best-effort; TUI can still answer
+        except Exception:
             _logger.debug(
                 "claude-native plan verdict not applied",
                 exc_info=True,
@@ -5904,7 +5904,7 @@ def create_runner_app(
                 conv_id,
                 extra={"session_id": conv_id},
             )
-        except Exception:  # noqa: BLE001 — best-effort: harness may have exited
+        except Exception:
             _logger.warning(
                 "Interrupt forward to harness failed for %s",
                 conv_id,
@@ -7222,6 +7222,10 @@ def create_runner_app(
             # model output has been delivered yet -- the same recovery
             # the policy-verdict delivery path already applies.
             _text_yielded = False
+            # _dispatch_tasks is initialized inside the stream block on each
+            # attempt; pre-initialise here so the except clause can safely read
+            # it even if the exception fires before the inner assignment.
+            _dispatch_tasks: list[_asyncio.Task[object]] = []
             for _stream_attempt in range(2):
                 try:
                     async with client.stream(
@@ -7276,7 +7280,11 @@ def create_runner_app(
                                 raw_sse_bytes = (frame + "\n\n").encode("utf-8")
 
                                 data_line = next(
-                                    (line for line in frame.splitlines() if line.startswith("data:")),
+                                    (
+                                        line
+                                        for line in frame.splitlines()
+                                        if line.startswith("data:")
+                                    ),
                                     None,
                                 )
                                 if data_line is not None:
@@ -7307,10 +7315,14 @@ def create_runner_app(
                                         _buf = _session_message_buffers.get(conv_id)
                                         if _inj_id is not None and _buf:
                                             _consumed = [
-                                                _m for _m in _buf if _m.get("injection_id") == _inj_id
+                                                _m
+                                                for _m in _buf
+                                                if _m.get("injection_id") == _inj_id
                                             ]
                                             _remaining = [
-                                                _m for _m in _buf if _m.get("injection_id") != _inj_id
+                                                _m
+                                                for _m in _buf
+                                                if _m.get("injection_id") != _inj_id
                                             ]
                                             _session_message_buffers[conv_id] = _remaining
                                             for _m in _consumed:
@@ -7344,9 +7356,9 @@ def create_runner_app(
                                             )
                                             _text_acc.clear()
                                     elif _evt_type == "response.failed":
-                                        _err = event.get("error") or (event.get("response") or {}).get(
-                                            "error"
-                                        )
+                                        _err = event.get("error") or (
+                                            event.get("response") or {}
+                                        ).get("error")
                                         _stream_failed_error = (
                                             _err
                                             if isinstance(_err, dict)
@@ -7373,8 +7385,9 @@ def create_runner_app(
                                                         "output": _item["output"],
                                                     }
                                                 )
-                                    elif _evt_type == "response.compaction.completed" and event.get(
-                                        "summary"
+                                    elif (
+                                        _evt_type == "response.compaction.completed"
+                                        and event.get("summary")
                                     ):
                                         await _handle_harness_compaction(conv_id, event)
 
@@ -7476,12 +7489,16 @@ def create_runner_app(
                                                         conversation_id=conv_id,
                                                         task_id=_omnigent_task_id or _response_id,
                                                         agent_id=_agent_id_for_dispatch,
-                                                        agent_name=cast(str | None, body.get("model")),
+                                                        agent_name=cast(
+                                                            str | None, body.get("model")
+                                                        ),
                                                         runner_workspace=_dispatch_workdir,
                                                         mcp_manager=cast(
                                                             "RunnerMcpManager", _dispatch_mcp
                                                         ),
-                                                        session_inbox=_session_inboxes.get(conv_id),
+                                                        session_inbox=_session_inboxes.get(
+                                                            conv_id
+                                                        ),
                                                         session_async_tasks=_session_async_tasks.get(
                                                             conv_id
                                                         ),
@@ -7673,7 +7690,6 @@ def create_runner_app(
                     _on_proxy_stream_end(conv_id, error=_error, owner_response_id=_response_id)
                     yield _response_failed_event(_error)
                     break  # terminal error
-
 
         return StreamingResponse(
             proxy_stream(),
@@ -8677,7 +8693,7 @@ def create_runner_app(
                     await terminal_registry.close(conv_id, terminal_name, "main")
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                except Exception:
                     _logger.warning(
                         "failed to close stale native pane for conv=%s; proceeding to re-create",
                         conv_id,
@@ -9580,7 +9596,7 @@ def create_runner_app(
                     "detail": "Codex-native model options are not ready yet.",
                 },
             )
-        except Exception as exc:  # noqa: BLE001 - surface Codex app-server failures to AP.
+        except Exception as exc:
             _logger.warning(
                 "Codex-native model/list failed for session=%s",
                 session_id,
@@ -9603,7 +9619,7 @@ def create_runner_app(
 
         try:
             models = await asyncio.to_thread(list_kiro_cli_model_options)
-        except Exception as exc:  # noqa: BLE001 - picker failures are retryable.
+        except Exception as exc:
             _logger.warning(
                 "Kiro-native model discovery failed for session=%s",
                 session_id,
@@ -9627,7 +9643,7 @@ def create_runner_app(
 
         try:
             models = await asyncio.to_thread(list_cursor_cli_model_options)
-        except Exception as exc:  # noqa: BLE001 - picker failures are retryable.
+        except Exception as exc:
             _logger.warning(
                 "Cursor-native model discovery failed for session=%s",
                 session_id,
@@ -9683,7 +9699,7 @@ def create_runner_app(
                     "detail": exc.message,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 — retryable model-options failure
+        except Exception as exc:
             _logger.warning(
                 "Claude-native model discovery failed for session=%s",
                 session_id,
@@ -10357,7 +10373,7 @@ def create_runner_app(
             if family.base_url:
                 conn["base_url"] = family.base_url
             return conn or None
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.warning(
                 "/v1/summarize: failed to resolve provider %r",
                 provider_name,
@@ -10499,7 +10515,7 @@ def create_runner_app(
         if resource_registry is not None:
             try:
                 resource_registry.resync_session_statuses()
-            except Exception:  # noqa: BLE001 — best-effort; never block catch-up.
+            except Exception:
                 _logger.warning(
                     "Session status resync failed after reconnect",
                     exc_info=True,
