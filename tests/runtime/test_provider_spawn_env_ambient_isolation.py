@@ -246,8 +246,7 @@ def test_affected_tests_isolate_live_ollama(inject_plugin: Path) -> None:
     assert injected_rc == clean_rc, (
         "provider spawn-env codex tests are shadowed by a reachable local Ollama: "
         f"clean run exit={clean_rc}, ollama-reachable run exit={injected_rc}. "
-        "The affected tests must return the same result with Ollama running or "
-        "stopped (OMNI-5574)."
+        "The affected tests must return the same result with Ollama running or stopped."
     )
 
 
@@ -283,5 +282,5 @@ def test_affected_tests_isolate_claude_keychain(inject_plugin: Path) -> None:
         "provider spawn-env claude-sdk test is shadowed by a cached Claude "
         f"subscription login: clean run exit={clean_rc}, claude-login run "
         f"exit={injected_rc}. The affected test must return the same result "
-        "with or without a Claude Keychain credential (OMNI-5574)."
+        "with or without a Claude Keychain credential."
     )
