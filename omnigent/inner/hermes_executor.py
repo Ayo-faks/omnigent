@@ -340,14 +340,8 @@ class HermesExecutor(Executor):
 
         :param messages: Conversation history from Omnigent.
         :param tools: Tool schemas (Hermes uses its own tools internally).
-        :param system_prompt: The runner's gated composed instructions for
-            this turn WHEN the runner positively resolved a spec (see
-            ``InstructionComposition`` in ``omnigent.runner.app``) — empty
-            when there is genuinely nothing to send. When the runner could
-            not positively resolve a spec, gating is skipped by design and
-            this may instead be whatever wire value was already present.
-            Prepended to the first user turn of a fresh Hermes session; see
-            the prefix logic below.
+        :param system_prompt: Composed instructions; prepended to the first
+            user turn of a fresh session.
         :param config: Per-turn config (model override, etc.).
         :yields: ``TextChunk`` and ``TurnComplete`` events.
         :yields: ``ExecutorError`` on subprocess failure or timeout.
@@ -373,18 +367,7 @@ class HermesExecutor(Executor):
         session_key = self._session_key(messages)
         hermes_sid = self._hermes_session_id(session_key)
 
-        # First turn of a genuinely fresh Hermes session (no captured
-        # session id yet) — prefix the composed instructions onto the
-        # user's own first turn. When the runner positively resolved a spec,
-        # `system_prompt` is gated (never the fabricated "You are a helpful
-        # assistant." literal, framework-only or otherwise — see
-        # InstructionComposition in omnigent.runner.app); when it could not,
-        # gating is skipped by design and this may be an ungated pre-existing
-        # wire value instead. A subsequent turn's `--resume <hermes_sid>` naturally prevents
-        # re-prefixing once a session id is captured below. The prefixed text
-        # travels via the CLI's -q argv, so it is visible in process listings
-        # on the host — the same class of exposure any
-        # --append-system-prompt-style flag already has.
+        # Prefix instructions on the first turn only; --resume prevents re-prefixing.
         if hermes_sid is None and system_prompt:
             user_text = f"{system_prompt}\n\n{user_text}"
 
