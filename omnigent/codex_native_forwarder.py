@@ -322,32 +322,11 @@ class _CodexForwarderState:
         the resume/startup model so the spawn default is not echoed back as
         a change; only a later in-TUI ``/model`` switch is mirrored. ``None``
         until seeded.
-    :param developer_instructions: Latest known ``developer_instructions``
-        configured for this session (Omnigent's raw author instructions,
-        persisted at app-server build time — see
-        ``read_codex_config_developer_instructions_state``). Reused by
-        ``_default_collaboration_mode`` for Default-mode ``turn/start``
-        calls so they don't silently overwrite it with ``null``.
-        ``_refresh_developer_instructions_from_config`` consumes the
-        tri-state read explicitly: PRESENT sets this field, genuine ABSENCE
-        clears it to ``None``, and UNREADABLE leaves it exactly as it was —
-        a transient/unreadable config read never regresses an already-known
-        value back to unknown, but a genuine removal is real information
-        and does get reflected, not preserved as stale. ``None`` alone is
-        AMBIGUOUS between "confirmed absent" and "never yet successfully
-        read" — see :attr:`developer_instructions_known`, which
-        disambiguates the two so a config that's UNREADABLE on the very
-        FIRST read (before any confirmed value exists) is never collapsed
-        into "confirmed absent" and serialized as an explicit ``null``.
-    :param developer_instructions_known: Whether ``developer_instructions``
-        reflects an actual PRESENT/ABSENT read (``True``) or is still the
-        dataclass default, never yet confirmed (``False``). Mirrors
-        :attr:`posted_effort_known`'s role for the same ambiguous-``None``
-        problem on ``effort``/``posted_effort``. ``_default_collaboration_mode``
-        refuses to build a Default-mode payload at all while this is
-        ``False`` — sending ``developer_instructions: null`` before any
-        confirmed read would risk wiping a value that genuinely exists but
-        just hasn't been successfully read yet.
+    :param developer_instructions: Last known value from config.toml.
+        ``None`` is ambiguous — see :attr:`developer_instructions_known`.
+    :param developer_instructions_known: ``True`` once a PRESENT/ABSENT
+        read has been confirmed; ``False`` means never yet read (guards
+        against sending ``null`` before the first successful config read).
     :param effort: Latest known Codex reasoning effort for this thread, e.g.
         ``"medium"``. ``None`` means Codex is using its model/default effort.
     :param posted_effort: Last reasoning effort already mirrored to Omnigent
