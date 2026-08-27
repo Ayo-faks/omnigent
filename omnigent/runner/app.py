@@ -9925,9 +9925,7 @@ def create_runner_app(
         _session_agent_ids.pop(session_id, None)
         _session_harness_overrides.pop(session_id, None)
         # Bump so any in-flight fill discards its write rather than reinstating it.
-        _session_cache_generations[session_id] = (
-            _session_cache_generations.get(session_id, 0) + 1
-        )
+        _session_cache_generations[session_id] = _session_cache_generations.get(session_id, 0) + 1
         _session_snapshot_cache.pop(session_id, None)
         _session_skills_cache.pop(session_id, None)
         _session_cursor_model_names.pop(session_id, None)
