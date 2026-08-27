@@ -16,6 +16,11 @@ vi.mock("@/shell/AppShell", () => ({
 vi.mock("@/pages/ChatPage", () => ({ ChatPage: () => <div>chat page</div> }));
 vi.mock("@/pages/NotFoundPage", () => ({ NotFoundPage: () => <div>not found</div> }));
 vi.mock("@/pages/UsagePage", () => ({ UsagePage: () => <div>usage page</div> }));
+vi.mock("@/extensions/ExtensionPageHost", () => ({
+  ExtensionPageHost: ({ resolved }: { resolved: { page: { title: string } } }) => (
+    <h1>{resolved.page.title}</h1>
+  ),
+}));
 vi.mock("@/extensions/ExtensionProvider", () => ({
   useExtensions: () => [
     {
