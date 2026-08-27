@@ -26,6 +26,11 @@ from omnigent.extensions.registry import (
     plugin_state,
     validate_manifest,
 )
+from omnigent.extensions.runner_api import (
+    RunnerExtension,
+    RunnerExtensionContext,
+    RunnerToolCallContext,
+)
 
 __all__ = [
     "ENTRY_POINT_GROUP",
@@ -40,7 +45,10 @@ __all__ = [
     "ExtensionValidationError",
     "PageContribution",
     "PrimaryNavigationContribution",
+    "RunnerExtension",
+    "RunnerExtensionContext",
     "RunnerPermission",
+    "RunnerToolCallContext",
     "SlotId",
     "SlotItemContribution",
     "SlotItemKind",
