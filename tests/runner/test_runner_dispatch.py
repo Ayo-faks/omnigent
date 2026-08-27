@@ -1532,7 +1532,7 @@ async def test_runner_stream_emits_failed_when_tool_spec_resolver_fails() -> Non
 
 
 def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> None:
-    """Both dispatch paths must call the shared `_invalidate_session_agent_state` helper — not inline cache-pop lists."""
+    """Both dispatch paths must call the shared `_invalidate_session_agent_state` helper."""
     import inspect
 
     import omnigent.runner.app as runner_app_mod
@@ -1556,7 +1556,7 @@ def test_direct_and_background_switch_sites_share_one_invalidation_routine() -> 
 
 
 def test_agent_cache_reset_clears_the_agent_id_marker_too() -> None:
-    """`_clear_session_agent_caches` must pop `_session_agent_ids` alongside the other tagged caches it clears."""
+    """`_clear_session_agent_caches` must pop `_session_agent_ids` with the other tagged caches."""
     import inspect
 
     import omnigent.runner.app as runner_app_mod

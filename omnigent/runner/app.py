@@ -7160,7 +7160,8 @@ def create_runner_app(
                 yield _response_failed_event({"message": _err_msg, "type": _err_type})
                 return
 
-            # Compose instructions for direct-stream turns (dispatch is None; background path pre-composes).
+            # Compose instructions for direct-stream turns (dispatch is None;
+            # background path pre-composes).
             _instr_body = body
             if dispatch is None:
                 with contextlib.suppress(OmnigentError, httpx.HTTPError, RuntimeError, ValueError):
