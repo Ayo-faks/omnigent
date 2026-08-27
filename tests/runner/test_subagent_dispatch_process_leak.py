@@ -119,9 +119,7 @@ async def test_create_timeout_reaps_orphaned_child() -> None:
                 ),
                 server_client=server_client,
                 conversation_id=PARENT_ID,
-                agent_spec=SimpleNamespace(
-                    sub_agents=[SimpleNamespace(name="researcher")]
-                ),
+                agent_spec=SimpleNamespace(sub_agents=[SimpleNamespace(name="researcher")]),
                 session_inbox=inbox,
             )
         finally:
@@ -133,8 +131,7 @@ async def test_create_timeout_reaps_orphaned_child() -> None:
     # as an error string (not raised an unhandled ReadTimeout to the caller).
     assert created_ids, "the mock server must have committed a child creation"
     assert isinstance(output, str) and output.startswith("Error"), (
-        "a create-timeout must return a handled error, not propagate ReadTimeout "
-        f"(got {output!r})"
+        f"a create-timeout must return a handled error, not propagate ReadTimeout (got {output!r})"
     )
     # Acceptance criterion (1): the created child's cluster must be reaped.
     assert deletes, (

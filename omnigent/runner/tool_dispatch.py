@@ -2326,6 +2326,7 @@ async def _execute_subagent_tool(
         # constraint, so truly concurrent creates can still race past it.
         _max_ordinal_retries = 5 if _auto_ordinal else 0
         _create_timeout_exc: httpx.ReadTimeout | None = None
+        resp: httpx.Response | None = None
         try:
             for _ordinal_attempt in range(_max_ordinal_retries + 1):
                 resp = await server_client.post("/v1/sessions", json=create_body, timeout=30.0)
@@ -2369,8 +2370,10 @@ async def _execute_subagent_tool(
                 "committed the session — reaping any orphaned cluster. "
                 "Retry the same send to continue in a fresh child."
             )
-        if resp.status_code >= 400:
-            return f"Error: failed to create child session: {resp.status_code} {resp.text[:200]}"
+        if resp is None or resp.status_code >= 400:
+            status = resp.status_code if resp is not None else 0
+            text = resp.text[:200] if resp is not None else "(no response)"
+            return f"Error: failed to create child session: {status} {text}"
         child_data = _string_object_dict(resp.json())
         if child_data is None:
             return "Error: server returned malformed child session data"
