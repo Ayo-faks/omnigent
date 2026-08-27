@@ -2325,21 +2325,50 @@ async def _execute_subagent_tool(
         # (parent, title) check is SELECT-then-INSERT with no DB unique
         # constraint, so truly concurrent creates can still race past it.
         _max_ordinal_retries = 5 if _auto_ordinal else 0
-        for _ordinal_attempt in range(_max_ordinal_retries + 1):
-            resp = await server_client.post("/v1/sessions", json=create_body, timeout=30.0)
-            if (
-                resp.status_code == 409
-                and _auto_ordinal
-                and _ordinal_attempt < _max_ordinal_retries
-            ):
-                ordinal = _runner_app.next_subagent_ordinal(
-                    conversation_id,
-                    str(sub_agent_name),
-                )
-                session_name = f"{sub_agent_name}-{ordinal}"
-                create_body["title"] = f"{sub_agent_name}:{session_name}"
-                continue
-            break
+        _create_timeout_exc: httpx.ReadTimeout | None = None
+        try:
+            for _ordinal_attempt in range(_max_ordinal_retries + 1):
+                resp = await server_client.post("/v1/sessions", json=create_body, timeout=30.0)
+                if (
+                    resp.status_code == 409
+                    and _auto_ordinal
+                    and _ordinal_attempt < _max_ordinal_retries
+                ):
+                    ordinal = _runner_app.next_subagent_ordinal(
+                        conversation_id,
+                        str(sub_agent_name),
+                    )
+                    session_name = f"{sub_agent_name}-{ordinal}"
+                    create_body["title"] = f"{sub_agent_name}:{session_name}"
+                    continue
+                break
+        except httpx.ReadTimeout as _exc:
+            _create_timeout_exc = _exc
+        if _create_timeout_exc is not None:
+            # The read deadline elapsed after the server may have committed the
+            # child session — child_session_id is unknown to us, but the
+            # (parent, agent, title) triple is. Reconcile: look up the created
+            # child by its expected title so we can reap its process cluster.
+            _leaked = await _find_existing_child_session(
+                server_client=server_client,
+                conversation_id=conversation_id,
+                agent=str(sub_agent_name),
+                title=str(session_name),
+            )
+            if isinstance(_leaked, dict):
+                _leaked_id = _leaked.get("id") or _leaked.get("session_id")
+                if isinstance(_leaked_id, str) and _leaked_id:
+                    await _teardown_failed_child(
+                        server_client,
+                        _leaked_id,
+                        created_child=True,
+                    )
+            return (
+                f"Error: timed out waiting for child session create response "
+                f"({sub_agent_name!r} / {session_name!r}); the server may have "
+                "committed the session — reaping any orphaned cluster. "
+                "Retry the same send to continue in a fresh child."
+            )
         if resp.status_code >= 400:
             return f"Error: failed to create child session: {resp.status_code} {resp.text[:200]}"
         child_data = _string_object_dict(resp.json())
@@ -5551,6 +5580,10 @@ async def _session_close_via_rest(
             json={
                 "title": new_title,
                 "labels": {CLOSED_LABEL_KEY: CLOSED_LABEL_VALUE},
+                # archived=True triggers the server's _spawn_archive_stop reaper,
+                # which stops the child's harness / tmux / bridge cluster.
+                # Without this the child's OS-process cluster is never reaped.
+                "archived": True,
             },
             timeout=30.0,
         )
