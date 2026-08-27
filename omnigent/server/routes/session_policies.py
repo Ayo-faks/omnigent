@@ -25,6 +25,7 @@ from omnigent.policies.registry import (
     validate_factory_params,
 )
 from omnigent.runtime import get_caps
+from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.policies.builder import invalidate_session_policy_specs_cache
 from omnigent.server.auth import LEVEL_EDIT, LEVEL_READ, AuthProvider
 from omnigent.server.routes._auth_helpers import get_user_id, require_access
@@ -35,7 +36,6 @@ from omnigent.server.schemas import (
     UpdateSessionPolicyRequest,
 )
 from omnigent.spec.types import FunctionPolicySpec, PolicySpec
-from omnigent.runtime.agent_cache import AgentCache
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.permission_store import PermissionStore
 from omnigent.stores.policy_store import PolicyStore

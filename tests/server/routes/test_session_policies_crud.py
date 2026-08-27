@@ -385,11 +385,9 @@ async def test_list_policies_includes_spec_policies(
     policies = resp.json()["data"]
 
     spec_policies = [
-        p for p in policies
-        if p.get("source") == "spec"
-        and "cost_budget" in str(p.get("handler", ""))
+        p
+        for p in policies
+        if p.get("source") == "spec" and "cost_budget" in str(p.get("handler", ""))
     ]
-    assert spec_policies, (
-        f"Spec-declared cost_budget policy missing from list; got: {policies!r}"
-    )
+    assert spec_policies, f"Spec-declared cost_budget policy missing from list; got: {policies!r}"
     assert spec_policies[0].get("factory_params", {}).get("max_cost_usd") == 5.0
