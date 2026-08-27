@@ -55,6 +55,19 @@ class ExtensionSlotItemResponse(BaseModel):
     when: str | None
 
 
+class ExtensionToolResponse(BaseModel):
+    """Declarative metadata for one runner-hosted extension tool."""
+
+    id: str
+    tool_name: str
+    title: str
+    description: str
+    input_schema: dict[str, object]
+    runner_permissions: list[str]
+    enablement: str
+    is_async: bool
+
+
 class ExtensionBrowserBundleResponse(BaseModel):
     """Opaque browser-bundle availability and content-addressed asset URLs."""
 
@@ -79,6 +92,7 @@ class ExtensionResponse(BaseModel):
     pages: list[ExtensionPageResponse]
     primary_navigation: list[ExtensionPrimaryNavigationResponse]
     slot_items: list[ExtensionSlotItemResponse]
+    tools: list[ExtensionToolResponse]
     browser: ExtensionBrowserBundleResponse
 
 
@@ -163,6 +177,19 @@ def _serialize_manifest(
             )
         ]
     )
+    tools = [
+        ExtensionToolResponse(
+            id=tool.id,
+            tool_name=tool.tool_name,
+            title=tool.title,
+            description=tool.description,
+            input_schema=tool.input_schema,
+            runner_permissions=sorted(permission.value for permission in tool.runner_permissions),
+            enablement=tool.enablement.value,
+            is_async=tool.is_async,
+        )
+        for tool in sorted(manifest.tools, key=lambda tool: tool.tool_name)
+    ]
     return ExtensionResponse(
         id=manifest.id,
         display_name=manifest.display_name,
@@ -174,6 +201,7 @@ def _serialize_manifest(
         pages=pages,
         primary_navigation=navigation,
         slot_items=slot_items,
+        tools=tools,
         browser=ExtensionBrowserBundleResponse(
             declared=manifest.entrypoints.browser is not None,
             has_styles=manifest.entrypoints.browser_css is not None,

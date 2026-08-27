@@ -30,6 +30,23 @@ class SlotItemKind(StrEnum):
     SECTION = "section"
 
 
+class RunnerPermission(StrEnum):
+    """Runner capabilities requested by an extension tool."""
+
+    PROCESS_SPAWN = "process.spawn"
+    FILESYSTEM_READ = "fs.read"
+    NETWORK_HTTP = "net.http"
+
+
+class EnablementScope(StrEnum):
+    """Narrowest scope at which a contributed tool may be enabled."""
+
+    DEPLOYMENT = "deployment"
+    USER = "user"
+    AGENT = "agent"
+    SESSION = "session"
+
+
 class ExtensionPermission(StrEnum):
     """Host capabilities an extension may request."""
 
@@ -43,6 +60,7 @@ class ExtensionEntrypoints:
 
     browser: str | None = None
     browser_css: str | None = None
+    runner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +100,20 @@ class SlotItemContribution:
 
 
 @dataclass(frozen=True)
+class ToolContribution:
+    """Declarative schema for a tool implemented by the runner entrypoint."""
+
+    id: str
+    tool_name: str
+    title: str
+    description: str
+    input_schema: dict[str, object]
+    runner_permissions: frozenset[RunnerPermission] = frozenset()
+    enablement: EnablementScope = EnablementScope.DEPLOYMENT
+    is_async: bool = False
+
+
+@dataclass(frozen=True)
 class CommandContribution:
     """Reserved command metadata; V1 does not execute contributed commands."""
 
@@ -105,6 +137,7 @@ class ExtensionManifest:
     pages: tuple[PageContribution, ...] = ()
     primary_navigation: tuple[PrimaryNavigationContribution, ...] = ()
     slot_items: tuple[SlotItemContribution, ...] = ()
+    tools: tuple[ToolContribution, ...] = ()
     commands: tuple[CommandContribution, ...] = ()
 
 

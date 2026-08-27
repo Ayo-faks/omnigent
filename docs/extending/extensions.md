@@ -30,17 +30,20 @@ trusted Python package -> validated manifest -> server catalog
   Inbox and Usage. `order` sorts only within that slot.
 - `slot_items`: core-rendered, page-backed links in four semantic UI locations.
   See [Extension UI slots](extension_ui_slots.md).
+- `tools`: runner-side tool schemas with explicit permissions and enablement.
+  See [Extension tools](extension_tools.md).
 
 Command metadata, activation events, and `when` expressions are validated and
 reserved but are not executed or evaluated in V1. Arbitrary React components,
-DOM selectors, FastAPI routers, runner tools, and user-installed marketplace
-packages are not supported.
+DOM selectors, FastAPI routers, in-process server plugins, and user-installed
+marketplace packages are not supported.
 
 ## Installation and diagnostics
 
 Declare an `omnigent.extensions` entry point, install the wheel in the server's
-Python environment, and restart the server. Installation implies enablement for
-V1; there is no separate enable switch.
+Python environment, and restart the server. Installation enables page and UI
+contributions. Tools additionally require the deployment and declared-scope
+allowlists described in [Extension tools](extension_tools.md).
 
 ```bash
 omni extensions list
@@ -55,5 +58,6 @@ load and asset errors through `doctor` or `/v1/extensions/diagnostics`.
 
 See [Extension manifest](extension_manifest.md),
 [Browser extensions](browser_extensions.md),
-[Extension UI slots](extension_ui_slots.md), and the
+[Extension UI slots](extension_ui_slots.md),
+[Extension tools](extension_tools.md), and the
 [Hello Page example](../../examples/extensions/hello-page/README.md).

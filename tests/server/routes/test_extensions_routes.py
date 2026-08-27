@@ -21,6 +21,7 @@ from omnigent.extensions import (
     SlotId,
     SlotItemContribution,
     SlotItemKind,
+    ToolContribution,
 )
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
@@ -144,6 +145,7 @@ async def test_catalog_serializes_only_public_v1_contributions(catalog_app: Fast
                 "pages": [],
                 "primary_navigation": [],
                 "slot_items": [],
+                "tools": [],
                 "browser": {
                     "declared": True,
                     "has_styles": True,
@@ -189,7 +191,7 @@ async def test_catalog_order_is_stable(db_uri: str, tmp_path: Path) -> None:
     )
     alpha = replace(
         _manifest(),
-        entrypoints=ExtensionEntrypoints(),
+        entrypoints=ExtensionEntrypoints(runner="acme_review.runner:activate"),
         pages=(*_manifest().pages, alpha_page),
         primary_navigation=(*_manifest().primary_navigation, alpha_nav),
         slot_items=(
@@ -199,6 +201,15 @@ async def test_catalog_order_is_stable(db_uri: str, tmp_path: Path) -> None:
                 kind=SlotItemKind.ACTION,
                 label="Review",
                 page="acme.review.dashboard",
+            ),
+        ),
+        tools=(
+            ToolContribution(
+                id="acme.review.review-tool",
+                tool_name="ext__acme_d_review__review",
+                title="Review",
+                description="Review a workspace.",
+                input_schema={"type": "object"},
             ),
         ),
     )
@@ -220,6 +231,18 @@ async def test_catalog_order_is_stable(db_uri: str, tmp_path: Path) -> None:
         "acme.review.alpha-nav",
         "acme.review.primary-nav",
     ]
+    assert data[0]["tools"] == [
+        {
+            "id": "acme.review.review-tool",
+            "tool_name": "ext__acme_d_review__review",
+            "title": "Review",
+            "description": "Review a workspace.",
+            "input_schema": {"type": "object"},
+            "runner_permissions": [],
+            "enablement": "deployment",
+            "is_async": False,
+        }
+    ]
     assert data[0]["slot_items"] == [
         {
             "id": "acme.review.header-action",
@@ -232,6 +255,39 @@ async def test_catalog_order_is_stable(db_uri: str, tmp_path: Path) -> None:
             "when": None,
         }
     ]
+
+
+async def test_runner_tools_remain_visible_when_only_browser_bundle_is_unavailable(
+    db_uri: str,
+    tmp_path: Path,
+) -> None:
+    tool = ToolContribution(
+        id="acme.review.review-tool",
+        tool_name="ext__acme_d_review__review",
+        title="Review",
+        description="Review a workspace.",
+        input_schema={"type": "object"},
+    )
+    manifest = replace(
+        _manifest(),
+        entrypoints=replace(
+            _manifest().entrypoints,
+            runner="acme_review.runner:activate",
+        ),
+        tools=(tool,),
+    )
+    app = _build_app(
+        db_uri,
+        tmp_path,
+        extension_state=ExtensionPluginState(manifests=(manifest,)),
+    )
+
+    async with _client(app) as client:
+        item = (await client.get("/v1/extensions")).json()["data"][0]
+
+    assert item["status"] == "unavailable"
+    assert item["pages"] == []
+    assert [entry["tool_name"] for entry in item["tools"]] == [tool.tool_name]
 
 
 async def test_extension_detail_and_unknown_id(catalog_app: FastAPI) -> None:

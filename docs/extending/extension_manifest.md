@@ -14,14 +14,17 @@ import runtime or UI implementation modules.
 ```python
 from omnigent.extensions import (
     EXTENSION_API_VERSION,
+    EnablementScope,
     ExtensionEntrypoints,
     ExtensionManifest,
     ExtensionPermission,
     PageContribution,
     PrimaryNavigationContribution,
+    RunnerPermission,
     SlotId,
     SlotItemContribution,
     SlotItemKind,
+    ToolContribution,
 )
 
 
@@ -36,6 +39,7 @@ def get_manifest() -> ExtensionManifest:
         entrypoints=ExtensionEntrypoints(
             browser="dist/extension.js",
             browser_css="dist/extension.css",
+            runner="acme_review.runner:activate",
         ),
         permissions=frozenset({ExtensionPermission.NAVIGATION}),
         pages=(
@@ -64,6 +68,17 @@ def get_manifest() -> ExtensionManifest:
                 page="acme.review.dashboard",
             ),
         ),
+        tools=(
+            ToolContribution(
+                id="acme.review.review-tool",
+                tool_name="ext__acme_d_review__review",
+                title="Review workspace",
+                description="Review files in the current workspace.",
+                input_schema={"type": "object"},
+                runner_permissions=frozenset({RunnerPermission.FILESYSTEM_READ}),
+                enablement=EnablementScope.AGENT,
+            ),
+        ),
     )
 ```
 
@@ -76,6 +91,11 @@ def get_manifest() -> ExtensionManifest:
 - `requires_omnigent` is a PEP 440 release-line range.
 - Browser paths are fixed to `dist/extension.js` and optional
   `dist/extension.css` inside the entry point's verified import package.
+- Runner entrypoints use `package.module:factory`, live in the manifest entry
+  point's verified package, and are declared together with tools.
+- Tool names use the reserved injective `ext__...__tool` namespace, schemas are
+  JSON objects, and permissions/enablement use closed enums. See
+  [Extension tools](extension_tools.md).
 - Slot items use a supported slot/kind pairing, reference a page owned by the
   same extension, and cannot reorder core UI. See
   [Extension UI slots](extension_ui_slots.md).

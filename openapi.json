@@ -2112,6 +2112,13 @@
             "title": "Status",
             "type": "string"
           },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ExtensionToolResponse"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
           "version": {
             "title": "Version",
             "type": "string"
@@ -2128,6 +2135,7 @@
           "pages",
           "primary_navigation",
           "slot_items",
+          "tools",
           "browser"
         ],
         "title": "ExtensionResponse",
@@ -2192,6 +2200,59 @@
           "when"
         ],
         "title": "ExtensionSlotItemResponse",
+        "type": "object"
+      },
+      "ExtensionToolResponse": {
+        "description": "Declarative metadata for one runner-hosted extension tool.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "enablement": {
+            "title": "Enablement",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "title": "Input Schema",
+            "type": "object"
+          },
+          "is_async": {
+            "title": "Is Async",
+            "type": "boolean"
+          },
+          "runner_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Runner Permissions",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tool_name",
+          "title",
+          "description",
+          "input_schema",
+          "runner_permissions",
+          "enablement",
+          "is_async"
+        ],
+        "title": "ExtensionToolResponse",
         "type": "object"
       },
       "FailedEvent": {

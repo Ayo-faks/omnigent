@@ -311,6 +311,7 @@ const TEST_EXTENSION: ExtensionCatalogItem = {
     },
   ],
   slot_items: [],
+  tools: [],
   primary_navigation: [
     {
       id: "acme.review.primary-nav",

@@ -28,6 +28,17 @@ export interface ExtensionSlotItem {
   when: string | null;
 }
 
+export interface ExtensionTool {
+  id: string;
+  tool_name: string;
+  title: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  runner_permissions: string[];
+  enablement: "deployment" | "user" | "agent" | "session";
+  is_async: boolean;
+}
+
 export interface ExtensionBrowserBundle {
   declared: boolean;
   has_styles: boolean;
@@ -48,6 +59,7 @@ export interface ExtensionCatalogItem {
   pages: ExtensionPage[];
   primary_navigation: ExtensionPrimaryNavigation[];
   slot_items: ExtensionSlotItem[];
+  tools: ExtensionTool[];
   browser: ExtensionBrowserBundle;
 }
 

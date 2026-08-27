@@ -61,6 +61,7 @@ const extension: ExtensionCatalogItem = {
       when: null,
     },
   ],
+  tools: [],
   browser: {
     declared: true,
     has_styles: false,

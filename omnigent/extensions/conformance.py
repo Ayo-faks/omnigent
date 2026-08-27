@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 from pathlib import Path
 
 import tomllib
@@ -42,6 +43,28 @@ def _validate_installed_metadata(manifest: ExtensionManifest, package: str) -> N
         raise ExtensionAssetError("asset package is not owned by the manifest distribution")
 
 
+def _validate_runner_entrypoint(
+    manifest: ExtensionManifest,
+    *,
+    package: str | None,
+    package_root: Path | None,
+) -> None:
+    runner = manifest.entrypoints.runner
+    if runner is None:
+        return
+    module, _separator, _factory = runner.partition(":")
+    runner_package = module.split(".", 1)[0]
+    expected_package = package or (package_root.name if package_root is not None else None)
+    if expected_package is None or runner_package != expected_package:
+        raise ExtensionAssetError("runner entrypoint is not owned by the extension package")
+    if package is not None and importlib.util.find_spec(module) is None:
+        raise ExtensionAssetError(f"runner module {module!r} is unavailable")
+    if package_root is not None:
+        target = package_root.joinpath(*module.split(".")[1:])
+        if not target.with_suffix(".py").is_file() and not (target / "__init__.py").is_file():
+            raise ExtensionAssetError(f"runner module {module!r} is unavailable")
+
+
 def check_extension_package(
     manifest: ExtensionManifest,
     *,
@@ -57,6 +80,7 @@ def check_extension_package(
         _validate_project_metadata(manifest, project_root)
     elif package is not None:
         _validate_installed_metadata(manifest, package)
+    _validate_runner_entrypoint(manifest, package=package, package_root=package_root)
     if manifest.entrypoints.browser is None:
         return None
     return resolve_bundle(manifest, package=package, root_override=package_root)

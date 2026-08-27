@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from omnigent.tool_namespaces import EXTENSION_TOOL_MARKER
 from omnigent.tools.base import Tool, ToolContext, is_valid_tool_name
 
 
@@ -163,6 +164,11 @@ def parse_client_side_tool_spec(raw: dict[str, Any]) -> ClientSideToolSpec:
 
     if not is_valid_tool_name(name):
         raise ValueError(f"Invalid tool name {name!r}: must match [a-zA-Z0-9_-]{{1,256}}")
+    if name.startswith(EXTENSION_TOOL_MARKER):
+        raise ValueError(
+            f"Invalid tool name {name!r}: prefix {EXTENSION_TOOL_MARKER!r} "
+            "is reserved for extension tools"
+        )
 
     return ClientSideToolSpec(name=name, schema=raw)
 

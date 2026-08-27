@@ -162,6 +162,7 @@ const SETTINGS_EXTENSION: ExtensionCatalogItem = {
       when: null,
     },
   ],
+  tools: [],
   browser: {
     declared: true,
     has_styles: false,

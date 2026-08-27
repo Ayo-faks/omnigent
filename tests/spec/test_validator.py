@@ -203,6 +203,23 @@ def test_duplicate_tool_names_across_mcp_and_local() -> None:
     assert any("duplicate tool name" in e.message for e in result.errors)
 
 
+@pytest.mark.parametrize("source", ["mcp", "local"])
+def test_extension_tool_prefix_is_reserved_from_agent_tool_sources(source: str) -> None:
+    name = "ext__acme_d_review__run"
+    spec = (
+        _minimal_spec(mcp_servers=[MCPServerConfig(name=name, url="http://localhost:9000")])
+        if source == "mcp"
+        else _minimal_spec(
+            local_tools=[LocalToolInfo(name=name, path="tools/python/run.py", language="python")]
+        )
+    )
+
+    result = validate(spec)
+
+    assert not result.valid
+    assert any("reserved for extension tools" in error.message for error in result.errors)
+
+
 def test_sub_agent_reference_valid() -> None:
     sub = _minimal_spec(
         name="helper",

@@ -4614,6 +4614,23 @@ def extensions_list() -> None:
         click.echo(f"{len(state.load_errors)} rejected extension entry point(s)", err=True)
 
 
+@extensions_cli.command("tools")
+def extensions_tools() -> None:
+    """List declarative extension tool schemas without activating runners."""
+    from omnigent.extensions import plugin_state
+
+    tools = sorted(
+        ((manifest.id, tool) for manifest in plugin_state().manifests for tool in manifest.tools),
+        key=lambda item: (item[0], item[1].tool_name),
+    )
+    if not tools:
+        click.echo("No extension tools installed.")
+        return
+    for extension_id, tool in tools:
+        permissions = ",".join(sorted(item.value for item in tool.runner_permissions)) or "none"
+        click.echo(f"{tool.tool_name}\t{extension_id}\t{tool.enablement.value}\t{permissions}")
+
+
 @extensions_cli.command("doctor")
 @click.argument("extension_id")
 def extensions_doctor(extension_id: str) -> None:
@@ -4637,8 +4654,16 @@ def extensions_doctor(extension_id: str) -> None:
     click.echo(f"id: {manifest.id}")
     click.echo(f"distribution: {manifest.distribution} {manifest.version}")
     click.echo(f"extension API: {manifest.extension_api}")
+    if manifest.entrypoints.runner is not None:
+        click.echo(
+            f"runner: {manifest.entrypoints.runner} "
+            f"(package: {state.asset_package(extension_id) or 'unverified'})"
+        )
     for item in manifest.slot_items:
         click.echo(f"UI slot: {item.slot.value} -> {item.page} ({item.label})")
+    for tool in manifest.tools:
+        permissions = ", ".join(sorted(item.value for item in tool.runner_permissions)) or "none"
+        click.echo(f"tool: {tool.tool_name} ({tool.enablement.value}; permissions: {permissions})")
     if manifest.entrypoints.browser is None:
         click.echo("browser bundle: not declared")
         return

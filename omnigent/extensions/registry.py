@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import logging
 import re
 import threading
@@ -18,16 +19,20 @@ from packaging.version import InvalidVersion, Version
 from omnigent.extensions.api import (
     EXTENSION_API_VERSION,
     CommandContribution,
+    EnablementScope,
     ExtensionEntrypoints,
     ExtensionManifest,
     ExtensionPermission,
     ExtensionPluginState,
     PageContribution,
     PrimaryNavigationContribution,
+    RunnerPermission,
     SlotId,
     SlotItemContribution,
     SlotItemKind,
+    ToolContribution,
 )
+from omnigent.extensions.tool_names import extension_tool_prefix, validate_extension_tool_name
 from omnigent.version import VERSION
 
 ENTRY_POINT_GROUP = "omnigent.extensions"
@@ -45,6 +50,7 @@ _ROUTE_SEGMENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$")
 _ASSET_SEGMENT_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 _SYMBOL_RE = _ASSET_SEGMENT_RE
 _ACTIVATION_EVENT_RE = re.compile(r"^(onPage|onCommand):(.+)$")
+_RUNNER_ENTRYPOINT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_TEXT_LENGTH = 512
 _MAX_ASSET_DEPTH = 16
 
@@ -229,6 +235,35 @@ def _validate_slot_item(
         raise ExtensionValidationError(f"slot item {item.id!r} order must be an integer")
 
 
+def _validate_tool(extension_id: str, tool: ToolContribution) -> None:
+    _validate_contribution_id(extension_id, tool.id, "tool")
+    _require_text(tool.tool_name, f"tool {tool.id!r} name")
+    if error := validate_extension_tool_name(extension_id, tool.tool_name):
+        raise ExtensionValidationError(f"tool {tool.id!r} {error}")
+    _require_text(tool.title, f"tool {tool.id!r} title")
+    _require_text(tool.description, f"tool {tool.id!r} description")
+    if not isinstance(tool.input_schema, dict):
+        raise ExtensionValidationError(f"tool {tool.id!r} input_schema must be an object")
+    try:
+        serialized_schema = json.dumps(tool.input_schema)
+    except (TypeError, ValueError) as exc:
+        raise ExtensionValidationError(
+            f"tool {tool.id!r} input_schema must be JSON serializable"
+        ) from exc
+    if len(serialized_schema.encode()) > 64 * 1024:
+        raise ExtensionValidationError(f"tool {tool.id!r} input_schema exceeds 64 KB")
+    if tool.input_schema.get("type") not in {None, "object"}:
+        raise ExtensionValidationError(f"tool {tool.id!r} input_schema type must be 'object'")
+    if not isinstance(tool.runner_permissions, frozenset) or any(
+        not isinstance(permission, RunnerPermission) for permission in tool.runner_permissions
+    ):
+        raise ExtensionValidationError(f"tool {tool.id!r} has unsupported runner permissions")
+    if not isinstance(tool.enablement, EnablementScope):
+        raise ExtensionValidationError(f"tool {tool.id!r} has unsupported enablement scope")
+    if not isinstance(tool.is_async, bool):
+        raise ExtensionValidationError(f"tool {tool.id!r} is_async must be a boolean")
+
+
 def _validate_command(extension_id: str, command: CommandContribution) -> None:
     _validate_contribution_id(extension_id, command.id, "command")
     _require_text(command.title, f"command {command.id!r} title")
@@ -254,6 +289,7 @@ def validate_manifest(manifest: ExtensionManifest) -> None:
         "pages",
         "primary_navigation",
         "slot_items",
+        "tools",
         "commands",
         "activation_events",
     ):
@@ -265,6 +301,7 @@ def validate_manifest(manifest: ExtensionManifest) -> None:
         ("pages", manifest.pages, PageContribution),
         ("primary_navigation", manifest.primary_navigation, PrimaryNavigationContribution),
         ("slot_items", manifest.slot_items, SlotItemContribution),
+        ("tools", manifest.tools, ToolContribution),
         ("commands", manifest.commands, CommandContribution),
     ):
         invalid = [
@@ -342,6 +379,16 @@ def validate_manifest(manifest: ExtensionManifest) -> None:
         )
         if manifest.entrypoints.browser_css != "dist/extension.css":
             raise ExtensionValidationError("browser CSS entrypoint must be dist/extension.css")
+    if manifest.entrypoints.runner is not None:
+        _require_text(manifest.entrypoints.runner, "runner entrypoint")
+        if not _RUNNER_ENTRYPOINT_RE.fullmatch(manifest.entrypoints.runner):
+            raise ExtensionValidationError(
+                "runner entrypoint must use 'package.module:factory' syntax"
+            )
+    if bool(manifest.tools) != bool(manifest.entrypoints.runner):
+        raise ExtensionValidationError(
+            "runner entrypoint and tool contributions must be declared together"
+        )
 
     invalid_permissions = sorted(
         repr(permission)
@@ -358,6 +405,8 @@ def validate_manifest(manifest: ExtensionManifest) -> None:
         _validate_page(manifest.id, page)
     for command in manifest.commands:
         _validate_command(manifest.id, command)
+    for tool in manifest.tools:
+        _validate_tool(manifest.id, tool)
 
     page_ids = {page.id for page in manifest.pages}
     command_ids = {command.id for command in manifest.commands}
@@ -367,6 +416,7 @@ def validate_manifest(manifest: ExtensionManifest) -> None:
     for item in manifest.slot_items:
         _validate_slot_item(manifest.id, item, page_ids=page_ids)
     slot_item_ids = {item.id for item in manifest.slot_items}
+    tool_ids = {tool.id for tool in manifest.tools}
 
     _reject_duplicates((page.id for page in manifest.pages), "page ids")
     _reject_duplicates((page.route for page in manifest.pages), "page routes")
@@ -376,8 +426,10 @@ def validate_manifest(manifest: ExtensionManifest) -> None:
         "primary navigation ids",
     )
     _reject_duplicates((item.id for item in manifest.slot_items), "slot item ids")
+    _reject_duplicates((tool.id for tool in manifest.tools), "tool ids")
+    _reject_duplicates((tool.tool_name for tool in manifest.tools), "tool names")
     _reject_duplicates(
-        (*page_ids, *command_ids, *navigation_ids, *slot_item_ids),
+        (*page_ids, *command_ids, *navigation_ids, *slot_item_ids, *tool_ids),
         "contribution ids",
     )
 
@@ -430,10 +482,13 @@ def _manifest_claims(manifest: ExtensionManifest) -> tuple[str, ...]:
         *(command.id for command in manifest.commands),
         *(item.id for item in manifest.primary_navigation),
         *(item.id for item in manifest.slot_items),
+        *(tool.id for tool in manifest.tools),
     )
     return (
         f"extension:{manifest.id}",
+        *((f"tool-prefix:{extension_tool_prefix(manifest.id)}",) if manifest.tools else ()),
         *(f"contribution:{item}" for item in contribution_ids),
+        *(f"tool-name:{tool.tool_name}" for tool in manifest.tools),
         *(f"route:{manifest.id}/{page.route}" for page in manifest.pages),
     )
 
@@ -494,7 +549,14 @@ def _load_community_manifests() -> tuple[
                 )
             validate_manifest(manifest)
             _validate_distribution_metadata(entry_point, manifest)
-            candidates.append((key, manifest, _entry_point_asset_package(entry_point)))
+            package = _entry_point_asset_package(entry_point)
+            if manifest.entrypoints.runner is not None:
+                runner_package = manifest.entrypoints.runner.partition(":")[0].split(".", 1)[0]
+                if package is None or runner_package != package:
+                    raise ExtensionValidationError(
+                        "runner entrypoint must live in the extension entry point package"
+                    )
+            candidates.append((key, manifest, package))
         # Entry points are an external package boundary: one plugin may raise
         # any exception, and must not prevent healthy extensions from loading.
         except Exception as exc:  # noqa: BLE001

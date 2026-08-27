@@ -20,6 +20,7 @@ from omnigent.extensions import (
     SlotId,
     SlotItemContribution,
     SlotItemKind,
+    ToolContribution,
 )
 
 
@@ -271,6 +272,43 @@ def test_does_not_record_unverified_or_core_asset_package(
 
     assert state.asset_package(unverified.id) is None
     assert state.asset_package(core.id) is None
+
+
+def test_rejects_runner_entrypoint_outside_verified_plugin_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = replace(
+        _manifest(),
+        entrypoints=replace(
+            _manifest().entrypoints,
+            runner="other.runner:activate",
+        ),
+        tools=(
+            ToolContribution(
+                id="acme.review.run-tool",
+                tool_name="ext__acme_d_review__run",
+                title="Run",
+                description="Run a task.",
+                input_schema={"type": "object"},
+            ),
+        ),
+    )
+    _install_entry_points(
+        monkeypatch,
+        _EntryPoint(
+            "review",
+            manifest,
+            distribution=manifest.distribution,
+            version=manifest.version,
+            module="acme_review.plugin",
+            top_level="acme_review\n",
+        ),
+    )
+
+    assert (
+        "must live in the extension entry point package"
+        in registry.plugin_state().load_errors[f"{manifest.distribution}:review"]
+    )
 
 
 def test_records_bad_return_type_without_breaking_healthy_extension(

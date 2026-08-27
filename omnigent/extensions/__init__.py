@@ -3,15 +3,18 @@
 from omnigent.extensions.api import (
     EXTENSION_API_VERSION,
     CommandContribution,
+    EnablementScope,
     ExtensionEntrypoints,
     ExtensionManifest,
     ExtensionPermission,
     ExtensionPluginState,
     PageContribution,
     PrimaryNavigationContribution,
+    RunnerPermission,
     SlotId,
     SlotItemContribution,
     SlotItemKind,
+    ToolContribution,
 )
 from omnigent.extensions.conformance import check_extension_package
 from omnigent.extensions.registry import (
@@ -29,6 +32,7 @@ __all__ = [
     "EXTENSION_API_VERSION",
     "SUPPORTED_EXTENSION_API_VERSIONS",
     "CommandContribution",
+    "EnablementScope",
     "ExtensionEntrypoints",
     "ExtensionManifest",
     "ExtensionPermission",
@@ -36,9 +40,11 @@ __all__ = [
     "ExtensionValidationError",
     "PageContribution",
     "PrimaryNavigationContribution",
+    "RunnerPermission",
     "SlotId",
     "SlotItemContribution",
     "SlotItemKind",
+    "ToolContribution",
     "check_extension_package",
     "extension_manifest",
     "extension_manifests",

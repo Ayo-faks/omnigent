@@ -13,6 +13,7 @@ from omnigent.extensions import (
     ExtensionEntrypoints,
     ExtensionManifest,
     ExtensionPluginState,
+    ToolContribution,
 )
 from omnigent.extensions.assets import ResolvedBundle
 
@@ -39,6 +40,36 @@ def test_extensions_list(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "acme.review\t1.0.0\tReview" in result.output
+
+
+def test_extensions_tools_lists_declarative_metadata(monkeypatch) -> None:
+    tool = ToolContribution(
+        id="acme.review.echo-tool",
+        tool_name="ext__acme_d_review__echo",
+        title="Echo",
+        description="Echo text.",
+        input_schema={"type": "object"},
+    )
+    manifest = replace(
+        _manifest(),
+        entrypoints=ExtensionEntrypoints(runner="acme_review.runner:activate"),
+        tools=(tool,),
+    )
+    monkeypatch.setattr(
+        extensions_api,
+        "plugin_state",
+        lambda: ExtensionPluginState(manifests=(manifest,)),
+    )
+
+    result = CliRunner().invoke(cli, ["extensions", "tools"])
+
+    assert result.exit_code == 0
+    assert "ext__acme_d_review__echo\tacme.review\tdeployment\tnone" in result.output
+
+    doctor = CliRunner().invoke(cli, ["extensions", "doctor", manifest.id])
+    assert doctor.exit_code == 0
+    assert "runner: acme_review.runner:activate" in doctor.output
+    assert "tool: ext__acme_d_review__echo" in doctor.output
 
 
 def test_extensions_doctor_reports_resolved_bundle(monkeypatch) -> None:

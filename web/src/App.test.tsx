@@ -51,6 +51,7 @@ vi.mock("@/extensions/ExtensionProvider", () => ({
       ],
       primary_navigation: [],
       slot_items: [],
+      tools: [],
       browser: {
         declared: true,
         has_styles: false,

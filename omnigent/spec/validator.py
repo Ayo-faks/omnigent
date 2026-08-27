@@ -340,6 +340,7 @@ def _validate_local_tools(spec: AgentSpec, result: ValidationResult) -> None:
     # Lazy import to avoid pulling the tools package during
     # spec load (the validator runs from ``omnigent.spec``,
     # which is a lower layer than ``omnigent.tools``).
+    from omnigent.tool_namespaces import EXTENSION_TOOL_MARKER
     from omnigent.tools.builtins import BUILTIN_NAMES
 
     # Collect everything the agent declares and cross-check
@@ -347,6 +348,11 @@ def _validate_local_tools(spec: AgentSpec, result: ValidationResult) -> None:
     # also used for duplicate-name detection across sources.
     all_tool_names: set[str] = set()
     for i, mcp in enumerate(spec.mcp_servers):
+        if mcp.name.startswith(EXTENSION_TOOL_MARKER):
+            result.add(
+                f"mcp_servers[{i}].name",
+                f"tool name prefix {EXTENSION_TOOL_MARKER!r} is reserved for extension tools",
+            )
         if mcp.name in BUILTIN_NAMES:
             result.add(
                 f"mcp_servers[{i}].name",
@@ -355,6 +361,11 @@ def _validate_local_tools(spec: AgentSpec, result: ValidationResult) -> None:
             )
         all_tool_names.add(mcp.name)
     for i, tool in enumerate(spec.local_tools):
+        if tool.name.startswith(EXTENSION_TOOL_MARKER):
+            result.add(
+                f"local_tools[{i}].name",
+                f"tool name prefix {EXTENSION_TOOL_MARKER!r} is reserved for extension tools",
+            )
         if tool.name in BUILTIN_NAMES:
             result.add(
                 f"local_tools[{i}].name",

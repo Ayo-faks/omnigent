@@ -268,6 +268,20 @@ def test_parse_rejects_invalid_tool_name(name: str) -> None:
         parse_client_side_tool_spec(raw)
 
 
+def test_parse_rejects_reserved_extension_tool_prefix() -> None:
+    raw = {
+        "type": "function",
+        "function": {
+            "name": "ext__acme_d_review__run",
+            "description": "A tool.",
+            "parameters": {},
+        },
+    }
+
+    with pytest.raises(ValueError, match="reserved for extension tools"):
+        parse_client_side_tool_spec(raw)
+
+
 @pytest.mark.parametrize(
     "name",
     [
