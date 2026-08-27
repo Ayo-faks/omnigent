@@ -171,7 +171,7 @@ def test_auth_runs_on_main_thread(
     reads) is not safe from a ``ThreadPoolExecutor`` worker: the worker has no
     controlling terminal, and concurrent stdout/stderr writes corrupt the
     display.  On the fixed code auth is run directly on the calling thread;
-    only the daemon (which needs no TTY) is dispatched to a worker.
+    both calls run sequentially on the main thread.
     """
     _patch_url_resolution(monkeypatch)
 
