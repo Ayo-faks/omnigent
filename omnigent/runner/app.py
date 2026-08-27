@@ -9556,7 +9556,7 @@ def create_runner_app(
 
         try:
             catalog = await asyncio.to_thread(catalog_for_spec, spec)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.exception(
                 "get_session_models: catalog_for_spec failed for session=%s",
                 session_id,
@@ -10388,7 +10388,7 @@ def create_runner_app(
             if family.base_url:
                 conn["base_url"] = family.base_url
             return conn or None
-        except Exception:
+        except Exception:  # noqa: BLE001
             _logger.warning(
                 "/v1/summarize: failed to resolve provider %r",
                 provider_name,
