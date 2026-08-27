@@ -57,7 +57,7 @@ from ._events import MCP_ELICITATION_METHOD, ElicitationRequest
 from ._query import QueryResult, QueryStream
 from ._server import LocalServer
 from ._session import Session
-from ._sessions import PaginatedList, RegisteredAgent, SessionsNamespace
+from ._sessions import RegisteredAgent, SessionsNamespace
 from ._sessions_chat import SessionsChat, SessionToolCallInfo, ToolCallable
 from ._stream import BlockStream, format_tool_args_brief
 from ._tool_handler import (
@@ -73,7 +73,7 @@ from ._transforms import (
     skip_blocks,
     skip_intermediate_ends,
 )
-from ._types import File
+from ._types import File, PaginatedList
 from .tools import ToolMetadata, ToolState, tool
 
 __all__ = [

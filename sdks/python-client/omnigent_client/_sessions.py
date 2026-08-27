@@ -36,6 +36,7 @@ from omnigent.server.schemas import ServerStreamEvent
 from ._child_status import child_summary_busy
 from ._errors import OmnigentError, raise_for_status, require_json_object, response_body
 from ._timeouts import _SSE_TIMEOUT
+from ._types import PaginatedList
 
 # Default recursion cap for the sub-agent tree helpers. Mirrors web's
 # ``MAX_TREE_DEPTH`` and the REPL's ``_MAX_SUBAGENT_TREE_DEPTH`` so the SDK
@@ -328,29 +329,6 @@ class RegisteredAgent:
 
     id: str
     harness: str | None = None
-
-
-@dataclass(frozen=True)
-class PaginatedList:
-    """A single page of results from a cursor-paginated server endpoint.
-
-    Returned by :meth:`SessionsNamespace.list_items` and
-    :meth:`SessionsNamespace.child_sessions` so callers can detect
-    truncated listings and advance to the next page.
-
-    :param data: The items on this page.
-    :param has_more: Whether the server has more results beyond this page.
-    :param first_id: Cursor pointing at the first item on this page;
-        ``None`` when the page is empty or the server did not supply one.
-    :param last_id: Cursor pointing at the last item on this page; pass
-        as ``after=`` to fetch the next page.  ``None`` when the page is
-        empty or the server did not supply one.
-    """
-
-    data: builtins.list[dict[str, Any]]
-    has_more: bool
-    first_id: str | None = None
-    last_id: str | None = None
 
 
 class SessionsNamespace:
