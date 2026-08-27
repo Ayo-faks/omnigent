@@ -95,7 +95,9 @@ async def test_failed_subagent_stranded_after_empty_wake_turn() -> None:
     harness_client = _BlockingHarnessClient(
         [
             _sse({"type": "response.created", "response": {"id": "resp_wake_empty"}}),
-            _sse({"type": "response.completed", "response": {"id": "resp_wake_empty", "output": []}}),
+            _sse(
+                {"type": "response.completed", "response": {"id": "resp_wake_empty", "output": []}}
+            ),
         ],
         gate,
     )
