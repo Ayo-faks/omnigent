@@ -3262,9 +3262,11 @@ def create_runner_app(
                 )
                 if _sub_entry is None:
                     _warn_unresolved_sub_agent(session_id, _sa_name_assign)
+                    _session_sub_agent_resolved[session_id] = False
                 else:
                     spec_entry = _sub_entry
                     spec = _unwrap_resolved_spec(_sub_entry)
+                    _session_sub_agent_resolved[session_id] = True
             harness_name = spec.executor.config.get("harness") or spec.executor.type
             harness_name = canonicalize_harness(harness_name) or harness_name
 
