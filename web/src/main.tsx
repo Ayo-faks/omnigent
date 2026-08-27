@@ -11,6 +11,7 @@ import { QueueFlushProvider } from "./hooks/QueueFlushProvider";
 import { SessionUpdatesProvider } from "./hooks/SessionUpdatesProvider";
 import { resolveServerInfo, type ServerInfo } from "./lib/capabilities";
 import { CapabilitiesProvider } from "./lib/CapabilitiesContext";
+import { ExtensionProvider } from "./extensions/ExtensionProvider";
 import { createBootServerInfo, withBootTimeout } from "./lib/bootCapabilities";
 import { isLoginRedirectPending, resolveIdentity } from "./lib/identity";
 import { initNativeInsets } from "./lib/nativeInsets";
@@ -127,21 +128,23 @@ function RootApp({ initialInfo }: { initialInfo: ServerInfo }) {
   return (
     <CapabilitiesProvider info={info}>
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <TooltipProvider>
-            <ImageLightboxProvider>
-              <BrowserRouter>
-                <SessionUpdatesProvider>
-                  <RunnerHealthProvider>
-                    <QueueFlushProvider>
-                      <App />
-                    </QueueFlushProvider>
-                  </RunnerHealthProvider>
-                </SessionUpdatesProvider>
-              </BrowserRouter>
-            </ImageLightboxProvider>
-          </TooltipProvider>
-        </ThemeProvider>
+        <ExtensionProvider>
+          <ThemeProvider>
+            <TooltipProvider>
+              <ImageLightboxProvider>
+                <BrowserRouter>
+                  <SessionUpdatesProvider>
+                    <RunnerHealthProvider>
+                      <QueueFlushProvider>
+                        <App />
+                      </QueueFlushProvider>
+                    </RunnerHealthProvider>
+                  </SessionUpdatesProvider>
+                </BrowserRouter>
+              </ImageLightboxProvider>
+            </TooltipProvider>
+          </ThemeProvider>
+        </ExtensionProvider>
       </QueryClientProvider>
     </CapabilitiesProvider>
   );

@@ -185,6 +185,10 @@ import {
 } from "./sidebarNav";
 import { SidebarServerPicker } from "./SidebarServerPicker";
 import { SIDEBAR_ROW } from "./sidebarStyles";
+import { ExtensionPrimaryNavigation } from "@/extensions/ExtensionPrimaryNavigation";
+import { useExtensions } from "@/extensions/ExtensionProvider";
+import { extensionPathParts, resolveExtensionPageFromPath } from "@/extensions/catalog";
+import { PrimaryNavLink } from "./PrimaryNavLink";
 
 // Positioning for a row's trailing session-state badge. On desktop it shares
 // the controls' right-1 edge and fades on hover so the pin + kebab take its
@@ -304,16 +308,25 @@ function useActiveNavItem(): {
   isInboxPage: boolean;
   isTasksPage: boolean;
   isUsagePage: boolean;
+  activeExtensionPageId: string | null;
   newSessionProjectName: string | null;
 } {
   const { conversationId: activeConversationId } = useParams<{ conversationId: string }>();
   const location = useLocation();
+  const extensions = useExtensions();
   const leaf = location.pathname.split("/").filter(Boolean).at(-1);
-  const isInboxPage = leaf === "inbox";
-  const isTasksPage = leaf === "tasks";
-  const isUsagePage = leaf === "usage";
+  const isExtensionRoute = extensionPathParts(location.pathname) !== null;
+  const isInboxPage = !isExtensionRoute && leaf === "inbox";
+  const isTasksPage = !isExtensionRoute && leaf === "tasks";
+  const isUsagePage = !isExtensionRoute && leaf === "usage";
+  const activeExtensionPageId =
+    resolveExtensionPageFromPath(extensions, location.pathname)?.page.id ?? null;
   const isNewSessionRoute =
-    activeConversationId == null && !isInboxPage && !isTasksPage && !isUsagePage;
+    activeConversationId == null &&
+    !isInboxPage &&
+    !isTasksPage &&
+    !isUsagePage &&
+    !isExtensionRoute;
   const requestedProject = isNewSessionRoute
     ? new URLSearchParams(location.search).get("project")
     : null;
@@ -322,7 +335,14 @@ function useActiveNavItem(): {
   // would otherwise light up the "New session" button. A project-prefilled
   // new session belongs to that project row instead of the global nav item.
   const isNewChatPage = isNewSessionRoute && newSessionProjectName == null;
-  return { isNewChatPage, isInboxPage, isTasksPage, isUsagePage, newSessionProjectName };
+  return {
+    isNewChatPage,
+    isInboxPage,
+    isTasksPage,
+    isUsagePage,
+    activeExtensionPageId,
+    newSessionProjectName,
+  };
 }
 
 /**
@@ -598,8 +618,14 @@ export function Sidebar({
   }
 
   // Which top-level nav button to highlight for the current route.
-  const { isNewChatPage, isInboxPage, isTasksPage, isUsagePage, newSessionProjectName } =
-    useActiveNavItem();
+  const {
+    isNewChatPage,
+    isInboxPage,
+    isTasksPage,
+    isUsagePage,
+    activeExtensionPageId,
+    newSessionProjectName,
+  } = useActiveNavItem();
 
   // On /settings the card keeps its chrome but swaps the conversation list
   // for the settings section nav (see settingsNav.tsx) — entering settings
@@ -831,97 +857,39 @@ export function Sidebar({
           </div>
 
           <div className="flex flex-col gap-0 px-2 pt-2 pb-0" data-testid="sidebar-primary-nav">
-            {/* "New session" routes to the home composer ("/"), which now owns
-            session creation end-to-end (host/workspace/worktree chips +
-            send). Rendered as a Link so cmd/middle-click opens it in a new
-            tab; onNavClick still closes the sidebar on a plain mobile tap. */}
-            <Button
-              asChild
-              className={cn(
-                // px-2 + gap-2 puts the icon on the sidebar's left (red) column
-                // and the label on the label (blue) column — matching section
-                // headers and project folders. border-0 drops the Button base's
-                // transparent 1px border so the icon lands exactly on that
-                // column, flush with the Inbox row and folder rows.
-                SIDEBAR_ROW,
-                "w-full justify-start border-0 font-normal",
-                SIDEBAR_HOVER_HIGHLIGHT,
-                isNewChatPage && SIDEBAR_ACTIVE_HIGHLIGHT,
-              )}
-              variant="ghost"
-              data-testid="new-chat-button"
-            >
-              {/* New session always creates a session the viewer owns, which
-              lands under "My sessions" — so snap the tab back there on click
-              (the button stays visible on both tabs). */}
-              <Link
-                to="/"
-                componentId="sidebar.new_chat"
-                onClick={(e) => {
-                  switchTab("mine");
-                  onNavClick(e);
-                }}
-              >
-                <SquarePenIcon
-                  className={cn(
-                    "ui-icon",
-                    isNewChatPage
-                      ? "text-[var(--sidebar-active-foreground)]"
-                      : "text-muted-foreground",
-                  )}
-                />
-                New session
-              </Link>
-            </Button>
-            {/* Keep Scheduled in the primary nav group with the same row treatment as New session. */}
-            <Button
-              asChild
-              className={cn(
-                // Same shared nav-row construct as "New session" / "Inbox" so
-                // the active-pill, hover, insets, icon column, and text weight
-                // all match post-refactor.
-                SIDEBAR_ROW,
-                "w-full justify-start border-0 font-normal",
-                SIDEBAR_HOVER_HIGHLIGHT,
-                isTasksPage && SIDEBAR_ACTIVE_HIGHLIGHT,
-              )}
-              variant="ghost"
-              data-testid="scheduled-tasks-nav"
-            >
-              <Link to="/tasks" onClick={onNavClick} componentId="sidebar.tasks">
-                <ClockIcon
-                  className={cn(
-                    "ui-icon",
-                    isTasksPage
-                      ? "text-[var(--sidebar-active-foreground)]"
-                      : "text-muted-foreground",
-                  )}
-                />
-                Automations
-              </Link>
-            </Button>
-            <Button
-              asChild
-              variant="ghost"
-              className={cn(
-                SIDEBAR_ROW,
-                "w-full justify-start border-0 font-normal",
-                SIDEBAR_HOVER_HIGHLIGHT,
-                isInboxPage && SIDEBAR_ACTIVE_HIGHLIGHT,
-              )}
-              data-testid="inbox-button"
-            >
-              <Link to="/inbox" onClick={onNavClick} componentId="sidebar.inbox">
-                <InboxIcon
-                  className={cn(
-                    "ui-icon",
-                    isInboxPage
-                      ? "text-[var(--sidebar-active-foreground)]"
-                      : "text-muted-foreground",
-                  )}
-                />
-                Inbox
-                {inboxCount > 0 && (
+            {/* New session always creates a session the viewer owns, so snap
+            the tab back to "My sessions" on a normal navigation click. */}
+            <PrimaryNavLink
+              to="/"
+              label="New session"
+              icon={SquarePenIcon}
+              active={isNewChatPage}
+              onClick={(event) => {
+                switchTab("mine");
+                onNavClick(event);
+              }}
+              componentId="sidebar.new_chat"
+              testId="new-chat-button"
+            />
+            <PrimaryNavLink
+              to="/tasks"
+              label="Automations"
+              icon={ClockIcon}
+              active={isTasksPage}
+              onClick={onNavClick}
+              componentId="sidebar.tasks"
+              testId="scheduled-tasks-nav"
+            />
+            <PrimaryNavLink
+              to="/inbox"
+              label="Inbox"
+              icon={InboxIcon}
+              active={isInboxPage}
+              onClick={onNavClick}
+              componentId="sidebar.inbox"
+              testId="inbox-button"
+              trailing={
+                inboxCount > 0 ? (
                   <span
                     aria-label={
                       inboxCount === 1
@@ -930,41 +898,28 @@ export function Sidebar({
                     }
                     className={cn(
                       "ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-10 font-medium text-[var(--sidebar-active-foreground)] tabular-nums",
-                      // The active Inbox row already paints the translucent
-                      // --sidebar-active wash; repainting it on the nested
-                      // badge would double-composite to a darker fill.
                       isInboxPage ? "bg-transparent" : "bg-[var(--sidebar-active)]",
                     )}
                   >
                     {inboxCount}
                   </span>
-                )}
-              </Link>
-            </Button>
+                ) : null
+              }
+            />
+            <ExtensionPrimaryNavigation
+              activePageId={activeExtensionPageId}
+              onNavigate={onNavClick}
+            />
             {usagePageEnabled && (
-              <Button
-                asChild
-                variant="ghost"
-                className={cn(
-                  SIDEBAR_ROW,
-                  "w-full justify-start border-0 font-normal",
-                  SIDEBAR_HOVER_HIGHLIGHT,
-                  isUsagePage && SIDEBAR_ACTIVE_HIGHLIGHT,
-                )}
-                data-testid="usage-nav"
-              >
-                <Link to="/usage" onClick={onNavClick} componentId="sidebar.usage">
-                  <WalletIcon
-                    className={cn(
-                      "ui-icon",
-                      isUsagePage
-                        ? "text-[var(--sidebar-active-foreground)]"
-                        : "text-muted-foreground",
-                    )}
-                  />
-                  Usage
-                </Link>
-              </Button>
+              <PrimaryNavLink
+                to="/usage"
+                label="Usage"
+                icon={WalletIcon}
+                active={isUsagePage}
+                onClick={onNavClick}
+                componentId="sidebar.usage"
+                testId="usage-nav"
+              />
             )}
           </div>
 
