@@ -4189,28 +4189,8 @@ def _default_collaboration_mode(
     """
     Build Codex's Default collaboration mode for ``turn/start``.
 
-    ``developer_instructions`` reuses ``forwarder_state.developer_instructions``
-    (seeded/refreshed from ``config.toml`` — see
-    ``_refresh_developer_instructions_from_config``) so a Default-mode
-    implementation turn does not silently overwrite whatever instructions
-    ``build_codex_native_server`` persisted at app-server build time. Sent
-    as ``None`` only when ``developer_instructions_known`` confirms no
-    current instructions genuinely exist (a real, confirmed ABSENT read),
-    in which case Codex app-server fills in its own built-in Default-mode
-    instructions via its normalization path, same as before this seeding
-    existed. When a value has never been successfully confirmed at all
-    (``developer_instructions_known`` is ``False`` — e.g. every config read
-    so far has been UNREADABLE), this function refuses to build a payload
-    and returns ``None`` outright, exactly like the ``forwarder_state.model``
-    unknown case below: sending an unconfirmed ``None`` as an explicit
-    ``developer_instructions: null`` risks wiping a value that genuinely
-    exists but just hasn't been read successfully yet — the destructive-wipe
-    class this whole seeding mechanism exists to prevent.
-
-    :param forwarder_state: Mutable state with the current model and
-        developer instructions.
     :returns: Codex ``CollaborationMode`` JSON object, or ``None`` when the
-        model or the developer-instructions state is not yet known.
+        model or developer-instructions state is not yet confirmed.
     """
     if not forwarder_state.model:
         return None
