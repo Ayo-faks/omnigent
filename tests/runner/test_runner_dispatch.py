@@ -10492,19 +10492,16 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
             {"status": 202, "terminal_status": "failed"},
             id="resolver_raises-background-async-failure",
         ),
-        # ── Resolver returns None: a legitimate "no such agent" answer rather
-        # than a transport failure, so the split is NOT the same as above.
+        # ── Resolver returns None: treated the same as resolver_raises after
+        # fix(runner): raise on unresolvable harness (#5505). A configured
+        # resolver returning None now raises RuntimeError in
+        # _resolve_harness_config so both failure modes surface as 503 on the
+        # no-harness path and as a failed async turn on the background path.
         pytest.param(
             "resolver_none",
             "no_harness",
-            # NOT a 503, unlike this path's other two failure rows. A resolver
-            # returning None is a legitimate "no spec" answer rather than a
-            # transport failure, so this path falls back and dispatches with no
-            # composed instructions instead of erroring. This asymmetry within
-            # a single path is exactly the kind of thing that used to be
-            # invisible.
-            {"status": 200, "error": None, "instructions": None},
-            id="resolver_none-no_harness-falls-back",
+            {"status": 503, "error": "spec_resolver_failed"},
+            id="resolver_none-no_harness-503",
         ),
         pytest.param(
             "resolver_none",
@@ -10515,22 +10512,12 @@ def _contract_resolver_for(scenario: str, calls: list[str]) -> Any:
         pytest.param(
             "resolver_none",
             "background",
-            # ``status`` alone asserts nothing here: the adapter hard-asserts
-            # 202 before it waits and always reports it, so a row expecting
-            # only that would pass whether the turn finished, failed async, or
-            # never reached a harness at all. The discriminating keys are the
-            # terminal status and the absence of composed instructions.
-            #
-            # ``resolver_calls == 2`` is pinned deliberately. A None result
-            # is NOT cached — a cached None would serve a stale negative to
-            # later reads — so each consumer re-asks: once in background
-            # setup, once again for composition.
-            # The count documents that consequence; it is not a claim that
-            # resolving twice is desirable.
+            # ``resolver_calls == 2`` is pinned: once in background setup
+            # (returns None, no cache), once in _resolve_harness_config
+            # (returns None, raises RuntimeError → failed turn).
             {
                 "status": 202,
-                "terminal_status": "idle",
-                "instructions": None,
+                "terminal_status": "failed",
                 "resolver_calls": 2,
             },
             id="resolver_none-background",
