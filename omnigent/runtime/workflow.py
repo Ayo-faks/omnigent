@@ -2913,12 +2913,9 @@ def _find_spec_by_name(
     child ``__web_researcher`` session boots by re-parsing the bundle
     fresh (``runner/_entry.py`` spec resolver), so the researcher is
     absent from the re-parsed tree and a plain search returns ``None``.
-    ``None`` means not found; callers warn and continue with the parent spec.
-    The root is never a self-match — a root whose ``spec.name`` equals ``name``
-    still returns ``None`` so a fresh top-level session that merely shares a
-    name with a sub-agent name reports a miss rather than a false hit.
+    The root is never matched against itself, even when ``spec.name == name``.
 
-    :param spec: The PARENT/root agent spec to search under.
+    :param spec: The root agent spec to search under.
     :param name: The sub-agent name to find,
         e.g. ``"researcher"``.
     :returns: The matching sub-agent spec, the reconstructed
