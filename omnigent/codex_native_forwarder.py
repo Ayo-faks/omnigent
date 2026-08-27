@@ -4155,19 +4155,7 @@ async def _start_clear_context_plan_implementation_turn(
     :param forwarder_state: Mutable state with the current model.
     :returns: None.
     """
-    # Validate the SAME gate _start_plan_implementation_turn applies —
-    # model AND developer_instructions_known — before creating/recording
-    # anything. Unlike the non-clear-context sibling (which reuses an
-    # EXISTING thread and can cleanly no-op on a gate failure), this path
-    # creates a NEW thread and switches the bridge's active thread to it.
-    # Checking only ``forwarder_state.model`` here and leaving the
-    # developer_instructions check to the later call into
-    # _start_plan_implementation_turn meant a never-confirmed
-    # developer_instructions state let a bare thread/start through, the
-    # bridge switched to that new (now orphaned) empty thread, and the
-    # actual implementation turn silently never started — the user's
-    # "implement the completed plan" action would appear accepted but do
-    # nothing.
+    # Gate before creating the new thread — a gate failure after switch leaves an orphaned thread.
     if _default_collaboration_mode(forwarder_state) is None:
         _logger.warning(
             "Codex clear-context plan implementation skipped: current model or "
