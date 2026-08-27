@@ -180,6 +180,5 @@ def test_github_provider_reauth_sends_no_prompt(github_client: TestClient) -> No
         f"got authorization URL: {location!r}"
     )
     assert "max_age" not in params, (
-        "GitHub OAuth /auth/login must NOT include max_age; "
-        f"got authorization URL: {location!r}"
+        f"GitHub OAuth /auth/login must NOT include max_age; got authorization URL: {location!r}"
     )

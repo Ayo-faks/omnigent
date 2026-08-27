@@ -21,10 +21,11 @@ Endpoints (all mounted at the app root):
   returns delegated access + refresh tokens.
 - ``POST /oauth/revoke`` — revoke a grant (backs client logout).
 
-Mounted only in ``accounts`` auth mode (and only when
-``OMNIGENT_DEVICE_GRANT_ENABLED`` is set). OIDC deployments delegate login
-to the IdP via the cli-ticket flow (``/auth/cli-login``) and never use this
-grant; header mode has no server-mintable identity.
+Mounted in ``accounts`` and ``oidc`` (standard OIDC) auth modes when
+``OMNIGENT_DEVICE_GRANT_ENABLED`` is set. GitHub OAuth (``provider_type=="github"``)
+and header mode are excluded: GitHub does not support ``prompt=login``/
+``max_age=0`` so the anti-phishing re-auth gate cannot be enforced;
+header mode has no server-mintable identity.
 
 See ``designs/DEVICE_AUTH.md`` for the full design + threat model.
 
@@ -453,7 +454,7 @@ def create_oauth_token_router(
             device_grant_store.purge_expired(
                 int(now_wall), max_lifetime_seconds=_grant_max_lifetime
             )
-        except Exception:  # noqa: BLE001 — housekeeping must never fail a refresh
+        except Exception:
             _logger.debug("oauth/token: opportunistic grant purge failed", exc_info=True)
 
     def _issue_access_token(grant_id: str, user_id: str, client_id: str) -> str:

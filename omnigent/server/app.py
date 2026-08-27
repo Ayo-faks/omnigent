@@ -761,7 +761,7 @@ def _ensure_default_acp_agents(
 
         configured = list(acp_agents())
         shadowed: frozenset[str] = shadowed_builtin_acp_rows(configured)
-    except Exception:  # noqa: BLE001 — a malformed acp: block must never break startup
+    except Exception:
         _logger.debug("acp agent seeding skipped (config unreadable)", exc_info=True)
         configured = []
         shadowed = frozenset()
@@ -2835,10 +2835,17 @@ def create_app(
         # designs/DEVICE_AUTH.md.
         from omnigent.server.auth import env_var_is_truthy
 
+        _is_github_oidc = (
+            isinstance(auth_provider, UnifiedAuthProvider)
+            and auth_provider._source == "oidc"
+            and auth_provider._oidc_config is not None
+            and getattr(auth_provider._oidc_config, "provider_type", None) == "github"
+        )
         if (
             env_var_is_truthy("OMNIGENT_DEVICE_GRANT_ENABLED", default=False)
             and isinstance(auth_provider, UnifiedAuthProvider)
             and auth_provider._source in ("accounts", "oidc")
+            and not _is_github_oidc
             and device_grant_store is not None
         ):
             from omnigent.server.routes.device_auth import create_device_auth_router
@@ -2867,6 +2874,15 @@ def create_app(
             # No device flow, but login-issued refresh grants still need
             # their token/revoke endpoints — in OIDC mode and in accounts
             # mode without the flag alike.
+            if _is_github_oidc and env_var_is_truthy(
+                "OMNIGENT_DEVICE_GRANT_ENABLED", default=False
+            ):
+                _logger.warning(
+                    "device-grant: GitHub OAuth does not support prompt=login / "
+                    "max_age=0, so the anti-phishing re-auth gate cannot be enforced. "
+                    "Device-grant flow skipped for this deployment; only "
+                    "/oauth/token + /oauth/revoke are mounted."
+                )
             from omnigent.server.routes.device_auth import create_oauth_token_router
 
             app.include_router(
