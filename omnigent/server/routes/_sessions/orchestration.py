@@ -1165,7 +1165,6 @@ def _build_session_response(
 
 def _resolve_session_provider_entry(
     conv: Any,
-    harness: str | None,
 ) -> Any | None:
     """Return the ProviderEntry for the session's actual named provider, if any.
 
@@ -1213,7 +1212,7 @@ def _resolve_session_provider_entry(
 
         providers = load_providers(effective_config_with_detected(load_config()))
         return providers.get(auth.name)
-    except Exception:
+    except Exception:  # noqa: BLE001 — broken spec must never break cost accounting
         return None
 
 
@@ -1323,7 +1322,7 @@ def _accumulate_session_usage(
             # Resolve the actual provider the session was launched with so
             # sessions on a non-default named provider are priced at their
             # configured rate rather than the harness default's rate.
-            provider_entry = _resolve_session_provider_entry(conv, harness)
+            provider_entry = _resolve_session_provider_entry(conv)
             pricing = fetch_model_pricing_with_provider(
                 llm_model,
                 provider_config=provider_config,
@@ -1525,7 +1524,7 @@ def _persist_native_cumulative_usage(
             harness = _resolve_harness(conv) if conv else None
             # Resolve the actual named provider so non-default sessions are
             # priced at their configured rate, not the harness default's rate.
-            provider_entry = _resolve_session_provider_entry(conv, harness)
+            provider_entry = _resolve_session_provider_entry(conv)
             pricing = fetch_model_pricing_with_provider(
                 model_name,
                 provider_config=provider_config,
