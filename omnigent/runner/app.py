@@ -2411,6 +2411,10 @@ def create_runner_app(
 
     _session_agent_ids = _session_agent_ids_ref  # shared with module-level get_session_agent_id
     _session_sub_agent_names: dict[str, str] = {}
+    # Tracks whether the sub-agent was successfully resolved on session create.
+    # True = child spec is cached; False = parent kept as fallback after miss.
+    # Absent = session has no sub_agent_name or create has not completed.
+    _session_sub_agent_resolved: dict[str, bool] = {}
     # Per-conversation set of (harness, InstructionDelivery) pairs already
     # warned about. Keyed by conversation so a session that switches harnesses
     # warns again for the new pair rather than inheriting the old one's silence.
@@ -3927,6 +3931,8 @@ def create_runner_app(
         _session_fs_registries.pop(session_id, None)
         _session_agent_ids.pop(session_id, None)
         _session_tool_schemas.pop(session_id, None)
+        _instruction_delivery_warned.pop(session_id, None)
+        _session_sub_agent_resolved.pop(session_id, None)
         if _binding := _session_comment_relays.pop(session_id, None):
             _binding.relay.close()
         _session_histories.pop(session_id, None)
@@ -6623,6 +6629,19 @@ def create_runner_app(
                 _bg_warn_key = (harness_name, _bg_delivery)
                 if _bg_warn_key not in _instruction_delivery_warned.get(conv, ()):
                     _instruction_delivery_warned.setdefault(conv, set()).add(_bg_warn_key)
+                    if _bg_delivery in (
+                        InstructionDelivery.NOT_DELIVERED,
+                        InstructionDelivery.UNKNOWN,
+                    ):
+                        _logger.warning(
+                            "agent instructions not delivered for session=%s "
+                            "harness=%s delivery=%s — authored instructions "
+                            "accepted but have no delivery channel on this harness.",
+                            conv,
+                            harness_name,
+                            _bg_delivery.value,
+                            extra={"session_id": conv},
+                        )
 
         ctx = TurnDispatch(
             agent_id=_dispatched_agent_id,
@@ -7197,18 +7216,27 @@ def create_runner_app(
                                 _instruction_delivery_warned.setdefault(conv_id, set()).add(
                                     _ds_warn_key
                                 )
-            # Re-emit the unresolvable-sub-agent warning on every turn so callers
-            # that missed the session-create warning (e.g. a reconnect) still see it.
+                                if _ds_delivery in (
+                                    InstructionDelivery.NOT_DELIVERED,
+                                    InstructionDelivery.UNKNOWN,
+                                ):
+                                    _logger.warning(
+                                        "agent instructions not delivered for session=%s "
+                                        "harness=%s delivery=%s — authored instructions "
+                                        "accepted but have no delivery channel on this harness.",
+                                        conv_id,
+                                        harness_name,
+                                        _ds_delivery.value,
+                                        extra={"session_id": conv_id},
+                                    )
+            # Re-emit the unresolvable-sub-agent warning on every turn when the
+            # session-create resolution positively established a miss (False), so
+            # callers that reconnect after the create warning still see the signal.
+            # Only warn when the resolution result is False (miss) — True means the
+            # child was resolved and cached; absent means unknown/no sub-agent.
             _ds_sa = _session_sub_agent_names.get(conv_id)
-            if _ds_sa:
-                _ds_cached_entry = _session_spec_cache.get(conv_id)
-                _ds_cached_spec = _unwrap_resolved_spec(_ds_cached_entry)
-                if _ds_cached_spec is not None:
-                    _ds_sub = _native_runtime._resolve_sub_agent_spec_entry(
-                        _ds_cached_entry, _ds_sa
-                    )
-                    if _ds_sub is None:
-                        _warn_unresolved_sub_agent(conv_id, _ds_sa)
+            if _ds_sa and _session_sub_agent_resolved.get(conv_id) is False:
+                _warn_unresolved_sub_agent(conv_id, _ds_sa)
             event_body = _wrap_as_message_event(_instr_body)
             _inject_mcp_schemas(event_body, _mcp_schemas)
             _response_id: str | None = None
@@ -9393,8 +9421,10 @@ def create_runner_app(
                     )
                     if sub_entry is None:
                         _warn_unresolved_sub_agent(session_id, sub_agent_name)
+                        _session_sub_agent_resolved[session_id] = False
                     else:
                         spec_entry = sub_entry
+                        _session_sub_agent_resolved[session_id] = True
             if _session_cache_generation_is_current(session_id, generation):
                 _session_spec_cache[session_id] = spec_entry
             return spec_entry
@@ -9927,7 +9957,8 @@ def create_runner_app(
         _drop_session_claude_launch_config(session_id)
         _session_tool_schemas.pop(session_id, None)
         _session_mcp_spec_hash.pop(session_id, None)
-        _session_snapshot_cache.pop(session_id, None)
+        _instruction_delivery_warned.pop(session_id, None)
+        _session_sub_agent_resolved.pop(session_id, None)
         if agent_id:
             _spec_cache.pop(agent_id, None)
 
