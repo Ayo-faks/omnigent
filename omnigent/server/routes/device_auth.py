@@ -646,6 +646,16 @@ def create_device_auth_router(
     else:
         assert auth_provider._oidc_config is not None
         _mode_cfg = auth_provider._oidc_config
+        # GitHub OAuth runs under _source == "oidc" but does not support
+        # prompt=login / max_age, so the anti-phishing reauth gate cannot
+        # be enforced. Refuse to build the device-grant router for it.
+        if getattr(_mode_cfg, "provider_type", None) == "github":
+            raise RuntimeError(
+                "create_device_auth_router: GitHub OAuth does not support forced "
+                "re-authentication (prompt=login); the device-grant anti-phishing "
+                "gate cannot be enforced. Set OMNIGENT_DEVICE_GRANT_ENABLED only "
+                "for standard OIDC deployments."
+            )
     base_url = _mode_cfg.base_url
     session_cookie_name: str = _mode_cfg.session_cookie_name
 

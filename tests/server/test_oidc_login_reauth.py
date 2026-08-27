@@ -137,3 +137,49 @@ def test_login_with_reauth_forces_prompt_login_at_idp(login_client: TestClient) 
         "/auth/login?reauth=1 must add max_age=0 to the IdP authorization URL "
         f"got authorization URL: {location!r}"
     )
+
+
+@pytest.fixture
+def github_client(tmp_path, db_uri: str) -> TestClient:
+    """Mount the auth router for a GitHub OAuth provider."""
+    from omnigent.server.admin_list import AdminList
+
+    admins = tmp_path / "admins"
+    admins.write_text("")
+    perm_store = SqlAlchemyPermissionStore(db_uri)
+    # GitHub OAuth uses _source="oidc" but provider_type="github".
+    github_cfg = _oidc_config()
+    # Patch provider_type to github for this fixture.
+    import dataclasses
+
+    github_cfg = dataclasses.replace(github_cfg, provider_type="github")
+    provider = UnifiedAuthProvider(source="oidc", oidc_config=github_cfg)
+    app = FastAPI()
+    app.include_router(
+        create_auth_router(provider, perm_store, AdminList(admins)),
+        prefix="/auth",
+    )
+    with TestClient(app, follow_redirects=False) as client:
+        return client
+
+
+def test_github_provider_reauth_sends_no_prompt(github_client: TestClient) -> None:
+    """GitHub OAuth does not support prompt=login; reauth=1 must be silently ignored.
+
+    The device-grant router refuses to mount for GitHub (enforced in
+    create_device_auth_router), so /auth/login?reauth=1 should not reach a GitHub
+    deployment from the device-grant consent path. But if it does, the handler
+    must not add prompt=login (GitHub ignores it; some implementations error).
+    """
+    r = github_client.get("/auth/login", params={"reauth": "1"})
+    assert r.status_code == 302, f"expected 302, got {r.status_code}"
+    location = r.headers["location"]
+    params = _parse_auth_url(location)
+    assert "prompt" not in params, (
+        "GitHub OAuth /auth/login must NOT include prompt (GitHub ignores it); "
+        f"got authorization URL: {location!r}"
+    )
+    assert "max_age" not in params, (
+        "GitHub OAuth /auth/login must NOT include max_age; "
+        f"got authorization URL: {location!r}"
+    )

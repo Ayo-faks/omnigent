@@ -47,7 +47,7 @@ def test_router_factory_rejects_unsupported_mode(source: str, tmp_path: Path) ->
 
 
 def test_router_factory_builds_for_oidc_mode(tmp_path: Path) -> None:
-    """create_device_auth_router must succeed for oidc mode.
+    """create_device_auth_router must succeed for standard oidc mode.
 
     OIDC deployments now support the device-grant flow; the factory must
     accept an oidc provider and build a mountable router.
@@ -61,6 +61,7 @@ def test_router_factory_builds_for_oidc_mode(tmp_path: Path) -> None:
         cookie_secret=_KEY,
         base_url="https://omni.example.test",
         session_cookie_name="__Host-omni_session",
+        provider_type="oidc",
     )
     provider = SimpleNamespace(_source="oidc", _oidc_config=oidc_cfg)
     store = DeviceGrantStore(f"sqlite:///{tmp_path}/dg.db")
@@ -68,6 +69,29 @@ def test_router_factory_builds_for_oidc_mode(tmp_path: Path) -> None:
     router = create_device_auth_router(provider, store)  # type: ignore[arg-type]
     app = FastAPI()
     app.include_router(router)
+
+
+def test_router_factory_rejects_github_oauth_oidc(tmp_path: Path) -> None:
+    """GitHub OAuth runs under _source=oidc but does not honour prompt=login.
+
+    The anti-phishing reauth gate relies on the IdP honouring prompt=login;
+    GitHub does not.  create_device_auth_router must refuse to build for
+    a GitHub-typed OIDC config.
+    """
+    from types import SimpleNamespace
+
+    from omnigent.server.routes.device_auth import create_device_auth_router
+
+    oidc_cfg = SimpleNamespace(
+        cookie_secret=_KEY,
+        base_url="https://omni.example.test",
+        session_cookie_name="__Host-omni_session",
+        provider_type="github",
+    )
+    provider = SimpleNamespace(_source="oidc", _oidc_config=oidc_cfg)
+    store = DeviceGrantStore(f"sqlite:///{tmp_path}/dg.db")
+    with pytest.raises(RuntimeError, match="GitHub OAuth"):
+        create_device_auth_router(provider, store)  # type: ignore[arg-type]
 
 
 # ── Store invariants (unit) ───────────────────────────────────────
