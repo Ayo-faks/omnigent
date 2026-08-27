@@ -134,7 +134,10 @@ export function MarkdownTableOfContents({
     if (!container) return;
     const target = container.querySelector(`#${CSS.escape(id)}`);
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    // Scroll the container to the target element's position
+    const targetTop = (target as HTMLElement).offsetTop;
+    container.scrollTo({ top: targetTop - 20, behavior: "smooth" });
     onClose?.();
   };
 
