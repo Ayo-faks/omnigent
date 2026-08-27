@@ -1037,6 +1037,153 @@ async def test_tracked_subagent_status_without_parent_inbox_returns_503() -> Non
     assert entry.delivered is False
 
 
+def _cursor_native_subagent_app() -> Any:
+    """Build a runner app whose sessions resolve to the cursor-native harness."""
+    spec = AgentSpec(
+        spec_version=1,
+        name="t",
+        executor=ExecutorSpec(type="omnigent", config={"harness": "cursor-native"}),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        del agent_id, session_id
+        return spec
+
+    return create_runner_app(
+        process_manager=_FakeProcessManager(_ScriptedHarnessClient([])),  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_declined_tool_interrupt_keeps_dispatch_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declined tool call must not report the sub-agent dispatch cancelled.
+
+    Declining one tool call makes the server post an ``interrupt`` carrying
+    ``data.reason = "tool_declined"``. That aborts the turn; it does not end the
+    dispatch. The native bridge only sends Escape into the tmux pane and cannot
+    confirm the agent stopped, so cursor-agent often finishes anyway (modelled
+    here by a no-op inject followed by a real ``idle`` edge).
+
+    Before the fix the interrupt fabricated a terminal ``"cancelled"``, which
+    delivered and drained the entry, so the genuine ``"completed"`` that
+    followed was dropped as ``already_delivered`` and the parent kept a
+    ``cancelled`` verdict for work that succeeded.
+    """
+    import omnigent.cursor_native_bridge as cursor_bridge
+    from omnigent.runner import app as runner_app
+    from omnigent.server.routes._sessions.common import _INTERRUPT_REASON_TOOL_DECLINED
+
+    # Escape is delivered, but cursor-agent keeps working.
+    monkeypatch.setattr(cursor_bridge, "inject_interrupt", lambda bridge_dir, *, timeout_s: None)
+
+    parent_id = "bb11bb22cc33dd44aa11bb22cc330101"
+    child_id = "bb11bb22cc33dd44aa11bb22cc330102"
+    session_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async with _runner_client(_cursor_native_subagent_app()) as client:
+        create_resp = await client.post(
+            "/v1/sessions",
+            json={"session_id": child_id, "agent_id": "880b5afda28ad55ff74cbeb9b5fc67fb"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        runner_app.register_subagent_work(
+            parent_session_id=parent_id,
+            child_session_id=child_id,
+            agent="cursor-native",
+            title="research task",
+        )
+        runner_app._session_inboxes_ref[parent_id] = session_inbox
+        try:
+            declined_resp = await client.post(
+                f"/v1/sessions/{child_id}/events",
+                json={
+                    "type": "interrupt",
+                    "data": {"reason": _INTERRUPT_REASON_TOOL_DECLINED},
+                },
+            )
+            idle_resp = await client.post(
+                f"/v1/sessions/{child_id}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {"status": "idle", "output": "VERDICT: all 3 citations check out."},
+                },
+            )
+            delivered = []
+            while not session_inbox.empty():
+                delivered.append(session_inbox.get_nowait())
+        finally:
+            runner_app.unregister_subagent_work(child_id)
+            runner_app._session_inboxes_ref.pop(parent_id, None)
+            runner_app._drained_delivered_subagent_children.discard(child_id)
+
+    assert declined_resp.status_code == 204, declined_resp.text
+    assert idle_resp.status_code == 204, idle_resp.text
+    assert len(delivered) == 1, f"expected one parent-inbox result, got {delivered}"
+    assert delivered[0]["status"] == "completed", (
+        f"a declined tool call must not end the dispatch; parent got "
+        f"{delivered[0]['status']!r} for work that completed"
+    )
+    assert delivered[0]["output"] == "VERDICT: all 3 citations check out."
+
+
+@pytest.mark.asyncio
+async def test_bare_interrupt_still_cancels_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The web Stop button (a bare ``interrupt``) still reports cancelled.
+
+    Guards the other direction of
+    :func:`test_declined_tool_interrupt_keeps_dispatch_alive`: only a
+    ``tool_declined`` reason is turn-scoped. A reason-less interrupt is a user
+    cancel and must still deliver a terminal ``"cancelled"`` to the parent.
+    """
+    import omnigent.cursor_native_bridge as cursor_bridge
+    from omnigent.runner import app as runner_app
+
+    monkeypatch.setattr(cursor_bridge, "inject_interrupt", lambda bridge_dir, *, timeout_s: None)
+
+    parent_id = "bb11bb22cc33dd44aa11bb22cc330201"
+    child_id = "bb11bb22cc33dd44aa11bb22cc330202"
+    session_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async with _runner_client(_cursor_native_subagent_app()) as client:
+        create_resp = await client.post(
+            "/v1/sessions",
+            json={"session_id": child_id, "agent_id": "880b5afda28ad55ff74cbeb9b5fc67fb"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+        runner_app.register_subagent_work(
+            parent_session_id=parent_id,
+            child_session_id=child_id,
+            agent="cursor-native",
+            title="research task",
+        )
+        runner_app._session_inboxes_ref[parent_id] = session_inbox
+        try:
+            stop_resp = await client.post(
+                f"/v1/sessions/{child_id}/events",
+                json={"type": "interrupt"},
+            )
+            delivered = []
+            while not session_inbox.empty():
+                delivered.append(session_inbox.get_nowait())
+        finally:
+            runner_app.unregister_subagent_work(child_id)
+            runner_app._session_inboxes_ref.pop(parent_id, None)
+            runner_app._drained_delivered_subagent_children.discard(child_id)
+
+    assert stop_resp.status_code == 204, stop_resp.text
+    assert [m["status"] for m in delivered] == ["cancelled"], (
+        f"a user Stop must still cancel the dispatch; got {delivered}"
+    )
+
+
 def test_subagent_terminal_delivery_retry_uses_latest_undelivered_report() -> None:
     """
     Terminal retry delivers the latest report after the parent inbox reappears.

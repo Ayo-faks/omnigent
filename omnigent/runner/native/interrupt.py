@@ -268,9 +268,20 @@ class NativeInterruptRunner:
         self._client_safe_error_detail = client_safe_error_detail
         self._logger = logger
 
-    async def interrupt(self, harness_name: str | None, conv_id: str) -> Response | None:
+    async def interrupt(
+        self,
+        harness_name: str | None,
+        conv_id: str,
+        *,
+        dispatch_terminal: bool = True,
+    ) -> Response | None:
         """Dispatch an interrupt to the harness's bridge.
 
+        :param dispatch_terminal: Whether this interrupt ends the sub-agent
+            dispatch. ``True`` for a user Stop. ``False`` when it merely aborts
+            the current turn (a declined tool call), where reporting the
+            dispatch ``cancelled`` would overwrite the real outcome the
+            harness reports moments later via ``external_session_status``.
         :returns: A response when this harness has an interrupt handler, else
             ``None`` so the caller falls through to the in-process turn cancel
             (antigravity/opencode).
@@ -280,13 +291,13 @@ class NativeInterruptRunner:
             return None
         key = agent.key
         if key == "claude":
-            return await self._claude_interrupt(conv_id)
+            return await self._claude_interrupt(conv_id, dispatch_terminal=dispatch_terminal)
         if key == "codex":
-            return await self._codex_interrupt(conv_id)
+            return await self._codex_interrupt(conv_id, dispatch_terminal=dispatch_terminal)
         spec = _UNIFORM_INTERRUPT.get(key)
         if spec is None:
             return None
-        return await self._uniform_interrupt(spec, conv_id)
+        return await self._uniform_interrupt(spec, conv_id, dispatch_terminal=dispatch_terminal)
 
     async def stop(self, harness_name: str | None, conv_id: str) -> Response | None:
         """Dispatch a stop_session to the harness's bridge.
@@ -310,7 +321,13 @@ class NativeInterruptRunner:
             return None
         return await self._uniform_stop(spec, conv_id)
 
-    def _wake_parent_after_native_interrupt(self, conv_id: str) -> None:
+    def _wake_parent_after_native_interrupt(
+        self, conv_id: str, *, dispatch_terminal: bool = True
+    ) -> None:
+        # A turn-only abort leaves the dispatch running; the harness's own
+        # external_session_status edge carries the real terminal outcome.
+        if not dispatch_terminal:
+            return
         delivery_ack = self._mark_subagent_terminal_and_wake(
             conv_id,
             status="cancelled",
@@ -354,7 +371,9 @@ class NativeInterruptRunner:
                 publish_event=self._publish_event,
             )
 
-    async def _uniform_interrupt(self, spec: _UniformInterrupt, conv_id: str) -> Response:
+    async def _uniform_interrupt(
+        self, spec: _UniformInterrupt, conv_id: str, *, dispatch_terminal: bool = True
+    ) -> Response:
         module = importlib.import_module(spec.module)
         bridge_dir = module.bridge_dir_for_session_id(conv_id)
         inject = getattr(module, spec.inject_fn)
@@ -375,7 +394,7 @@ class NativeInterruptRunner:
                     "detail": self._client_safe_error_detail(exc, context=spec.context),
                 },
             )
-        self._wake_parent_after_native_interrupt(conv_id)
+        self._wake_parent_after_native_interrupt(conv_id, dispatch_terminal=dispatch_terminal)
         return Response(status_code=204)
 
     async def _uniform_stop(self, spec: _UniformStop, conv_id: str) -> Response:
@@ -412,7 +431,7 @@ class NativeInterruptRunner:
             )
         return Response(status_code=204)
 
-    async def _claude_interrupt(self, conv_id: str) -> Response:
+    async def _claude_interrupt(self, conv_id: str, *, dispatch_terminal: bool = True) -> Response:
         from omnigent.claude_native_bridge import bridge_dir_for_bridge_id, inject_interrupt
 
         bridge_id = await _claude_native_bridge_id_for_session(
@@ -432,7 +451,7 @@ class NativeInterruptRunner:
                     ),
                 },
             )
-        self._wake_parent_after_native_interrupt(conv_id)
+        self._wake_parent_after_native_interrupt(conv_id, dispatch_terminal=dispatch_terminal)
         return Response(status_code=204)
 
     async def _claude_stop(self, conv_id: str) -> Response:
@@ -477,7 +496,7 @@ class NativeInterruptRunner:
             )
         return Response(status_code=204)
 
-    async def _codex_interrupt(self, conv_id: str) -> Response:
+    async def _codex_interrupt(self, conv_id: str, *, dispatch_terminal: bool = True) -> Response:
         from omnigent.codex_native_app_server import client_for_transport
         from omnigent.codex_native_bridge import (
             CODEX_NATIVE_BRIDGE_ID_LABEL_KEY,
@@ -570,5 +589,5 @@ class NativeInterruptRunner:
         finally:
             with contextlib.suppress(Exception):
                 await codex_client.close()
-        self._wake_parent_after_native_interrupt(conv_id)
+        self._wake_parent_after_native_interrupt(conv_id, dispatch_terminal=dispatch_terminal)
         return Response(status_code=204)

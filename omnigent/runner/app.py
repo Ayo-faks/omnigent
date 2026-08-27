@@ -391,6 +391,8 @@ def _unwrap_spec_entry(entry: _SpecEntry | None) -> AgentSpec | None:
 
 _NO_BODY_STATUS_CODES = {204, 304}
 _SUBAGENT_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+# A declined tool call aborts the turn only; it does not end the dispatch.
+_INTERRUPT_REASON_TOOL_DECLINED = "tool_declined"
 _SUBAGENT_DELIVERY_DELIVERED = "delivered"
 _SUBAGENT_DELIVERY_ALREADY_DELIVERED = "already_delivered"
 _SUBAGENT_DELIVERY_UNTRACKED = "untracked"
@@ -7840,7 +7842,13 @@ def create_runner_app(
 
         if body_type == "interrupt":
             _harness = _session_harness_name(conversation_id)
-            _interrupt_resp = await _native_interrupt_runner.interrupt(_harness, conversation_id)
+            _data = body.get("data") if isinstance(body, dict) else None
+            _reason = _data.get("reason") if isinstance(_data, dict) else None
+            _interrupt_resp = await _native_interrupt_runner.interrupt(
+                _harness,
+                conversation_id,
+                dispatch_terminal=_reason != _INTERRUPT_REASON_TOOL_DECLINED,
+            )
             if _interrupt_resp is not None:
                 return _interrupt_resp
             await _cancel_inprocess_turn(conversation_id)

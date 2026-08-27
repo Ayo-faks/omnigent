@@ -59,6 +59,7 @@ from omnigent.server.routes._content_type import (
 )
 from omnigent.server.routes._sessions.common import (
     _EVALUATE_HOOK_ELICITATION_ID_RE,
+    _INTERRUPT_REASON_TOOL_DECLINED,
     _TURN_ACTOR_LABEL,
     _logger,
     get_server_runner_router,
@@ -880,7 +881,10 @@ def register_hooks_routes(
                             await _forward_session_change_to_runner(
                                 session_id,
                                 get_server_runner_router(),
-                                {"type": "interrupt"},
+                                {
+                                    "type": "interrupt",
+                                    "data": {"reason": _INTERRUPT_REASON_TOOL_DECLINED},
+                                },
                             )
                             decline_body = {
                                 "result": "POLICY_ACTION_DENY",
@@ -1014,7 +1018,10 @@ def register_hooks_routes(
             await _forward_session_change_to_runner(
                 session_id,
                 get_server_runner_router(),
-                {"type": "interrupt"},
+                {
+                    "type": "interrupt",
+                    "data": {"reason": _INTERRUPT_REASON_TOOL_DECLINED},
+                },
             )
         body = codex_request.build_response(result)
         return Response(
@@ -1118,7 +1125,10 @@ def register_hooks_routes(
             await _forward_session_change_to_runner(
                 session_id,
                 get_server_runner_router(),
-                {"type": "interrupt"},
+                {
+                    "type": "interrupt",
+                    "data": {"reason": _INTERRUPT_REASON_TOOL_DECLINED},
+                },
             )
         return Response(
             content=result.model_dump_json(),
@@ -1235,7 +1245,10 @@ def register_hooks_routes(
             await _forward_session_change_to_runner(
                 session_id,
                 get_server_runner_router(),
-                {"type": "interrupt"},
+                {
+                    "type": "interrupt",
+                    "data": {"reason": _INTERRUPT_REASON_TOOL_DECLINED},
+                },
             )
         return Response(
             content=json.dumps(result.model_dump(exclude_none=True)),
@@ -1345,7 +1358,10 @@ def register_hooks_routes(
             await _forward_session_change_to_runner(
                 session_id,
                 get_server_runner_router(),
-                {"type": "interrupt"},
+                {
+                    "type": "interrupt",
+                    "data": {"reason": _INTERRUPT_REASON_TOOL_DECLINED},
+                },
             )
         return Response(
             content=json.dumps(result.model_dump(exclude_none=True)),

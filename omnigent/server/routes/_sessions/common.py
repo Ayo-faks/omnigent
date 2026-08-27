@@ -53,6 +53,10 @@ _logger = logging.getLogger("omnigent.server.routes.sessions")
 
 
 _INTERRUPT_TYPE: str = "interrupt"
+# ``data.reason`` marking an interrupt that aborts the current turn only.
+# A declined tool call does not end a sub-agent dispatch, so the runner must
+# not report the dispatch terminally cancelled for it.
+_INTERRUPT_REASON_TOOL_DECLINED: str = "tool_declined"
 
 
 _APPROVAL_TYPE: str = "approval"
