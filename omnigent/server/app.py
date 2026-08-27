@@ -27,7 +27,6 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from omnigent._platform import resolve_repo_symlink
 from omnigent.db.db_models import InvalidUuidError
-from omnigent.debug_logging import set_current_user_id
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.harness_plugins import (
     NativeHarnessProvider,
@@ -44,7 +43,7 @@ from omnigent.runtime import (
 )
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
-from omnigent.server import session_live_state, shutdown_state
+from omnigent.server import session_live_state
 from omnigent.server.auth import AuthProvider, SharingMode
 from omnigent.server.background_session_titles import (
     BackgroundSessionTitleCoordinator,
@@ -443,10 +442,8 @@ def _ensure_builtin_agent(
       update the row in place (keeps the ``agent_id`` stable so task
       history isn't cascade-deleted; bumps ``version`` so the runner's
       version-keyed spec cache re-fetches), then warm-swap the cache.
-    - **Row exists, content hash matches** → re-``put`` the bundle if
-      the artifact store is missing the blob (self-heals a lost
-      bundle), evict the local cache so the next load re-fetches from
-      ``bundle_location``, then return.
+    - **Row exists, content hash matches** → evict the local cache so
+      the next load re-fetches from ``bundle_location``, then return.
 
     The evict on the matching-hash path matters because
     :meth:`AgentCache.load` is keyed by ``agent_id`` and trusts its
@@ -477,13 +474,7 @@ def _ensure_builtin_agent(
         # Sha-segment compare: legacy rows keep an ``ag_``-prefixed left
         # segment (physical artifact key); only the sha encodes content.
         if existing.bundle_location.rsplit("/", 1)[-1] == bundle_hash:
-            # Blob can vanish while the row survives (pruned artifacts, DB
-            # restored without the store); re-put so boot self-heals. Keyed on
-            # the row's location, not ``new_loc``: this path never rewrites the
-            # row, so a legacy ``ag_``-prefixed value is what the loader reads.
-            if not artifact_store.exists(existing.bundle_location):
-                artifact_store.put(existing.bundle_location, bundle_bytes)
-            # Evict so a lagging replica's stale cache reloads the bundle.
+            # Row current; evict so a lagging replica's stale cache reloads the bundle.
             agent_cache.evict(existing.id)
             return
         artifact_store.put(new_loc, bundle_bytes)
@@ -528,7 +519,6 @@ def _ensure_default_agents(
     :param agent_cache: Cache for loaded agent specs.
     """
     _ensure_default_native_agents(agent_store, artifact_store, agent_cache)
-    _ensure_default_acp_agents(agent_store, artifact_store, agent_cache)
     _ensure_default_debby_agent(agent_store, artifact_store, agent_cache)
     _ensure_default_polly_agent(agent_store, artifact_store, agent_cache)
     _ensure_extra_builtin_agents(agent_store, artifact_store, agent_cache)
@@ -672,125 +662,6 @@ def _ensure_default_native_agents(
             agent_cache,
             name=agent.agent_name,
             bundle_bytes=_build_native_bundle(provider),
-        )
-
-
-# Light framing for a seeded ACP picker agent. ACP agents run their own tool
-# loop, so the vendor CLI supplies the real behavior; this is just enough to
-# name the role.
-_ACP_AGENT_PROMPT = (
-    "You are a coding agent running inside Omnigent through the Agent Client "
-    "Protocol. Help the user with software engineering tasks in their workspace: "
-    "read and edit files, run commands, investigate, and implement changes. Work "
-    "within the current repository, explain what you are doing, and when you finish "
-    "a task tell the user how to verify it."
-)
-
-
-def _build_acp_bundle(*, harness: str, name: str) -> bytes:
-    """
-    Materialize a one-file ACP picker agent and tar it.
-
-    ACP agents have no provider row (unlike :func:`_build_native_bundle`), so the
-    spec is a generated single YAML on the debby-style directory path: just the
-    ``acp:<slug>`` (or builtin ACP CLI) harness id. The launch command is resolved
-    from the host's own ``acp:`` config (user agents) or PATH (builtin CLI rows)
-    at spawn time, so nothing host-specific is baked into the bundle.
-
-    :param harness: The harness id, e.g. ``"acp:devin"`` or ``"grok"``.
-    :param name: The agent name / stable-id seed — a valid ``[a-zA-Z0-9_-]+``
-        slug (e.g. ``"devin"``, ``"grok"``), never a display label with spaces.
-    :returns: Gzipped tarball bytes suitable for the artifact store.
-    """
-    import tempfile
-
-    import yaml
-
-    from omnigent.spec import materialize_bundle
-
-    raw = {
-        "spec_version": 1,
-        "name": name,
-        "prompt": _ACP_AGENT_PROMPT,
-        "executor": {"type": "omnigent", "config": {"harness": harness}},
-        "os_env": {"type": "caller_process", "cwd": ".", "sandbox": {"type": "none"}},
-    }
-    with tempfile.TemporaryDirectory() as tmpdir:
-        source = Path(tmpdir) / "src"
-        source.mkdir()
-        (source / "config.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
-        bundle_dir = materialize_bundle(source, Path(tmpdir) / "bundle")
-        return _tar_gz_dir(bundle_dir)
-
-
-def _ensure_default_acp_agents(
-    agent_store: AgentStore,
-    artifact_store: ArtifactStore,
-    agent_cache: Any,
-) -> None:
-    """
-    Seed a picker agent for each ACP harness set up on THIS server's host.
-
-    Native harnesses seed a fixed ``<harness>-ui`` agent each
-    (:func:`_ensure_default_native_agents`). ACP agents are host config rather
-    than a fixed catalog, so seed one agent per user-configured ``acp:<slug>``
-    agent (``harness_is_configured("acp:...")`` treats "in config" as set up) and
-    per builtin ACP CLI harness whose binary is on PATH (its readiness gate). On a
-    host with no ACP setup — the common remote-server case, where the server holds
-    no ``acp:`` config — this seeds nothing. When both sources name the same
-    harness, the configured agent wins (see :func:`shadowed_builtin_acp_rows`).
-
-    Purely additive: it only adds picker rows and never touches native seeding.
-    A malformed ``acp:`` block is logged and skipped, never fatal to startup
-    (mirrors the dynamic ``acp:*`` catalog rows in ``harness_plugins``).
-
-    Note: a seeded row is keyed by the agent's display name, so renaming a
-    configured ACP agent leaves the old picker row behind until the store is
-    reseeded — acceptable since native names are fixed and never rename.
-
-    :param agent_store: Store for agent metadata.
-    :param artifact_store: Store for agent bundles.
-    :param agent_cache: Cache for loaded agent specs.
-    """
-    from omnigent._platform import resolve_cli_binary
-    from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
-
-    # (1) User-configured acp:<slug> agents — "set up" == present in config.
-    try:
-        from omnigent.onboarding.acp_auth import acp_agents, shadowed_builtin_acp_rows
-
-        configured = list(acp_agents())
-        shadowed: frozenset[str] = shadowed_builtin_acp_rows(configured)
-    except Exception:  # noqa: BLE001 — a malformed acp: block must never break startup
-        _logger.debug("acp agent seeding skipped (config unreadable)", exc_info=True)
-        configured = []
-        shadowed = frozenset()
-    for agent in configured:
-        # Key the built-in by the slug, not the display label: agent names must be
-        # ``[a-zA-Z0-9_-]+`` (the spec validator rejects spaces/dots), and a label
-        # like "Gemini CLI" would fail to load. The web picker capitalizes the slug
-        # for display (e.g. ``devin`` -> "Devin").
-        _ensure_builtin_agent(
-            agent_store,
-            artifact_store,
-            agent_cache,
-            name=agent.slug,
-            bundle_bytes=_build_acp_bundle(harness=f"acp:{agent.slug}", name=agent.slug),
-        )
-
-    # (2) Builtin ACP CLI harnesses (e.g. grok) — "set up" == binary on PATH. Keyed
-    # by the catalog id (already a valid slug), not the display label. A row a
-    # configured agent already claims is skipped: both seed the same
-    # ``builtin_agent_id``, so the row would overwrite the user's chosen command.
-    for key, row in ACP_CLI_HARNESSES.items():
-        if key in shadowed or resolve_cli_binary(row.binary) is None:
-            continue
-        _ensure_builtin_agent(
-            agent_store,
-            artifact_store,
-            agent_cache,
-            name=key,
-            bundle_bytes=_build_acp_bundle(harness=key, name=key),
         )
 
 
@@ -1277,7 +1148,6 @@ def create_app(
                 agent_store=agent_store,
                 conversation_store=conversation_store,
                 permission_store=permission_store,
-                policy_store=policy_store,
                 host_store=host_store,
                 host_registry=host_registry,
                 agent_cache=agent_cache,
@@ -1495,18 +1365,6 @@ def create_app(
         set_request_session_id_for_access_log(
             session_match.group(1) if session_match else None,
         )
-        # Bind the request's authenticated user so debug-log records emitted
-        # while handling it are attributed. Request-scoped: each request runs in
-        # its own task/context, so concurrent users never see each other's id.
-        # Best-effort — attribution must never fail a request. The raw identity
-        # (incl. the "local" single-user sentinel) is kept; it is a meaningful
-        # queryable value in the debug table.
-        try:
-            set_current_user_id(
-                auth_provider.get_user_id(request) if auth_provider is not None else None
-            )
-        except Exception:  # noqa: BLE001 — attribution is best-effort
-            set_current_user_id(None)
 
         failed = False
         status_code: int | None = None
@@ -1807,13 +1665,12 @@ def create_app(
                 host_version = host_versions.get(conn.host_id)
             if conn.runner_id is None:
                 # No runner binding: an in-process executor (or a session
-                # not yet dispatched) is reachable — EXCEPT sessions that have
-                # no executor to reach and must launch a runner on a host
-                # first: an unbound fork (needs a workspace) or an imported
-                # transcript (no live executor anywhere). Reporting those
-                # offline routes the first message into the resume picker
-                # instead of dropping it against a runner that can't start.
-                runner_online = not (conn.needs_workspace or conn.imported)
+                # not yet dispatched) is reachable — EXCEPT an unbound fork
+                # of a session that had a working directory, which must
+                # rebind a host + directory first. Reporting it offline
+                # routes the first message into the directory picker instead
+                # of dropping it against a runner that can't start.
+                runner_online = not conn.needs_workspace
             else:
                 # Strict: reachable only if the runner tunnel is up. No
                 # host-relaunch optimism — host state lives in host_online.
@@ -2245,8 +2102,6 @@ def create_app(
             agent_store,
             auth_provider=auth_provider,
             permission_store=permission_store,
-            host_registry=host_registry,
-            host_store=host_store,
         ),
         prefix="/v1",
         tags=["imports"],
@@ -2406,11 +2261,6 @@ def create_app(
         :func:`_mark_runner_sessions_offline`, which fails only the
         interrupted turns and stamps the disconnect cause.
 
-        A server that is itself shutting down skips the marking too: it
-        closed the tunnel, and the runner cannot re-register with a
-        process that stopped listening — the replacement server re-adopts
-        it on reconnect (:mod:`omnigent.server.shutdown_state`).
-
         :param runner_id: The disconnected runner's id.
         """
         from omnigent.server.routes.sessions import (
@@ -2420,12 +2270,6 @@ def create_app(
         from omnigent.server.schemas import ErrorDetail
 
         await asyncio.sleep(RUNNER_DISCONNECT_GRACE_S)
-        if shutdown_state.server_shutting_down():
-            _logger.info(
-                "Runner %s dropped because this server is shutting down; skipping offline-marking",
-                runner_id,
-            )
-            return
         if tunnel_registry.get(runner_id) is not None:
             _logger.info(
                 "Runner %s reconnected within the disconnect grace; skipping offline-marking",
@@ -2748,6 +2592,30 @@ def create_app(
     # /magic/redeem, /users, /users/{id}/reset, /users/me/password).
     # Must be registered BEFORE the SPA static mount because the SPA's
     # HTML5-history fallback catches all unmatched extensionless paths.
+    # Device-grant support is decided BEFORE the auth-router mount below,
+    # which is gated on `login_url` being truthy — and header mode's is None.
+    # Computing it inside that block meant the one operator most likely to be
+    # confused by a missing /oauth/* (header mode, where the grant can never
+    # work) was the one who never saw the explanation.
+    from omnigent.server.auth import UnifiedAuthProvider as _UnifiedAuthProvider
+    from omnigent.server.auth import env_var_is_truthy
+    from omnigent.server.routes.device_auth import unsupported_reason
+
+    _device_grant_wanted = env_var_is_truthy("OMNIGENT_DEVICE_GRANT_ENABLED", default=False)
+    _device_grant_blocked = (
+        unsupported_reason(auth_provider)
+        if isinstance(auth_provider, _UnifiedAuthProvider)
+        else "a custom auth provider cannot mint the session the grant delegates from"
+    )
+    if _device_grant_wanted and _device_grant_blocked is not None:
+        # Asked for and refused: say so, or the operator sees only the absence
+        # of /oauth/* and assumes the flag did not take.
+        _logger.warning(
+            "device-grant: OMNIGENT_DEVICE_GRANT_ENABLED is set but the "
+            "/oauth/* routes are NOT mounted — %s. See designs/DEVICE_AUTH.md.",
+            _device_grant_blocked,
+        )
+
     if auth_provider is not None and getattr(auth_provider, "login_url", None):
         from omnigent.server.auth import UnifiedAuthProvider
 
@@ -2755,22 +2623,6 @@ def create_app(
         # auth routes and ``/v1/me`` share one roster. Consulted on each login
         # to promote listed identities — the only admin path for OIDC, and an
         # additive convenience for accounts.
-        # Login-issued refresh grants: both server-mintable providers
-        # (accounts, oidc) get a grant store so `omnigent login` can hand
-        # the CLI refresh material — without it, an unattended host dies
-        # permanently at session-JWT expiry (default 8 h). The store also
-        # backs the opt-in RFC 8628 device flow below.
-        device_grant_store = None
-        if (
-            isinstance(auth_provider, UnifiedAuthProvider)
-            and auth_provider._source in ("accounts", "oidc")
-            and permission_store is not None
-        ):
-            from omnigent.server.device_grant_store import DeviceGrantStore
-
-            device_grant_store = DeviceGrantStore(permission_store.storage_location)
-            auth_provider.set_grant_revocation_check(device_grant_store.is_revoked)
-
         if (
             isinstance(auth_provider, UnifiedAuthProvider)
             and auth_provider._source == "accounts"
@@ -2782,11 +2634,7 @@ def create_app(
 
             app.include_router(
                 create_accounts_auth_router(
-                    auth_provider,
-                    account_store,
-                    admin_list,
-                    permission_store,
-                    device_grant_store,
+                    auth_provider, account_store, admin_list, permission_store
                 ),
                 prefix="/auth",
                 tags=["auth"],
@@ -2817,7 +2665,6 @@ def create_app(
                     admin_list,
                     oidc_account_store,
                     allowed_domains=frozenset(allowed_domains or ()) or None,
-                    device_grant_store=device_grant_store,
                 ),
                 prefix="/auth",
                 tags=["auth"],
@@ -2829,20 +2676,23 @@ def create_app(
             )
 
         # Device Authorization Grant (RFC 8628): opt-in, default-off via
-        # OMNIGENT_DEVICE_GRANT_ENABLED, and accounts-mode only (the
-        # in-browser consent flow needs the accounts login page). Wires
-        # the full /oauth/* surface including the token endpoint. See
-        # designs/DEVICE_AUTH.md.
-        from omnigent.server.auth import env_var_is_truthy
-
+        # OMNIGENT_DEVICE_GRANT_ENABLED, and only for providers that can be
+        # made to re-prompt an already signed-in user — see
+        # `unsupported_reason`, which owns that rule. Wires the revocation
+        # lookup into the auth provider so revoking a grant immediately
+        # rejects its delegated access tokens.
+        # See designs/DEVICE_AUTH.md.
         if (
-            env_var_is_truthy("OMNIGENT_DEVICE_GRANT_ENABLED", default=False)
+            _device_grant_wanted
             and isinstance(auth_provider, UnifiedAuthProvider)
-            and auth_provider._source == "accounts"
-            and device_grant_store is not None
+            and _device_grant_blocked is None
+            and permission_store is not None
         ):
+            from omnigent.server.device_grant_store import DeviceGrantStore
             from omnigent.server.routes.device_auth import create_device_auth_router
 
+            device_grant_store = DeviceGrantStore(permission_store.storage_location)
+            auth_provider.set_grant_revocation_check(device_grant_store.is_revoked)
             app.include_router(
                 create_device_auth_router(auth_provider, device_grant_store),
                 tags=["oauth"],
@@ -2863,17 +2713,6 @@ def create_app(
                     "the server and its trusted client(s) to restrict initiation "
                     "to authorized clients. See designs/DEVICE_AUTH.md.",
                 )
-        elif isinstance(auth_provider, UnifiedAuthProvider) and device_grant_store is not None:
-            # No device flow, but login-issued refresh grants still need
-            # their token/revoke endpoints — in OIDC mode and in accounts
-            # mode without the flag alike.
-            from omnigent.server.routes.device_auth import create_oauth_token_router
-
-            app.include_router(
-                create_oauth_token_router(auth_provider, device_grant_store),
-                tags=["oauth"],
-            )
-            _logger.info("login-grant: /oauth/token + /oauth/revoke enabled")
 
     # Mount the built web SPA at "/" if a build is present. The SPA is
     # built into ``omnigent/server/static/web-ui/`` by ``web/``'s Vite
