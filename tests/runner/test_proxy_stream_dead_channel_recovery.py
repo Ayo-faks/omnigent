@@ -38,8 +38,8 @@ from omnigent.runner import create_runner_app
 from omnigent.spec.types import AgentSpec
 from tests.runner.conftest import (
     _FakeProcessManager,
-    _ScriptedHarnessClient,
     _runner_client,
+    _ScriptedHarnessClient,
     _sse,
 )
 from tests.runner.helpers import NullServerClient
@@ -92,15 +92,11 @@ class _ReadErrorThenHealthyHarnessClient(_ScriptedHarnessClient):
 
         async def aiter_text(self) -> AsyncIterator[str]:
             """Drop mid-stream on attempt #1; serve a clean stream after."""
-            yield _sse(
-                {"type": "response.created", "response": {"id": f"resp_{self._attempt}"}}
-            )
+            yield _sse({"type": "response.created", "response": {"id": f"resp_{self._attempt}"}})
             if self._attempt == 1:
                 raise httpx.ReadError("harness stream dropped mid-turn")
             yield _sse({"type": "response.output_text.delta", "delta": _MODEL_TEXT})
-            yield _sse(
-                {"type": "response.completed", "response": {"id": f"resp_{self._attempt}"}}
-            )
+            yield _sse({"type": "response.completed", "response": {"id": f"resp_{self._attempt}"}})
 
 
 class _RemoteDisconnectedThenHealthyHarnessClient(_ScriptedHarnessClient):
@@ -126,7 +122,9 @@ class _RemoteDisconnectedThenHealthyHarnessClient(_ScriptedHarnessClient):
         class _Ctx:
             status_code = 200
 
-            async def __aenter__(self_inner) -> _RemoteDisconnectedThenHealthyHarnessClient._Handle:
+            async def __aenter__(  # type: ignore[override]
+                self_inner,
+            ) -> _RemoteDisconnectedThenHealthyHarnessClient._Handle:
                 return _RemoteDisconnectedThenHealthyHarnessClient._Handle(attempt)
 
             async def __aexit__(self_inner, *_: Any) -> None:
@@ -143,15 +141,11 @@ class _RemoteDisconnectedThenHealthyHarnessClient(_ScriptedHarnessClient):
 
         async def aiter_text(self) -> AsyncIterator[str]:
             """Raise RemoteProtocolError on attempt #1; complete on attempt #2."""
-            yield _sse(
-                {"type": "response.created", "response": {"id": f"resp_{self._attempt}"}}
-            )
+            yield _sse({"type": "response.created", "response": {"id": f"resp_{self._attempt}"}})
             if self._attempt == 1:
                 raise httpx.RemoteProtocolError("peer disconnected without sending a response")
             yield _sse({"type": "response.output_text.delta", "delta": _MODEL_TEXT})
-            yield _sse(
-                {"type": "response.completed", "response": {"id": f"resp_{self._attempt}"}}
-            )
+            yield _sse({"type": "response.completed", "response": {"id": f"resp_{self._attempt}"}})
 
 
 def _parse_sse_frames(buffer: str) -> list[dict[str, Any]]:
@@ -159,9 +153,7 @@ def _parse_sse_frames(buffer: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     while "\n\n" in buffer:
         frame, _, buffer = buffer.partition("\n\n")
-        data_line = next(
-            (line for line in frame.splitlines() if line.startswith("data:")), None
-        )
+        data_line = next((line for line in frame.splitlines() if line.startswith("data:")), None)
         if data_line is None:
             continue
         try:
@@ -224,11 +216,7 @@ async def test_proxy_stream_recovers_from_mid_stream_readerror() -> None:
 
     failed = [f for f in frames if f.get("type") == "response.failed"]
     completed = [f for f in frames if f.get("type") == "response.completed"]
-    deltas = [
-        f.get("delta")
-        for f in frames
-        if f.get("type") == "response.output_text.delta"
-    ]
+    deltas = [f.get("delta") for f in frames if f.get("type") == "response.output_text.delta"]
 
     # The primary relay must retry the dead channel (as the policy path does),
     # not fail the turn on the first mid-stream ReadError.
@@ -268,11 +256,7 @@ async def test_proxy_stream_recovers_from_mid_stream_remote_protocol_error() -> 
 
     failed = [f for f in frames if f.get("type") == "response.failed"]
     completed = [f for f in frames if f.get("type") == "response.completed"]
-    deltas = [
-        f.get("delta")
-        for f in frames
-        if f.get("type") == "response.output_text.delta"
-    ]
+    deltas = [f.get("delta") for f in frames if f.get("type") == "response.output_text.delta"]
 
     assert harness_client.attempts == 2, (
         f"proxy_stream must retry once on httpx.RemoteProtocolError; "
