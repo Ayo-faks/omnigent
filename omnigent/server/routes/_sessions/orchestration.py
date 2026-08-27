@@ -9459,26 +9459,7 @@ async def _get_session_snapshot(
                             agent_name = resolved_spec.name
                         llm_model = resolved_spec.executor.model
 
-                        # Size the context ring against whatever the next turn
-                        # will actually run, using the SAME resolver the
-                        # runner uses to budget compaction. That makes the UI
-                        # ring and the runner's compaction trigger a single
-                        # source of truth — computed by one function — so
-                        # they can't drift even though they run in different
-                        # processes at different times. (They previously each
-                        # inlined this rule and silently fell out of step;
-                        # sharing the function removes the manual sync.)
-                        # spec.executor.context_window describes only the
-                        # spec model, so an active override bypasses it — the
-                        # resolver makes that decision from the spec model +
-                        # override.
-                        #
-                        # Offload to a worker thread: an active override (or
-                        # an undeclared window) can trigger a cache-cold
-                        # provider catalog fetch (blocking HTTP / CPU-bound
-                        # litellm) inside the resolver, which would otherwise
-                        # stall the single-worker event loop and serialize
-                        # every concurrent snapshot.
+                        # Offload: may fetch a provider catalog (blocking IO).
                         context_window = await asyncio.to_thread(
                             resolve_effective_context_window,
                             resolved_spec.executor.context_window,
