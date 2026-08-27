@@ -584,7 +584,7 @@ async def _evaluate_policy_via_omnigent(
                 _default_action,
                 extra={"session_id": conversation_id},
             )
-    except Exception:  # noqa: BLE001 — fail-open (LLM phases) / fail-closed (tool phases)
+    except Exception:
         _logger.warning(
             "AP policy evaluate failed for %s; defaulting to %s",
             evaluation_id,
@@ -622,7 +622,7 @@ async def _evaluate_policy_via_omnigent(
                 extra={"session_id": conversation_id},
             )
             continue
-        except Exception:  # noqa: BLE001 — non-transport: no retry, but still signal
+        except Exception:
             _logger.warning(
                 "Failed to deliver policy verdict %s to harness (unexpected error)",
                 evaluation_id,
@@ -4554,7 +4554,7 @@ def create_runner_app(
                     **settings,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 - surface app-server settings failures.
+        except Exception as exc:
             _logger.warning(
                 "Codex-native thread/settings/update failed for session=%s thread=%s settings=%s",
                 conv_id,
@@ -4743,7 +4743,7 @@ def create_runner_app(
             await asyncio.to_thread(
                 model_catalog_store.write_catalog, "codex-native", fingerprint, shaped
             )
-        except Exception:  # noqa: BLE001 — write-back is best-effort
+        except Exception:
             _logger.debug(
                 "codex model-catalog write-back skipped",
                 exc_info=True,
@@ -4963,7 +4963,7 @@ def create_runner_app(
                 await asyncio.to_thread(
                     confirm_dialog_if_open, bridge_dir, hint=SWITCH_MODEL_DIALOG_HINT
                 )
-            except Exception:  # noqa: BLE001 — best-effort; the report reconciles
+            except Exception:
                 _logger.debug(
                     "late model-dialog watch errored for session=%s",
                     conv_id,
@@ -5177,7 +5177,7 @@ def create_runner_app(
                 verdict=verdict,
                 timeout_s=1.0,
             )
-        except Exception:  # noqa: BLE001 — best-effort; TUI can still answer
+        except Exception:
             _logger.debug(
                 "claude-native plan verdict not applied",
                 exc_info=True,
@@ -5904,7 +5904,7 @@ def create_runner_app(
                 conv_id,
                 extra={"session_id": conv_id},
             )
-        except Exception:  # noqa: BLE001 — best-effort: harness may have exited
+        except Exception:
             _logger.warning(
                 "Interrupt forward to harness failed for %s",
                 conv_id,
@@ -7655,13 +7655,28 @@ def create_runner_app(
                 except (httpx.HTTPError, RuntimeError) as exc:
                     # Retry once if it is a dead-channel error and no model
                     # output has been delivered yet (no text deltas, no local
-                    # dispatch pending): safe to re-POST.
+                    # dispatch pending): safe to re-POST.  Clear any in-flight
+                    # markers from this attempt first — a response.created may
+                    # have arrived and called mark_in_flight before the drop;
+                    # resetting ensures the retry starts clean so mark_in_flight
+                    # is called exactly once for the successful attempt.
                     if (
                         isinstance(exc, _DEAD_HARNESS_CHANNEL_ERRORS)
                         and not _text_yielded
                         and not _dispatch_tasks
                         and _stream_attempt == 0
                     ):
+                        # Clear all in-flight state from this attempt before
+                        # retrying: response.created may have arrived and called
+                        # mark_in_flight; releasing here ensures the retry starts
+                        # clean so mark_in_flight fires exactly once for the
+                        # attempt that succeeds.
+                        _release_live_turn_markers(conv_id)
+                        # Also evict the stale response_id from the reverse
+                        # lookup so it does not outlive the retry attempt.
+                        if _response_id is not None:
+                            _resp_to_conv.pop(_response_id, None)
+                        _response_id = None
                         _logger.warning(
                             "proxy stream dead-channel drop for %s on attempt 1/2,"
                             " retrying (no output yet): %s",
@@ -7669,11 +7684,6 @@ def create_runner_app(
                             exc,
                             extra={"session_id": conv_id},
                         )
-                        # Clear any in-flight marker from the failed attempt so
-                        # the reaper doesn't see it as still live between retries.
-                        if _response_id:
-                            manager.clear_in_flight(conv_id)
-                            _response_id = None
                         continue
                     _logger.exception(
                         "proxy stream connection error for %s: %s",
@@ -8698,7 +8708,7 @@ def create_runner_app(
                     await terminal_registry.close(conv_id, terminal_name, "main")
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                except Exception:
                     _logger.warning(
                         "failed to close stale native pane for conv=%s; proceeding to re-create",
                         conv_id,
@@ -9546,7 +9556,7 @@ def create_runner_app(
 
         try:
             catalog = await asyncio.to_thread(catalog_for_spec, spec)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _logger.exception(
                 "get_session_models: catalog_for_spec failed for session=%s",
                 session_id,
@@ -9601,7 +9611,7 @@ def create_runner_app(
                     "detail": "Codex-native model options are not ready yet.",
                 },
             )
-        except Exception as exc:  # noqa: BLE001 - surface Codex app-server failures to AP.
+        except Exception as exc:
             _logger.warning(
                 "Codex-native model/list failed for session=%s",
                 session_id,
@@ -9624,7 +9634,7 @@ def create_runner_app(
 
         try:
             models = await asyncio.to_thread(list_kiro_cli_model_options)
-        except Exception as exc:  # noqa: BLE001 - picker failures are retryable.
+        except Exception as exc:
             _logger.warning(
                 "Kiro-native model discovery failed for session=%s",
                 session_id,
@@ -9648,7 +9658,7 @@ def create_runner_app(
 
         try:
             models = await asyncio.to_thread(list_cursor_cli_model_options)
-        except Exception as exc:  # noqa: BLE001 - picker failures are retryable.
+        except Exception as exc:
             _logger.warning(
                 "Cursor-native model discovery failed for session=%s",
                 session_id,
@@ -9704,7 +9714,7 @@ def create_runner_app(
                     "detail": exc.message,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 — retryable model-options failure
+        except Exception as exc:
             _logger.warning(
                 "Claude-native model discovery failed for session=%s",
                 session_id,
@@ -10520,7 +10530,7 @@ def create_runner_app(
         if resource_registry is not None:
             try:
                 resource_registry.resync_session_statuses()
-            except Exception:  # noqa: BLE001 — best-effort; never block catch-up.
+            except Exception:
                 _logger.warning(
                     "Session status resync failed after reconnect",
                     exc_info=True,

@@ -1443,6 +1443,11 @@ async def test_sessions_native_clears_in_flight_when_stream_errors() -> None:
     error.") must still clear the marker; a missed clear would leave the entry
     permanently in-flight and therefore never reaped — the inverse of #1414
     (cf. #1349).
+
+    When a dead-channel drop occurs before any text delta, proxy_stream retries
+    once.  The harness here always fails, so both attempts reach response.created
+    then drop: mark_in_flight fires once per attempt, but clear_in_flight must
+    always match so the session is never left permanently in-flight.
     """
     sse_frames = [
         _sse({"type": "response.created", "response": {"id": "resp_drop"}}),
