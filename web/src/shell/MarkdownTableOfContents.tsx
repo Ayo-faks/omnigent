@@ -26,7 +26,12 @@ function extractHeadings(container: HTMLElement | null): TocItem[] {
     const id = el.id;
     if (!id) continue; // Skip headings without IDs
 
-    const text = el.textContent?.trim() ?? "";
+    // Get text content, filtering out any raw HTML that wasn't properly rendered
+    let text = el.textContent?.trim() ?? "";
+
+    // If the text starts with '<', it's likely unrendered HTML - skip it
+    if (text.startsWith("<")) continue;
+
     const level = parseInt(el.tagName[1], 10); // H1 -> 1, H2 -> 2, etc.
 
     headings.push({ id, text, level });
@@ -69,12 +74,17 @@ export function MarkdownTableOfContents({
       setHeadings(extractHeadings(container));
     };
 
-    // Extract immediately and set up a mutation observer to catch late renders
-    updateHeadings();
+    // Give React time to render the markdown before initial extraction
+    const timer = setTimeout(updateHeadings, 100);
+
+    // Set up a mutation observer to catch any subsequent renders
     const observer = new MutationObserver(updateHeadings);
     observer.observe(container, { childList: true, subtree: true });
 
-    return () => observer.disconnect();
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
   }, [containerRef, content]);
 
   // Track which heading is currently visible at the top of the viewport.

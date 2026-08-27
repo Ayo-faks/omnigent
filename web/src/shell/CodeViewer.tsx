@@ -120,12 +120,21 @@ const ALERT_TITLE_CLASS = /^markdown-alert-title$/;
 // HTML in a .md file stays safe to render inline.
 // Set clobberPrefix to empty string so rehype-slug's IDs are preserved without
 // the user-content- prefix, matching the TOC's slug algorithm.
+// Allow common img attributes (alt, width, height, align, valign) that GitHub supports.
 const MARKDOWN_SANITIZE_SCHEMA = {
   ...defaultSchema,
   attributes: {
     ...defaultSchema.attributes,
     div: [...(defaultSchema.attributes?.div ?? []), ["className", ALERT_CLASS]],
     p: [...(defaultSchema.attributes?.p ?? []), ["className", ALERT_TITLE_CLASS]],
+    img: [
+      ...(defaultSchema.attributes?.img ?? []),
+      "alt",
+      "width",
+      "height",
+      "align",
+      "valign",
+    ],
   },
   clobberPrefix: "",
 };
