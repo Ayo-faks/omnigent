@@ -6560,11 +6560,13 @@ def create_runner_app(
         if _sa_name and cached_spec is not None:
             sub_entry = _native_runtime._resolve_sub_agent_spec_entry(cached_spec_entry, _sa_name)
             if sub_entry is None:
-                # Always warn — a parent whose own name matches the requested
-                # sub-agent would silently satisfy a name-equality identity check
-                # on every later turn, hiding the permanent miss. The warning is
-                # the only signal that the session is running on the parent spec.
-                _warn_unresolved_sub_agent(conv, _sa_name)
+                # Warn unless the resolution result was a confirmed success
+                # (True = child spec is already cached; the sub-agent miss here
+                # means "child in hand, not a real miss").  False or None both
+                # mean a real miss — warn. This correctly handles the edge case
+                # where parent.name == sub_agent_name.
+                if _session_sub_agent_resolved.get(conv) is not True:
+                    _warn_unresolved_sub_agent(conv, _sa_name)
             else:
                 cached_spec_entry = sub_entry
                 cached_spec = _unwrap_resolved_spec(sub_entry)
