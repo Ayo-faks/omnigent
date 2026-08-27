@@ -79,7 +79,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Keychain-fallback branch (``sys.platform == "darwin"`` + a logged-in claude
 # CLI) so the REAL ``_claude_login_detected`` code path runs, faithfully
 # reproducing the reported macOS condition on any host.
-_INJECT_PLUGIN_SOURCE = '''
+_INJECT_PLUGIN_SOURCE = """
 import os
 import sys
 
@@ -102,7 +102,7 @@ def pytest_configure(config):
 
         hi.harness_cli_logged_in = lambda *a, **k: True
         sys.platform = "darwin"
-'''
+"""
 
 # Standalone control snippet: proves the injected Claude login is genuinely
 # surfaced by detection. Imports the harness_install chain BEFORE flipping
@@ -145,7 +145,7 @@ def _live_ollama_listener() -> Iterator[None]:
             try:
                 conn, _ = srv.accept()
                 conn.close()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break
@@ -182,7 +182,7 @@ def _run_affected(tests: tuple[str, ...], *, inject: str) -> int:
     # Neutralize ambient vendor keys so the ONLY variable across the two runs
     # is the injected signal under test, not a stray env credential.
     # (The subprocess's conftest.py fixture further clears these in-process.)
-    from omnigent.onboarding.providers import PROVIDER_ENV_VARS  # noqa: PLC0415
+    from omnigent.onboarding.providers import PROVIDER_ENV_VARS
 
     for var in PROVIDER_ENV_VARS.values():
         env.pop(var, None)
