@@ -199,12 +199,6 @@ _CLAUDE_MODEL_LATE_DIALOG_BUDGET_S = 1200.0
 _CLAUDE_MODEL_LATE_DIALOG_POLL_S = 2.0
 
 
-# Provenance tag for the session spec cache: either the name of a
-# sub-agent that failed to resolve (a plain str) or None for a
-# positively-resolved entry.
-_SubAgentProvenanceValue: TypeAlias = "str | None"
-
-
 def _warn_unresolved_sub_agent(session_id: str | None, sub_agent_name: str) -> None:
     """
     Log that a sub-agent name did not resolve to a declared child spec.
