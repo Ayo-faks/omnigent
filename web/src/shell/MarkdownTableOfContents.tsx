@@ -145,21 +145,13 @@ export function MarkdownTableOfContents({
     const target = container.querySelector(`#${CSS.escape(id)}`);
     if (!target) return;
 
-    // Calculate the target's position relative to the container's content area
-    // by walking up the offset chain until we reach the container
-    let offsetTop = 0;
-    let element = target as HTMLElement;
-
-    while (element && element !== container) {
-      offsetTop += element.offsetTop;
-      element = element.offsetParent as HTMLElement;
-
-      // Stop if we've walked outside the container
-      if (element && !container.contains(element)) break;
-    }
+    // Get the element's position relative to the scrollable container
+    const containerTop = container.getBoundingClientRect().top;
+    const targetTop = target.getBoundingClientRect().top;
+    const offset = targetTop - containerTop + container.scrollTop;
 
     // Scroll to position the heading near the top with a small margin
-    container.scrollTo({ top: offsetTop - 16, behavior: "smooth" });
+    container.scrollTo({ top: offset - 16, behavior: "smooth" });
     onClose?.();
   };
 
