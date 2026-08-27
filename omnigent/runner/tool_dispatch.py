@@ -2364,12 +2364,15 @@ async def _execute_subagent_tool(
                 if isinstance(_leaked, dict):
                     _leaked_id = _leaked.get("id") or _leaked.get("session_id")
                     if isinstance(_leaked_id, str) and _leaked_id:
-                        _reap_warning = await _teardown_failed_child(
-                            server_client,
-                            _leaked_id,
-                            created_child=True,
-                        ) or ""
-            except Exception:
+                        _reap_warning = (
+                            await _teardown_failed_child(
+                                server_client,
+                                _leaked_id,
+                                created_child=True,
+                            )
+                            or ""
+                        )
+            except Exception:  # noqa: BLE001 — reconcile is best-effort; any transport error still returns the descriptive string
                 pass
             _suffix = f" {_reap_warning}" if _reap_warning else ""
             return (
