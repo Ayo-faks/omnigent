@@ -5,6 +5,7 @@ Guards the sequential contract in the remote-server branch of
 so the daemon's first tunnel attempt has valid credentials and interactive
 login output is never interleaved with spinner output.
 """
+
 from __future__ import annotations
 
 import threading

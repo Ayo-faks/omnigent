@@ -36,7 +36,6 @@ import omnigent.host.connect  # noqa: F401
 from omnigent import cli
 from omnigent.cli import _ensure_backend
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
