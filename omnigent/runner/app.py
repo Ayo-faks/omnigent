@@ -10055,13 +10055,7 @@ def create_runner_app(
             spec_entry = _session_spec_cache.get(session_id)
             spec = _unwrap_resolved_spec(spec_entry)
             if spec is None and spec_resolver is not None:
-                agent_id = _session_agent_ids.get(session_id)
-                if agent_id:
-                    try:
-                        resolved = await spec_resolver(agent_id, session_id)
-                        spec = _unwrap_resolved_spec(resolved)
-                    except Exception:  # noqa: BLE001
-                        pass
+                spec = await _resolve_session_agent_spec_or_none(session_id)
             if spec is None:
                 return JSONResponse(
                     status_code=200,
@@ -10123,13 +10117,7 @@ def create_runner_app(
                 spec_entry = _session_spec_cache.get(session_id)
                 spec = _unwrap_resolved_spec(spec_entry)
                 if spec is None and spec_resolver is not None:
-                    _agent_id = _session_agent_ids.get(session_id)
-                    if _agent_id:
-                        try:
-                            resolved = await spec_resolver(_agent_id, session_id)
-                            spec = _unwrap_resolved_spec(resolved)
-                        except Exception:  # noqa: BLE001
-                            pass
+                    spec = await _resolve_session_agent_spec_or_none(session_id)
                 if spec is None:
                     return JSONResponse(
                         status_code=200,
@@ -10200,14 +10188,12 @@ def create_runner_app(
                 spec_workdir = _resolved_workdir_for_spec(spec_entry, runner_workspace)
                 spec = _unwrap_resolved_spec(spec_entry)
                 if spec is None and spec_resolver is not None:
-                    _agent_id = _session_agent_ids.get(session_id)
-                    if _agent_id:
-                        try:
-                            resolved = await spec_resolver(_agent_id, session_id)
-                            spec_workdir = _resolved_workdir_for_spec(resolved, runner_workspace)
-                            spec = _unwrap_resolved_spec(resolved)
-                        except Exception:  # noqa: BLE001
-                            pass
+                    try:
+                        resolved_entry = await _resolve_session_spec_entry(session_id)
+                        spec_workdir = _resolved_workdir_for_spec(resolved_entry, runner_workspace)
+                        spec = _unwrap_resolved_spec(resolved_entry)
+                    except (OmnigentError, httpx.HTTPError, RuntimeError):
+                        pass
                 _agent_id_local = _session_agent_ids.get(session_id)
                 dispatch_workspace = (
                     # A resolved entry with no bundle dir gets no workspace at
