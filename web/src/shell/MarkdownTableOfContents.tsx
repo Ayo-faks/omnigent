@@ -60,6 +60,11 @@ export function MarkdownTableOfContents({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // While a TOC click is smooth-scrolling to its target, ignore the
+  // IntersectionObserver so headings passing through the band don't steal the
+  // active highlight from the one the user clicked. Holds the timestamp until
+  // which observer updates are suppressed.
+  const suppressObserverUntilRef = useRef(0);
 
   // Extract headings from rendered DOM after markdown renders
   useEffect(() => {
@@ -92,20 +97,31 @@ export function MarkdownTableOfContents({
     const container = containerRef?.current;
     if (!container || headings.length === 0) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setActiveId(entry.target.id);
-          }
-        }
-      },
-      { root: container, rootMargin: "-20% 0px -80% 0px" },
-    );
-
     const elements = headings
       .map((h) => container.querySelector(`#${CSS.escape(h.id)}`))
       .filter((el): el is Element => el !== null);
+    if (elements.length === 0) return;
+
+    // Order in document order so we can consistently pick the topmost heading
+    // currently inside the observer band, regardless of entry callback order.
+    const orderedIds = elements.map((el) => el.id);
+    const visible = new Set<string>();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) visible.add(entry.target.id);
+          else visible.delete(entry.target.id);
+        }
+        // A programmatic scroll from a TOC click sets its target active up
+        // front; don't let intermediate headings passing through the band
+        // override it until the scroll settles.
+        if (Date.now() < suppressObserverUntilRef.current) return;
+        const topmost = orderedIds.find((id) => visible.has(id));
+        if (topmost) setActiveId(topmost);
+      },
+      { root: container, rootMargin: "-20% 0px -80% 0px" },
+    );
 
     for (const el of elements) observer.observe(el);
     return () => observer.disconnect();
@@ -149,6 +165,13 @@ export function MarkdownTableOfContents({
     const containerTop = container.getBoundingClientRect().top;
     const targetTop = target.getBoundingClientRect().top;
     const offset = targetTop - containerTop + container.scrollTop;
+
+    // Highlight the clicked heading immediately and hold it through the smooth
+    // scroll — otherwise headings passing through the observer band en route,
+    // or a target too near the bottom to reach the band at all, would leave the
+    // wrong section highlighted.
+    setActiveId(id);
+    suppressObserverUntilRef.current = Date.now() + 1000;
 
     // Scroll to position the heading near the top with a small margin
     container.scrollTo({ top: offset - 16, behavior: "smooth" });
