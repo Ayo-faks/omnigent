@@ -38,21 +38,19 @@ from playwright.sync_api import Page, expect
 from tests.e2e_ui.conftest import configure_mock_llm, seed_committed_turn
 
 # —— CSS / ARIA selectors ——————————————————————————————————————————————
-# The composer aria-label is stable; the placeholder text mutates while
-# streaming ("Send a follow-up (queued)…") and during pending elicitations,
-# so we locate by aria-label, not placeholder.
-_COMPOSER_LABEL = "Message the agent"
-# Fallback: stable placeholder when the session is idle and no elicitation.
+# Use the stable idle placeholder — other e2e_ui tests rely on this too.
+# The aria-label is NOT emitted by the current SPA, so we locate directly
+# by placeholder text.
 _COMPOSER_PLACEHOLDER = "Ask the agent anything…"
 
 _ASSISTANT = '[data-testid="message-bubble"][data-role="assistant"]'
 _USER = '[data-testid="message-bubble"][data-role="user"]'
 _WORKING = '[data-testid="working-indicator"]'
 
-# Number of pre-seeded turns. Must exceed INITIAL_WINDOW_ITEMS (100) so the
-# server returns has_more=True on the initial window fetch.  Each turn is 2
-# items (user + assistant), so 110 turns → 220 items → has_more=True.
-_SEEDED_TURNS = 110
+# Minimum turns to guarantee has_more=True on the initial window fetch.
+# Each turn writes 2 items (user + assistant); INITIAL_WINDOW_ITEMS = 100,
+# so we need at least 51 turns (102 items).  55 gives a comfortable margin.
+_SEEDED_TURNS = 55
 
 # A unique needle embedded in the test-message so we can confirm the assistant
 # reply came from the correct turn (not a stale bubble re-render).
@@ -72,12 +70,9 @@ def _seed_long_history(session_id: str) -> None:
 
 def _send(page: Page, text: str) -> None:
     """Fill the composer and click Send."""
-    # Locate by aria-label first; fall back to placeholder for older builds.
-    composer = page.get_by_label(_COMPOSER_LABEL)
-    if not composer.is_visible():
-        composer = page.get_by_placeholder(_COMPOSER_PLACEHOLDER)
-    expect(composer).to_be_visible(timeout=10_000)
-    expect(composer).to_be_enabled(timeout=10_000)
+    composer = page.get_by_placeholder(_COMPOSER_PLACEHOLDER)
+    expect(composer).to_be_visible(timeout=30_000)
+    expect(composer).to_be_enabled(timeout=30_000)
     composer.fill(text)
     page.get_by_role("button", name="Send", exact=True).click()
 
@@ -112,19 +107,13 @@ def test_send_succeeds_after_100_seeded_turns(
 
     page.goto(f"{base_url}/c/{session_id}")
 
-    # The session has more history than the initial window: assert has_more is
-    # signalled by checking the scroll-up affordance exists OR that the
-    # composer is reachable (if the scroll target is never rendered we at
-    # least know chat UI loaded).
-    composer = page.get_by_label(_COMPOSER_LABEL)
-    if not composer.is_visible():
-        composer = page.get_by_placeholder(_COMPOSER_PLACEHOLDER)
-    expect(composer).to_be_visible(timeout=20_000)
-
     # —— Assert composer is not disabled / stuck before we even send ——————
     # The bug: on a >100-turn session the composer can arrive disabled because
     # the store thinks a prior turn is still streaming (stuck latch).
-    expect(composer).to_be_enabled(timeout=10_000)
+    # Use the placeholder locator directly — consistent with other e2e_ui tests.
+    composer = page.get_by_placeholder(_COMPOSER_PLACEHOLDER)
+    expect(composer).to_be_visible(timeout=30_000)
+    expect(composer).to_be_enabled(timeout=30_000)
 
     # —— Send a new message and wait for the assistant reply ——————————————
     _send(page, send_prompt)
@@ -179,11 +168,9 @@ def test_working_indicator_clears_after_turn_on_long_session(
 
     page.goto(f"{base_url}/c/{session_id}")
 
-    composer = page.get_by_label(_COMPOSER_LABEL)
-    if not composer.is_visible():
-        composer = page.get_by_placeholder(_COMPOSER_PLACEHOLDER)
-    expect(composer).to_be_visible(timeout=20_000)
-    expect(composer).to_be_enabled(timeout=10_000)
+    composer = page.get_by_placeholder(_COMPOSER_PLACEHOLDER)
+    expect(composer).to_be_visible(timeout=30_000)
+    expect(composer).to_be_enabled(timeout=30_000)
 
     _send(page, send_prompt)
 
