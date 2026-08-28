@@ -441,6 +441,8 @@ class CredentialProxyEntry:
         emit a request the proxy can rewrite. Empty (the default) means
         pure swap-on-access — nothing is injected and the proxy attaches
         the credential unconditionally for :attr:`host`.
+    :param placeholder_group: Identity of the source YAML entry. Host bindings
+        normalized from one ``targets`` list share one injected placeholder.
     """
 
     host: str
@@ -448,6 +450,7 @@ class CredentialProxyEntry:
     source: CredentialSourceSpec
     username: str | None = None
     inject_env: list[str] = field(default_factory=list)
+    placeholder_group: str | None = None
 
 
 @dataclass

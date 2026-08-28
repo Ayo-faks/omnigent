@@ -123,6 +123,71 @@ def test_env_source_resolves_and_mints_synthetic() -> None:
     assert rule.scheme == "bearer"
 
 
+def test_targets_share_one_injected_synthetic() -> None:
+    """Hosts normalized from one multi-target credential share its env value."""
+    source = CredentialSourceSpec(kind="env", env="OA_SECRET")
+    entries = [
+        _bearer_entry("api.example.com", env_var="API_TOKEN", source=source),
+        _bearer_entry("agent.example.com", env_var="API_TOKEN", source=source),
+    ]
+    for entry in entries:
+        entry.placeholder_group = "credential_proxy[0]"
+    spec = CredentialProxySpec(entries=entries)
+
+    runtime = prepare_credential_proxy_runtime(spec, parent_env={"OA_SECRET": "real-secret"})
+
+    synthetic = runtime.helper_env_updates["API_TOKEN"]
+    assert [rule.synthetic for rule in runtime.rewrites] == [synthetic, synthetic]
+    assert [rule.host for rule in runtime.rewrites] == [
+        "api.example.com",
+        "agent.example.com",
+    ]
+
+
+def test_group_ignores_swap_on_access_entry() -> None:
+    """A non-injected binding cannot suppress its group's placeholder."""
+    source = CredentialSourceSpec(kind="env", env="OA_SECRET")
+    entries = [
+        CredentialProxyEntry(
+            host="git.example.com",
+            scheme="basic",
+            source=source,
+            placeholder_group="credential_proxy[0]",
+        ),
+        CredentialProxyEntry(
+            host="api.example.com",
+            scheme="token",
+            source=source,
+            inject_env=["API_TOKEN"],
+            placeholder_group="credential_proxy[0]",
+        ),
+    ]
+
+    runtime = prepare_credential_proxy_runtime(
+        CredentialProxySpec(entries=entries), parent_env={"OA_SECRET": "real-secret"}
+    )
+
+    assert runtime.rewrites[0].synthetic is None
+    assert runtime.rewrites[1].synthetic == runtime.helper_env_updates["API_TOKEN"]
+
+
+def test_separate_groups_mint_distinct_synthetics() -> None:
+    """Matching sources and env names do not merge separate YAML entries."""
+    source = CredentialSourceSpec(kind="env", env="OA_SECRET")
+    entries = [
+        _bearer_entry("first.example.com", env_var="API_TOKEN", source=source),
+        _bearer_entry("second.example.com", env_var="API_TOKEN", source=source),
+    ]
+    entries[0].placeholder_group = "credential_proxy[0]"
+    entries[1].placeholder_group = "credential_proxy[1]"
+
+    runtime = prepare_credential_proxy_runtime(
+        CredentialProxySpec(entries=entries), parent_env={"OA_SECRET": "real-secret"}
+    )
+
+    assert runtime.rewrites[0].synthetic != runtime.rewrites[1].synthetic
+
+
 def test_file_source_resolves_secret(tmp_path: Path) -> None:
     """A ``file`` source reads the secret from disk, stripped of whitespace.
 
@@ -209,22 +274,23 @@ def test_gh_basic_shape_injects_env_for_api_host_only() -> None:
     API host's env injection, would break one of the two GitHub paths.
     """
     source = CredentialSourceSpec(kind="env", env="GH_PAT")
-    spec = CredentialProxySpec(
-        entries=[
-            CredentialProxyEntry(
-                host="github.com",
-                scheme="basic",
-                source=source,
-                username="x-access-token",
-            ),
-            CredentialProxyEntry(
-                host="api.github.com",
-                scheme="token",
-                source=source,
-                inject_env=["GH_TOKEN", "GITHUB_TOKEN"],
-            ),
-        ]
-    )
+    entries = [
+        CredentialProxyEntry(
+            host="github.com",
+            scheme="basic",
+            source=source,
+            username="x-access-token",
+        ),
+        CredentialProxyEntry(
+            host="api.github.com",
+            scheme="token",
+            source=source,
+            inject_env=["GH_TOKEN", "GITHUB_TOKEN"],
+        ),
+    ]
+    for entry in entries:
+        entry.placeholder_group = "credential_proxy[0]"
+    spec = CredentialProxySpec(entries=entries)
     runtime = prepare_credential_proxy_runtime(spec, parent_env={"GH_PAT": "ghp_real"})
 
     # Both gh env vars carry the *same* synthetic as the api.github.com

@@ -1809,6 +1809,7 @@ def _normalize_https_bearer(
             scheme="bearer",
             source=source,
             inject_env=inject_env,
+            placeholder_group=f"credential_proxy[{index}]",
         )
         for host in _resolve_credential_hosts(model, index=index)
     ]
@@ -1844,6 +1845,7 @@ def _normalize_https_basic(
             source=source,
             username=username,
             inject_env=inject_env,
+            placeholder_group=f"credential_proxy[{index}]",
         )
         for host in _resolve_credential_hosts(model, index=index)
     ]
@@ -1881,6 +1883,7 @@ def _normalize_git_https(
             scheme="basic",
             source=source,
             username=username,
+            placeholder_group=f"credential_proxy[{index}]",
         )
         for host in _resolve_credential_hosts(model, index=index)
     ]
@@ -1922,6 +1925,7 @@ def _normalize_gh_basic(
                     scheme="token",
                     source=source,
                     inject_env=list(_GH_TOKEN_ENV_VARS),
+                    placeholder_group=f"credential_proxy[{index}]",
                 )
             )
         else:
@@ -1931,6 +1935,7 @@ def _normalize_gh_basic(
                     scheme="basic",
                     source=source,
                     username=DEFAULT_BASIC_USERNAME,
+                    placeholder_group=f"credential_proxy[{index}]",
                 )
             )
     return entries

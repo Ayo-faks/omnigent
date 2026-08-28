@@ -2363,6 +2363,41 @@ def test_rewrite_authorization_skips_forbidden_methods(
     assert b"real-secret-value" not in result.headers
 
 
+def test_rewrite_authorization_accepts_shared_synthetic_on_each_bound_host(
+    ca_paths: tuple[Path, Path, Path],
+) -> None:
+    """One injected placeholder may authenticate to several declared targets."""
+    cert_path, key_path, _ = ca_paths
+    synthetic = f"{SYNTHETIC_CREDENTIAL_PREFIX}shared"
+    rules = [
+        CredentialRewriteRule(
+            host=host,
+            scheme="bearer",
+            real_secret="real-secret-value",
+            synthetic=synthetic,
+        )
+        for host in ("api.example.com", "agent.example.com")
+    ]
+    proxy = EgressProxy(
+        parse_rules(["* api.example.com/**", "* agent.example.com/**"]),
+        cert_path,
+        key_path,
+        credential_rewrites=rules,
+    )
+    headers = f"Authorization: Bearer {synthetic}\r\n\r\n".encode()
+
+    for host in ("api.example.com", "agent.example.com"):
+        result = proxy._rewrite_authorization(method="POST", host=host, headers_raw=headers)
+        assert result.error is None
+        assert b"Authorization: Bearer real-secret-value" in result.headers
+
+    rejected = proxy._rewrite_authorization(
+        method="POST", host="other.example.com", headers_raw=headers
+    )
+    assert rejected.error == "synthetic credential is not allowed for this host"
+    assert b"real-secret-value" not in rejected.headers
+
+
 # ---------------------------------------------------------------------------
 # Single-shot upstream framing (Connection: close) and shutdown draining.
 #

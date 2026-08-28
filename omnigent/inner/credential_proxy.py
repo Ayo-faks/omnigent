@@ -194,17 +194,32 @@ def prepare_credential_proxy_runtime(
     if spec.databricks is not None:
         _prepare_databricks_runtime(spec.databricks, runtime)
 
-    for entry in spec.entries:
-        real_secret = _resolve_secret(entry.source, parent_env=parent_env)
+    # ``targets`` normalizes to one entry per host. Entries with the same
+    # source and injected env must share one placeholder so the client can use
+    # that env value on every explicitly bound host.
+    shared: dict[str, tuple[str, str]] = {}
+    for position, entry in enumerate(spec.entries):
+        key: str | None = None
+        prepared: tuple[str, str] | None = None
+        if entry.inject_env:
+            # Hand-built entries have no parser identity and remain isolated.
+            key = entry.placeholder_group or f"runtime-entry[{position}]"
+            prepared = shared.get(key)
+        if prepared is not None:
+            real_secret, synthetic = prepared
+        else:
+            real_secret = _resolve_secret(entry.source, parent_env=parent_env)
+            synthetic = None
+            if entry.inject_env:
+                assert key is not None
+                synthetic = f"{SYNTHETIC_CREDENTIAL_PREFIX}{secrets.token_urlsafe(24)}"
+                shared[key] = (real_secret, synthetic)
         # Mint a placeholder only when the entry injects an env var. The
         # placeholder is what the cross-host leak guard keys on; pure
         # swap-on-access entries put nothing in the sandbox, so there is
         # no placeholder to mint or guard.
-        synthetic: str | None = None
         if entry.inject_env:
-            # 24 bytes -> 192 bits of entropy, well past any brute-force or
-            # collision concern for a short-lived per-session placeholder.
-            synthetic = f"{SYNTHETIC_CREDENTIAL_PREFIX}{secrets.token_urlsafe(24)}"
+            assert synthetic is not None
             for env_name in entry.inject_env:
                 runtime.helper_env_updates[env_name] = synthetic
         runtime.rewrites.append(

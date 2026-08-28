@@ -3635,6 +3635,34 @@ def test_parse_credential_proxy_all_four_types(tmp_path: Path) -> None:
     assert basic.source.kind == "file" and basic.source.path == "/tmp/secret"
 
 
+def test_credential_targets_preserve_placeholder_group(tmp_path: Path) -> None:
+    """Only hosts declared together share an injected placeholder identity."""
+    config = _credential_proxy_config(
+        [
+            {
+                "type": "https_bearer",
+                "targets": ["api.example.com", "agent.example.com"],
+                "source": {"env": "TOKEN"},
+                "env": "API_TOKEN",
+            },
+            {
+                "type": "https_bearer",
+                "target": "separate.example.com",
+                "source": {"env": "TOKEN"},
+                "env": "API_TOKEN",
+            },
+        ]
+    )
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    proxy = parse(tmp_path).os_env.sandbox.credential_proxy
+
+    assert proxy is not None
+    groups = {entry.host: entry.placeholder_group for entry in proxy.entries}
+    assert groups["api.example.com"] == groups["agent.example.com"]
+    assert groups["api.example.com"] != groups["separate.example.com"]
+
+
 def test_parse_credential_proxy_rejects_duplicate_host(tmp_path: Path) -> None:
     """Two entries binding the same host fail loudly at parse time.
 
