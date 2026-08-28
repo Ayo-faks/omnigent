@@ -732,7 +732,7 @@ def _annotate_number_formats(components: dict[str, Any]) -> None:
     layer stays authoritative wherever it sets a format itself.
 
     Scoped to ``components.schemas`` so request examples and other
-    data payloads are not rewritten. See issue #5119.
+    data payloads are not rewritten.
     """
 
     def walk(node: Any) -> None:

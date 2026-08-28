@@ -252,9 +252,11 @@ def test_openapi_json_numeric_schemas_declare_width_format() -> None:
     """Committed openapi.json stamps int64/double on every numeric schema node.
 
     Without ``format``, generators map integers to int32 and numbers to
-    float32, which cannot hold microsecond timestamps or Python floats
-    (issue #5119). ``dump_openapi.py`` must keep those annotations in the
-    checked-in artifact.
+    float32, which cannot hold microsecond timestamps or Python floats.
+    ``dump_openapi.py`` must keep those annotations in the checked-in
+    artifact. No component field declares a narrower explicit format
+    today; if one ever intentionally does (e.g. ``int32``), exempt it
+    here rather than widening it.
     """
     assert _OPENAPI_JSON_PATH.exists(), (
         f"openapi.json not found at {_OPENAPI_JSON_PATH}. "

@@ -1903,6 +1903,7 @@
           "completed_at": {
             "anyOf": [
               {
+                "format": "int64",
                 "type": "integer"
               },
               {
@@ -1928,6 +1929,7 @@
           "created_at": {
             "anyOf": [
               {
+                "format": "int64",
                 "type": "integer"
               },
               {
@@ -2492,6 +2494,7 @@
           },
           "limit": {
             "default": 10,
+            "format": "int64",
             "maximum": 100.0,
             "minimum": 1.0,
             "title": "Limit",
@@ -2530,14 +2533,17 @@
         "description": "Batch result for `POST /v1/imports/local`.",
         "properties": {
           "already_imported": {
+            "format": "int64",
             "title": "Already Imported",
             "type": "integer"
           },
           "failed": {
+            "format": "int64",
             "title": "Failed",
             "type": "integer"
           },
           "imported": {
+            "format": "int64",
             "title": "Imported",
             "type": "integer"
           },
