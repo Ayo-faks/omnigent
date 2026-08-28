@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ActionScope, ActionsProvider, KeybindingDispatcher } from "@/actions";
 import type { useFileContent } from "@/hooks/useFileContent";
 import type { Comment } from "@/hooks/useComments";
 import { CodeViewer, type CodeViewerProps } from "./CodeViewer";
@@ -99,19 +100,26 @@ function renderViewer(
   // Monaco, which handles select-all + copy natively, so this suite defaults to
   // a .md path to exercise the remaining Shiki path.
   return render(
-    <CodeViewer
-      conversationId="conv_1"
-      path={path}
-      fileQuery={makeFileQuery(content, opts.truncated)}
-      comments={[]}
-      activeSelection={null}
-      onSetActiveSelection={() => {}}
-      panelOpen={panelOpen}
-      searchOpen={false}
-      setSearchOpen={() => {}}
-      searchInputRef={noopRef}
-      viewMode={opts.viewMode ?? "source"}
-    />,
+    <ActionsProvider>
+      <KeybindingDispatcher />
+      <ActionScope mode="fileViewer">
+        <div>
+          <CodeViewer
+            conversationId="conv_1"
+            path={path}
+            fileQuery={makeFileQuery(content, opts.truncated)}
+            comments={[]}
+            activeSelection={null}
+            onSetActiveSelection={() => {}}
+            panelOpen={panelOpen}
+            searchOpen={false}
+            setSearchOpen={() => {}}
+            searchInputRef={noopRef}
+            viewMode={opts.viewMode ?? "source"}
+          />
+        </div>
+      </ActionScope>
+    </ActionsProvider>,
   );
 }
 
@@ -224,6 +232,12 @@ describe("CodeViewer Cmd+A select-all and copy interception", () => {
     expect(setData).not.toHaveBeenCalled();
 
     document.body.removeChild(input);
+  });
+
+  it("leaves Cmd+A to Monaco for non-markdown files", () => {
+    renderViewer("const x = 1", true, "file.ts");
+    expect(fireEvent.keyDown(window, { key: "a", metaKey: true })).toBe(true);
+    expect(fireCopyEvent()).not.toHaveBeenCalled();
   });
 
   it("Cmd+A does not intercept copy when panelOpen is false", () => {
