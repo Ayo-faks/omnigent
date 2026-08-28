@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 from playwright.sync_api import Page, expect
 
 from tests.e2e_ui.conftest import configure_mock_llm, seed_committed_turn
@@ -86,7 +85,6 @@ def _send(page: Page, text: str) -> None:
 # —— Facet 1: Chat submission works on a >100-turn session ————————————————
 
 
-@pytest.mark.compat_smoke
 def test_send_succeeds_after_100_seeded_turns(
     page: Page,
     seeded_session: tuple[str, str],
@@ -148,7 +146,6 @@ def test_send_succeeds_after_100_seeded_turns(
 # —— Facet 2: Session status clears after turn completion ————————————————
 
 
-@pytest.mark.compat_smoke
 def test_working_indicator_clears_after_turn_on_long_session(
     page: Page,
     seeded_session: tuple[str, str],
