@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { ActionsProvider, KeybindingDispatcher } from "@/actions";
 import { KeyboardShortcutsDialog, openKeyboardShortcuts } from "./KeyboardShortcutsDialog";
 
 // The pinned-session row shows in both shells; only its chord differs (Alt in
@@ -8,6 +8,7 @@ import { KeyboardShortcutsDialog, openKeyboardShortcuts } from "./KeyboardShortc
 const isNativeShell = vi.fn(() => false);
 vi.mock("@/lib/nativeBridge", () => ({
   isNativeShell: () => isNativeShell(),
+  isElectronShell: () => false,
   // DialogContent (rendered here) reads isIOSShell to size modals for the iOS
   // keyboard; this suite exercises the browser path, so it's always false.
   isIOSShell: () => false,
@@ -18,20 +19,29 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+function renderDialog() {
+  return render(
+    <ActionsProvider>
+      <KeybindingDispatcher />
+      <KeyboardShortcutsDialog />
+    </ActionsProvider>,
+  );
+}
+
 // jsdom's navigator is non-mac, so the modifier glyph renders as "Ctrl".
 function toggleViaHotkey() {
-  fireEvent.keyDown(window, { key: "/", ctrlKey: true });
+  return fireEvent.keyDown(window, { key: "/", ctrlKey: true });
 }
 
 describe("KeyboardShortcutsDialog", () => {
   it("renders nothing until opened", () => {
-    render(<KeyboardShortcutsDialog />);
+    renderDialog();
     expect(screen.queryByText("Send message")).toBeNull();
   });
 
   it("opens on the modifier+/ hotkey and lists one shortcut from each group", () => {
-    render(<KeyboardShortcutsDialog />);
-    toggleViaHotkey();
+    renderDialog();
+    expect(toggleViaHotkey()).toBe(false);
 
     expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
     // General / In chats / Navigation / View / Slash commands — one each.
@@ -46,7 +56,7 @@ describe("KeyboardShortcutsDialog", () => {
   });
 
   it("toggles closed on a second hotkey press", async () => {
-    render(<KeyboardShortcutsDialog />);
+    renderDialog();
     toggleViaHotkey();
     expect(screen.getByText("Send message")).toBeTruthy();
 
@@ -55,14 +65,14 @@ describe("KeyboardShortcutsDialog", () => {
   });
 
   it("opens when openKeyboardShortcuts() is dispatched (menu entry path)", async () => {
-    render(<KeyboardShortcutsDialog />);
+    renderDialog();
     openKeyboardShortcuts();
     // The event dispatch isn't wrapped in act(), so wait for the re-render.
     expect(await screen.findByText("Send message")).toBeTruthy();
   });
 
   it("shows the pinned-session shortcut with the Alt chord in a plain browser", () => {
-    render(<KeyboardShortcutsDialog />);
+    renderDialog();
     toggleViaHotkey();
     const row = screen.getByText("Jump to pinned session (1–10)").closest("li");
     expect(row).toBeTruthy();
@@ -73,7 +83,7 @@ describe("KeyboardShortcutsDialog", () => {
 
   it("shows the pinned-session shortcut without Alt in the Electron shell", () => {
     isNativeShell.mockReturnValue(true);
-    render(<KeyboardShortcutsDialog />);
+    renderDialog();
     toggleViaHotkey();
     const row = screen.getByText("Jump to pinned session (1–10)").closest("li");
     expect(row).toBeTruthy();
