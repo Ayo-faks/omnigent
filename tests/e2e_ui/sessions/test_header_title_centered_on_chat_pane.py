@@ -95,12 +95,13 @@ def test_header_title_centered_after_widening_sidebar(
     sidebar_box = sidebar.bounding_box()
     assert sidebar_box is not None
     assert sidebar_box["width"] >= target_x - 20, (
-        f"sidebar drag did not take: width {sidebar_box['width']:.0f}px, "
-        f"expected ~{target_x}px"
+        f"sidebar drag did not take: width {sidebar_box['width']:.0f}px, expected ~{target_x}px"
     )
 
     # The chat header spans exactly the chat pane (it is absolutely inset
-    # within the pane container), so its box gives the pane's extent.
+    # within the pane container), so its box gives the pane's extent. This
+    # assertion depends on that positioning contract: if the header is ever
+    # re-parented above the pane, measure the pane container instead.
     header = page.locator("header.chat-header")
     header_box = header.bounding_box()
     title_box = title.bounding_box()
