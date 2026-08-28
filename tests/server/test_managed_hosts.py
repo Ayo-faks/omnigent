@@ -31,7 +31,6 @@ from omnigent.onboarding.sandboxes.registry import (
     COMMUNITY_MODULE_PREFIX,
     SandboxProviderContribution,
     SandboxProviderMetadata,
-    SandboxRegistryError,
     reset_plugin_state_for_tests,
 )
 from omnigent.runtime.agent_cache import AgentCache
@@ -3750,17 +3749,29 @@ def test_parse_contributed_provider_builds_registry_backed_factory(
 def test_contributed_provider_config_is_validated(
     contributed_acme_provider: None,
 ) -> None:
-    """A malformed provider block fails at launch with the provider named."""
-    cfg = parse_sandbox_config(
-        {
-            "provider": "acme",
-            "server_url": "https://s.example.com",
-            "acme": {"namespace": ["not", "a", "string"]},
-        }
-    )
-    assert cfg is not None
-    with pytest.raises(SandboxRegistryError, match=r"acme"):
-        cfg.default.launcher_factory()
+    """A malformed provider block fails at parse time with the provider named."""
+    with pytest.raises(ValueError, match=r"acme"):
+        parse_sandbox_config(
+            {
+                "provider": "acme",
+                "server_url": "https://s.example.com",
+                "acme": {"namespace": ["not", "a", "string"]},
+            }
+        )
+
+
+def test_contributed_provider_non_mapping_block_is_rejected(
+    contributed_acme_provider: None,
+) -> None:
+    """A non-mapping ``sandbox.<provider>`` block is rejected at parse time."""
+    with pytest.raises(ValueError, match=r"sandbox\.acme"):
+        parse_sandbox_config(
+            {
+                "provider": "acme",
+                "server_url": "https://s.example.com",
+                "acme": "oops",
+            }
+        )
 
 
 def test_unknown_provider_is_still_rejected(contributed_acme_provider: None) -> None:

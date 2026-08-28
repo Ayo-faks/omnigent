@@ -872,8 +872,34 @@ def _registry_token_ttl_s(provider: str) -> int:
     return ttl if ttl is not None else MODAL_MANAGED_TOKEN_TTL_S
 
 
+def _parse_registry_config(provider: str, section: dict[str, object] | None) -> None:
+    """Validate a community provider's config block at parse time.
+
+    Mirrors the built-ins: operator typos in ``sandbox.<provider>`` stop
+    server startup rather than surfacing as a runtime error on the first
+    managed session.
+
+    :param provider: A contributed provider name.
+    :param section: The ``sandbox.<provider>`` mapping, or ``None`` when
+        the block is absent (accepted when no ``config_model`` is declared).
+    :raises ValueError: When the block fails validation against the
+        provider's declared ``config_model``.
+    """
+    from omnigent.onboarding.sandboxes import registry as sandbox_registry
+
+    meta = sandbox_registry.get_provider_metadata(provider)
+    if meta is None or meta.config_model is None:
+        return
+    try:
+        meta.config_model(**dict(section or {}))
+    except Exception as exc:
+        raise ValueError(
+            f"server config 'sandbox.{provider}' is invalid for provider '{provider}': {exc}"
+        ) from exc
+
+
 def _registry_launcher_factory(
-    provider: str, raw: dict[str, object]
+    provider: str, config: dict[str, object] | None
 ) -> Callable[[], SandboxHostLauncher]:
     """Build the launcher factory for a contributed provider.
 
@@ -884,13 +910,11 @@ def _registry_launcher_factory(
     surfaces on the launch that needs it, naming the provider.
 
     :param provider: A contributed provider name.
-    :param raw: The whole ``sandbox`` mapping; the provider's own
-        ``sandbox.<provider>`` block is handed to the registry, which validates
-        it against the provider's declared ``config_model``.
+    :param config: The provider's ``sandbox.<provider>`` block (already
+        validated against ``config_model`` at parse time), or ``None`` when
+        the block is absent.
     :returns: A factory producing that provider's launcher.
     """
-    section = raw.get(provider)
-    config = section if isinstance(section, dict) else None
 
     def _build() -> SandboxHostLauncher:
         """Construct the contributed launcher (lazy import inside)."""
@@ -1254,14 +1278,17 @@ def _parse_single_provider_sandbox_config(raw: dict[str, object]) -> ManagedSand
         # A provider contributed through the `omnigent.sandbox_providers`
         # entry point group. The registry has validated it (name not shadowing
         # a built-in, launcher class under `omnigent.community.sandbox.*`) at
-        # import time, so this only has to build the factory.
+        # import time, so this only has to validate the config block and build
+        # the factory.
         #
         # Deliberately below every built-in branch and gated on `community`,
         # which excludes anything in SUPPORTED_SANDBOX_PROVIDERS. Built-ins
         # that are listed but have no branch — `lakebox` today — must keep
         # falling through to the staged rejection below rather than silently
         # gaining a launcher.
-        launcher_factory = _registry_launcher_factory(provider, raw)
+        section = _parse_provider_section(raw, provider)
+        _parse_registry_config(provider, section)
+        launcher_factory = _registry_launcher_factory(provider, section)
         token_ttl_s = _registry_token_ttl_s(provider)
     else:
         launcher_factory = _unsupported_launcher_factory(provider)
