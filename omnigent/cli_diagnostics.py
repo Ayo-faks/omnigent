@@ -36,6 +36,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import cast
 
+from omnigent.cli_invocation import cli_invocation
 from omnigent.process_logging import (
     TerminalLogFormatter,
     effective_log_level,
@@ -393,17 +394,14 @@ def log_cli_error_hint(exc: BaseException) -> None:
     print(f"Details logged to {path}", file=dest)
 
 
-def print_setup_hint() -> None:
+def print_stale_host_hint() -> None:
     """
-    Print a one-line configuration-recovery hint on stderr.
+    Print a one-line stale-host recovery hint on stderr.
 
     Used by the top-level :func:`omnigent.cli.main` exception
-    handlers so any error the CLI surfaces ends with a pointer to
-    the model-configuration command. The dominant root cause for CLI
-    failures in the wild is a missing or misconfigured model
-    credential — a hint that nudges the user toward
-    ``omnigent setup`` keeps the recovery path obvious without
-    requiring per-call classification of "is this auth?".
+    handlers so errors that wrap runner startup failures include the
+    recovery path for stale host processes. Those processes can retain
+    invalid server authentication and cause runner tunnel rejections.
 
     Like :func:`log_cli_error_hint`, the line is written through
     to the original ``stderr`` so it survives any logging-driven
@@ -414,8 +412,9 @@ def print_setup_hint() -> None:
     """
     dest = getattr(sys.stderr, "_original_stderr", sys.stderr)
     print(
-        "If this looks like an auth or configuration problem, run "
-        "`omnigent setup` to configure a model credential.",
+        "If this is a runner tunnel rejection (HTTP 401), stale host processes "
+        f"may be the cause. Run `{cli_invocation()} stop` to stop existing Omnigent "
+        "host instances, then try again.",
         file=dest,
     )
 

@@ -27,6 +27,7 @@ import asyncio
 import base64
 import binascii
 import email.policy
+import functools
 import hmac
 import ipaddress
 import logging
@@ -36,6 +37,7 @@ from dataclasses import dataclass
 from email.message import Message
 from email.parser import BytesParser
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlparse
 
 from omnigent.inner.credential_proxy import (
@@ -259,6 +261,7 @@ class EgressProxy:
         # the base64 round-trip on every connection. Stored as bytes
         # so we can ``hmac.compare_digest`` against the raw header
         # value lifted from the request without re-encoding.
+        self._expected_auth_value: bytes | None
         if auth_token is not None:
             self._expected_auth_value = b"Basic " + base64.b64encode(
                 f"omnigent:{auth_token}".encode()
@@ -500,7 +503,7 @@ class EgressProxy:
             await self._send_forbidden(writer, str(exc))
             return
 
-        writer.transport.pause_reading()
+        cast(asyncio.ReadTransport, writer.transport).pause_reading()
 
         writer.write(_CONNECT_RESPONSE)
         await writer.drain()
@@ -539,8 +542,9 @@ class EgressProxy:
         transport = writer.transport
         loop = asyncio.get_event_loop()
         try:
-            tls_transport = await loop.start_tls(
-                transport, tls_protocol, ssl_ctx, server_side=True
+            tls_transport = cast(
+                asyncio.WriteTransport,
+                await loop.start_tls(transport, tls_protocol, ssl_ctx, server_side=True),
             )
         except (ssl.SSLError, ConnectionResetError, OSError) as exc:
             # WARNING (was DEBUG) so a client that drops mid-handshake
@@ -708,7 +712,9 @@ class EgressProxy:
         connect_host = pinned_ip or host
         # Swap any synthetic credential placeholder for the real secret,
         # bound to this host (rejects cross-host replay with 403).
-        rewrite = self._rewrite_authorization(method=method, host=host, headers_raw=headers_raw)
+        rewrite = await self._rewrite_authorization_async(
+            method=method, host=host, headers_raw=headers_raw
+        )
         if rewrite.error is not None:
             logger.warning(
                 "BLOCKED-CREDENTIAL %s https://%s%s — %s", method, host, path, rewrite.error
@@ -861,7 +867,9 @@ class EgressProxy:
             body = await asyncio.wait_for(reader.readexactly(content_length), timeout=30)
 
         relative_line = f"{method} {path} HTTP/1.1\r\n".encode("latin-1")
-        rewrite = self._rewrite_authorization(method=method, host=host, headers_raw=headers_raw)
+        rewrite = await self._rewrite_authorization_async(
+            method=method, host=host, headers_raw=headers_raw
+        )
         if rewrite.error is not None:
             logger.warning(
                 "BLOCKED-CREDENTIAL %s http://%s%s — %s", method, host, path, rewrite.error
@@ -1020,16 +1028,19 @@ class EgressProxy:
             ) from exc
         pinned_ip: str | None = None
         for family, _type, _proto, _canon, sockaddr in infos:
-            if family == socket.AF_INET:
-                ip_str = sockaddr[0]
-            elif family == socket.AF_INET6:
-                ip_str = sockaddr[0]
+            if family not in (socket.AF_INET, socket.AF_INET6):
+                continue
+            raw_ip = sockaddr[0]
+            if not isinstance(raw_ip, str):
+                raise PermissionError(
+                    f"unparseable address {raw_ip!r} for host {host!r}"
+                ) from None
+            ip_str = raw_ip
+            if family == socket.AF_INET6:
                 # IPv6 stores the address as the first tuple element
                 # already; strip any zone-id suffix like "%en0".
                 if "%" in ip_str:
                     ip_str = ip_str.split("%", 1)[0]
-            else:
-                continue
             try:
                 addr = ipaddress.ip_address(ip_str)
             except ValueError:
@@ -1125,6 +1136,34 @@ class EgressProxy:
             await writer.drain()
         except Exception:  # noqa: BLE001 — response write is best-effort
             pass
+
+    async def _rewrite_authorization_async(
+        self, *, method: str, host: str, headers_raw: bytes
+    ) -> _AuthRewriteResult:
+        """
+        Async wrapper around :meth:`_rewrite_authorization`.
+
+        A refreshing credential source (e.g. a Databricks OAuth profile)
+        may re-mint a token via a blocking SDK/CLI call when its throttle
+        window elapses. That would stall the proxy's event loop, so the
+        rewrite runs in the default executor. The common case — no
+        credential rules configured — short-circuits inline with no
+        executor hop.
+
+        :param method: HTTP method (case-insensitive), e.g. ``"GET"``.
+        :param host: Upstream request host (case-insensitive).
+        :param headers_raw: Raw HTTP header block (CRLF-separated).
+        :returns: The rewrite result.
+        """
+        if not self._cred_by_host:
+            return _AuthRewriteResult(headers=headers_raw, error=None)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(
+                self._rewrite_authorization, method=method, host=host, headers_raw=headers_raw
+            ),
+        )
 
     def _rewrite_authorization(
         self, *, method: str, host: str, headers_raw: bytes
@@ -1262,10 +1301,11 @@ class EgressProxy:
             ``"Basic <base64(username:real)>"``.
         :raises ValueError: If the rule carries an unsupported scheme.
         """
+        real_secret = rule.resolve_secret()
         if rule.scheme == "bearer":
-            return f"Bearer {rule.real_secret}"
+            return f"Bearer {real_secret}"
         if rule.scheme == "token":
-            return f"token {rule.real_secret}"
+            return f"token {real_secret}"
         if rule.scheme == "basic":
             # The parser always populates ``username`` for Basic
             # bindings; fail loud rather than invent one if a malformed
@@ -1274,7 +1314,7 @@ class EgressProxy:
                 raise ValueError(
                     f"basic credential rewrite for host {rule.host!r} is missing a username"
                 )
-            pair = f"{rule.username}:{rule.real_secret}".encode()
+            pair = f"{rule.username}:{real_secret}".encode()
             return "Basic " + base64.b64encode(pair).decode("ascii")
         raise ValueError(f"unsupported credential rewrite scheme: {rule.scheme!r}")
 

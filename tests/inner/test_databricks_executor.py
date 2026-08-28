@@ -3,10 +3,13 @@
 import asyncio
 import json
 import sys
+import threading
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import databricks.sdk.config as _sdk_config_mod
 
@@ -574,17 +577,27 @@ class TestDatabricksExecutorConfig(unittest.TestCase):
         _run(_t())
 
     def test_default_model(self):
-        """When no model is specified, falls back to databricks-claude-sonnet-4-6."""
+        """Catalog default resolution does not block the event-loop thread."""
 
         async def _t():
             chunks = _make_text_stream("ok")
             client = FakeClient(chunks)
             executor = DatabricksExecutor(client=client)
+            event_loop_thread = threading.get_ident()
 
-            [e async for e in executor.run_turn([], [], "", config=ExecutorConfig())]
+            def _resolve_model(provider_name: str, *, family: str) -> SimpleNamespace:
+                self.assertNotEqual(threading.get_ident(), event_loop_thread)
+                self.assertEqual((provider_name, family), ("databricks", "claude"))
+                return SimpleNamespace(model_id="catalog-databricks-claude-default")
+
+            with patch(
+                "omnigent.model_catalog.resolve_catalog_model",
+                side_effect=_resolve_model,
+            ):
+                [e async for e in executor.run_turn([], [], "", config=ExecutorConfig())]
             self.assertEqual(
                 client.chat.completions.last_kwargs["model"],
-                "databricks-claude-sonnet-4-6",
+                "catalog-databricks-claude-default",
             )
 
         _run(_t())
@@ -701,6 +714,7 @@ from omnigent.inner.databricks_executor import (  # noqa: E402
     _read_databrickscfg,
     _read_databrickscfg_file_fallback,
     _read_databrickscfg_host,
+    databrickscfg_workspace_id_for_host,
 )
 
 _AUTH_ENV_VARS: tuple[str, ...] = (
@@ -1861,3 +1875,43 @@ def test_stream_ended_without_finish_reason_with_content_completes() -> None:
         assert turn_events[0].response == "partial"
 
     _run(_t())
+
+
+def test_databrickscfg_workspace_id_for_host_reads_matching_profile(
+    tmp_path: _Path, monkeypatch: pytest.MonkeyPatch, clean_databricks_env: None
+) -> None:
+    """The workspace id is read from the ~/.databrickscfg profile matching the host.
+
+    ``databricks auth login`` records the resolved workspace id per profile;
+    matching is scheme-insensitive and trailing-slash tolerant, so a bare-host
+    cfg entry matches an ``https://`` query.
+    """
+    cfg = tmp_path / "databrickscfg"
+    cfg.write_text(
+        textwrap.dedent(
+            """
+            [acme]
+            host = https://acme.databricks.com
+            workspace_id = 1965859176160743
+            auth_type = databricks-cli
+
+            [no-ws]
+            host = https://plain.databricks.com
+            auth_type = databricks-cli
+            """
+        ).lstrip()
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg))
+
+    assert databrickscfg_workspace_id_for_host("https://acme.databricks.com") == "1965859176160743"
+    # A profile without the field, and an unknown host, both resolve to None.
+    assert databrickscfg_workspace_id_for_host("https://plain.databricks.com") is None
+    assert databrickscfg_workspace_id_for_host("https://other.databricks.com") is None
+
+
+def test_databrickscfg_workspace_id_for_host_missing_file_returns_none(
+    tmp_path: _Path, monkeypatch: pytest.MonkeyPatch, clean_databricks_env: None
+) -> None:
+    """A missing ~/.databrickscfg never raises — it resolves to None."""
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "absent"))
+    assert databrickscfg_workspace_id_for_host("https://acme.databricks.com") is None

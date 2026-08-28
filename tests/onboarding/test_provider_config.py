@@ -44,6 +44,14 @@ from omnigent.onboarding.provider_config import (
         ("qwen", OPENAI_FAMILY),
         ("qwen-native", OPENAI_FAMILY),
         ("native-qwen", OPENAI_FAMILY),
+        # Antigravity SDK harness and aliases consume OpenAI family.
+        ("antigravity", OPENAI_FAMILY),
+        ("agy", OPENAI_FAMILY),
+        # Antigravity native CLI harness and aliases consume Gemini family.
+        ("antigravity-native", GEMINI_FAMILY),
+        ("native-antigravity", GEMINI_FAMILY),
+        ("agy-native", GEMINI_FAMILY),
+        ("native-agy", GEMINI_FAMILY),
         # An unknown harness has no family (caller falls back / shows nothing).
         ("some-unknown-harness", None),
     ],
@@ -671,13 +679,12 @@ def test_parse_cli_config_entry() -> None:
 @pytest.mark.parametrize(
     "body,message_fragment",
     [
-        # Only codex has config-file model providers; a claude analog would
-        # be a deliberate extension, not a silently-accepted value.
-        (
-            {"kind": "cli-config", "cli": "claude", "model_provider": "X"},
-            "requires cli: 'codex'",
-        ),
-        # The pin target is the entry's whole point — fail loud without it.
+        # A `cli: codex` cli-config is recognized, so a missing model_provider
+        # (its whole point) is a real error and must fail loud. (An unrecognized
+        # cli like `claude` is instead SKIPPED by load_providers for forward
+        # compatibility — see
+        # test_load_providers_skips_unrecognized_cli_config_cli_without_raising —
+        # so it is intentionally NOT in this "fails loud" list.)
         ({"kind": "cli-config", "cli": "codex"}, "'model_provider'"),
     ],
 )
@@ -815,3 +822,167 @@ def test_default_provider_for_pi_none_when_only_bedrock_default() -> None:
         }
     }
     assert default_provider_for_harness(config, "pi") is None
+
+
+def test_provider_credential_env_vars_collects_api_key_ref() -> None:
+    """``provider_credential_env_vars`` collects ``api_key_ref: env:VAR`` names.
+
+    When a gateway provider uses ``api_key_ref: env:MY_TOKEN``, both
+    ``MY_TOKEN`` and its ``OMNIGENT_MY_TOKEN`` alias must be returned so the
+    runner-spawn layer can forward them into the runner subprocess.
+    """
+    from omnigent.onboarding.provider_config import provider_credential_env_vars
+
+    config = {
+        "providers": {
+            "my-gateway": {
+                "kind": "gateway",
+                "openai": {
+                    "api_key_ref": "env:MY_TOKEN",
+                    "base_url": "https://example.com/v1",
+                    "models": {"default": "m"},
+                },
+            }
+        }
+    }
+    result = provider_credential_env_vars(config)
+    assert "MY_TOKEN" in result
+    assert "OMNIGENT_MY_TOKEN" in result
+
+
+def test_provider_credential_env_vars_collects_inline_dollar_ref() -> None:
+    """``provider_credential_env_vars`` collects ``api_key: $VAR`` names.
+
+    An inline ``$VAR`` reference in ``api_key`` must also be returned, since
+    it is resolved lazily from the environment just like ``api_key_ref: env:VAR``.
+    """
+    from omnigent.onboarding.provider_config import provider_credential_env_vars
+
+    config = {
+        "providers": {
+            "vendor": {
+                "kind": "key",
+                "anthropic": {
+                    "api_key": "$CUSTOM_KEY",
+                    "base_url": "https://api.anthropic.com",
+                    "models": {"default": "m"},
+                },
+            }
+        }
+    }
+    result = provider_credential_env_vars(config)
+    assert "CUSTOM_KEY" in result
+    assert "OMNIGENT_CUSTOM_KEY" in result
+
+
+def test_provider_credential_env_vars_empty_for_keychain_and_auth_command() -> None:
+    """``provider_credential_env_vars`` skips ``keychain:`` refs and ``auth_command``.
+
+    Neither ``keychain:`` refs nor ``auth_command`` fields resolve from the
+    environment, so they must not appear in the returned set.
+    """
+    from omnigent.onboarding.provider_config import provider_credential_env_vars
+
+    config = {
+        "providers": {
+            "vendor": {
+                "kind": "gateway",
+                "openai": {
+                    "auth_command": "my-cli token",
+                    "base_url": "https://example.com/v1",
+                    "models": {"default": "m"},
+                },
+            }
+        }
+    }
+    assert provider_credential_env_vars(config) == frozenset()
+
+
+def test_load_providers_skips_unrecognized_cli_config_cli_without_raising() -> None:
+    """A `cli-config` entry naming an unknown CLI is skipped, not fatal.
+
+    This is the version-skew guard: the first attempt persisted a
+    `cli: claude` cli-config entry that OLDER runners' parser rejected, and
+    because `load_providers` had no per-entry isolation, that single entry
+    raised and crashed turn setup for EVERY harness. Now such an entry is
+    dropped with a warning and the rest of the config still loads.
+    """
+    from omnigent.onboarding.provider_config import load_providers
+
+    config = {
+        "providers": {
+            # The poison pill a newer build might write / that the reverted
+            # build left in the field.
+            "claude-databricks": {
+                "kind": "cli-config",
+                "cli": "claude",
+                "display_name": "Databricks AI Gateway",
+                "default": True,
+            },
+            "openai": {
+                "kind": "key",
+                "openai": {"api_key": "sk-x", "base_url": "https://api.openai.com/v1"},
+            },
+        }
+    }
+    parsed = load_providers(config)  # must NOT raise
+    assert set(parsed) == {"openai"}
+    assert "claude-databricks" not in parsed
+
+
+def test_load_providers_still_accepts_codex_cli_config() -> None:
+    """The recognized `cli: codex` cli-config still parses (no over-broad skip)."""
+    from omnigent.onboarding.provider_config import load_providers
+
+    parsed = load_providers(
+        {
+            "providers": {
+                "codex-databricks": {
+                    "kind": "cli-config",
+                    "cli": "codex",
+                    "model_provider": "Databricks",
+                }
+            }
+        }
+    )
+    assert parsed["codex-databricks"].cli == "codex"
+    assert parsed["codex-databricks"].model_provider == "Databricks"
+
+
+def test_load_providers_still_raises_on_malformed_known_shape() -> None:
+    """Resilience is targeted: a malformed KNOWN shape still fails loud.
+
+    Skipping is only for an unrecognized cli-config CLI (a newer-build shape).
+    A recognized shape with a real error (a `key` provider configuring no
+    family) must still raise so user typos aren't silently dropped.
+    """
+    from omnigent.errors import OmnigentError
+    from omnigent.onboarding.provider_config import load_providers
+
+    with pytest.raises(OmnigentError):
+        load_providers({"providers": {"bad": {"kind": "key"}}})
+
+
+def test_claude_sdk_resolution_survives_stray_cli_config_claude_entry() -> None:
+    """The EXACT reverted failure: claude-sdk resolution over a poisoned config.
+
+    The revert stack was `_build_claude_sdk_spawn_env` →
+    `_resolve_provider_for_build` → `default_provider_for_harness("claude-sdk")`
+    → `load_providers` → raise. With resilience the stray entry is skipped, so
+    resolution returns the next usable anthropic default (or None) instead of
+    crashing every claude-sdk turn.
+    """
+    from omnigent.onboarding.provider_config import default_provider_for_harness
+
+    config = {
+        "providers": {
+            "claude-databricks": {"kind": "cli-config", "cli": "claude", "default": True},
+            "vendor-anthropic": {
+                "kind": "key",
+                "default": "anthropic",
+                "anthropic": {"api_key": "sk-x", "base_url": "https://api.anthropic.com"},
+            },
+        }
+    }
+    entry = default_provider_for_harness(config, "claude-sdk")  # must NOT raise
+    assert entry is not None and entry.name == "vendor-anthropic"
