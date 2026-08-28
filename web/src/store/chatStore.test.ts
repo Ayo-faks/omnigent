@@ -9125,6 +9125,49 @@ describe("chatStore — startStreamPump reconnect loop", () => {
     await drainAsync(2);
     await loop;
   });
+
+  it("clears a stuck send-latch on reconnect when the server snapshot shows idle", async () => {
+    // If the terminal session_status SSE edge was lost before postEvent's
+    // `finally` settled (e.g. a stream drop), `status` can stay "streaming"
+    // even though the server is already idle and activeResponse is null.
+    // reconnectStatusPatch must free `status` in that case so the composer
+    // and queue don't wedge until the 180s stall guard fires.
+    seedSession("conv_reconnect_idle", []);
+    const sinks = routeStreamOpens();
+    const controller = new AbortController();
+    // Simulate the post-send stuck state: status="streaming" but no live
+    // response, and the server snapshot (returned by defaultFetchHandler)
+    // already shows status="idle".
+    useChatStore.setState({
+      conversationId: "conv_reconnect_idle",
+      abortController: controller,
+      status: "streaming",
+      sessionStatus: "running",
+      activeResponse: null,
+      sendLatchedAt: Date.now(),
+    });
+
+    const loop = startStreamPump("conv_reconnect_idle", controller, setState, getState);
+    await drainAsync();
+    expect(sinks).toHaveLength(1);
+
+    // Drop the stream — reconcileOnReconnect will fire on the next open.
+    sinks[0]!.error();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(sinks).toHaveLength(2);
+    await drainAsync();
+
+    // After reconnect the snapshot says idle, so reconnectStatusPatch must
+    // have cleared the stuck local send latch even without a streaming response.
+    expect(useChatStore.getState().status).toBe("idle");
+    expect(useChatStore.getState().sessionStatus).toBe("idle");
+
+    const last = sinks[sinks.length - 1]!;
+    last.push("data: [DONE]\n\n");
+    last.close();
+    await drainAsync(2);
+    await loop;
+  });
 });
 
 // The first-message handoff from the landing composer to ChatPage. The
@@ -10924,6 +10967,7 @@ describe("chatStore — client-side message queue", () => {
     useChatStore.getState().maybeFlushQueuedHead();
     expect(useChatStore.getState().status).toBe("idle");
   });
+
 });
 
 describe("chatStore — background cross-session flush", () => {

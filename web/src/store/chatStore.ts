@@ -3505,17 +3505,21 @@ function reconnectStatusPatch(session: Session, s: ChatState): Partial<ChatState
   // reconnect and strand the composer on the "(queued)" placeholder — re-queuing
   // sends, the exact behavior this fix removes. `sessionStatus` stays `waiting`
   // and `backgroundTaskCount` is recovered above, so the spinner survives.
-  if (
-    (session.status === "idle" || session.status === "failed") &&
-    s.activeResponse?.state === "streaming"
-  ) {
-    patch.activeResponse = {
-      ...s.activeResponse,
-      state: session.status === "failed" ? "failed" : "completed",
-      error: null,
-      completedAt: Date.now(),
-    };
-    patch.status = "idle";
+  if (session.status === "idle" || session.status === "failed") {
+    if (s.activeResponse?.state === "streaming") {
+      patch.activeResponse = {
+        ...s.activeResponse,
+        state: session.status === "failed" ? "failed" : "completed",
+        error: null,
+        completedAt: Date.now(),
+      };
+    }
+    // Also free a stuck local send latch when the server confirms idle/failed
+    // even with no live streaming response (e.g. the final `session_status`
+    // SSE edge was lost before `postEvent`'s `finally` ran).
+    if (s.status === "streaming") {
+      patch.status = "idle";
+    }
   } else if (session.status === "waiting") {
     // Turn ended, background work remains. Finalize a still-streaming response
     // and free the local send lifecycle so the composer dispatches a new turn.
