@@ -74,6 +74,45 @@ export function formatKeybinding(sequence: KeySequence, options: KeybindingForma
   return sequence.map((stroke) => formatKeyStroke(stroke, options)).join(" ");
 }
 
+function spokenKeyLabel(stroke: KeyStroke): string {
+  const label = keyLabel(stroke);
+  return (
+    {
+      "↑": "Up arrow",
+      "↓": "Down arrow",
+      "←": "Left arrow",
+      "→": "Right arrow",
+      "↵": "Enter",
+      "⇥": "Tab",
+      "⌫": "Backspace",
+      "⌦": "Delete",
+      "[": "Left bracket",
+      "]": "Right bracket",
+    }[label] ?? label
+  );
+}
+
+export function formatKeybindingForAria(
+  sequence: KeySequence,
+  { isMac }: KeybindingFormatOptions,
+): string {
+  const modifiers: Readonly<Record<KeyModifier, string>> = {
+    mod: isMac ? "Command" : "Control",
+    primary: isMac ? "Command or Control" : "Control or Command",
+    ctrl: "Control",
+    meta: isMac ? "Command" : "Meta",
+    alt: isMac ? "Option" : "Alt",
+    shift: "Shift",
+  };
+  return sequence
+    .map((stroke) =>
+      [...stroke.modifiers.map((modifier) => modifiers[modifier]), spokenKeyLabel(stroke)].join(
+        " + ",
+      ),
+    )
+    .join(", then ");
+}
+
 export function keybindingParts(
   sequence: KeySequence,
   options: KeybindingFormatOptions,

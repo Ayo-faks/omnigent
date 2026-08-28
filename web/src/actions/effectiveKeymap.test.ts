@@ -248,6 +248,24 @@ describe("effective keymap", () => {
     );
   });
 
+  it("detects platform-overlapping mod and legacy primary bindings", () => {
+    const conflicts = analyzeKeybindingConflicts([
+      defaultRule("legacy", "workbench.action.showCommands", "primary+k"),
+      { ...defaultRule("user", "session.action.new", "mod+k"), origin: "user" },
+    ]);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({ kind: "exact", resolution: "ambiguous" });
+  });
+
+  it("detects logical keys that overlap physical-code defaults", () => {
+    const conflicts = analyzeKeybindingConflicts([
+      defaultRule("physical", "composer.action.toggleDictation", "primary+alt+[KeyV]"),
+      { ...defaultRule("logical", "session.action.new", "mod+alt+v"), origin: "user" },
+    ]);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({ kind: "exact", resolution: "ambiguous" });
+  });
+
   it("marks the same-mode user binding as the static winner", () => {
     const conflicts = analyzeKeybindingConflicts([
       defaultRule("default", "workbench.action.showCommands", "mod+k"),
@@ -366,6 +384,17 @@ describe("effective keymap", () => {
       origin: "user" as const,
     };
     expect(analyzeKeybindingConflicts([empty, userRule])).toEqual([]);
+  });
+
+  it("defaults cross-action bindings in open-surface modes to active", () => {
+    const defaults = [defaultRule("session.new", "session.action.new", "mod+n")];
+    const effective = resolveEffectiveKeymap(defaults, [
+      user("user.session.files", "session.action.new", "mod+j", "filesPanel"),
+    ]);
+    expect(effective.rules.find((rule) => rule.id === "user.session.files")).toMatchObject({
+      mode: "filesPanel",
+      activation: "active",
+    });
   });
 
   it("uses the last hand-edited duplicate override deterministically", () => {

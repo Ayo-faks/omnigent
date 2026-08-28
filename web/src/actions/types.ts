@@ -89,6 +89,8 @@ export interface ActionDefinition {
   palette?: boolean;
   /** Stable command-palette order; lower values render first. */
   paletteOrder?: number;
+  /** Include this action in the compact shortcut-reference dialog. */
+  shortcutReference?: boolean;
 }
 
 export type ActionSource = "api" | "button" | "keyboard" | "menu" | "native" | "palette";

@@ -1,11 +1,10 @@
 import { useEffect, useRef } from "react";
 import { useKeybindingSnapshot } from "./KeybindingStore";
+import { KEYBINDING_CHORD_TIMEOUT_MS } from "./keybindingEnvironment";
 import { matchingKeybindingRules, type KeybindingEnvironment } from "./keybindingResolver";
-import { useInternalActionRuntime } from "./ActionProvider";
+import { useInternalActionRuntime, useKeybindingDispatchSuspended } from "./ActionProvider";
 import type { ActionId, ActionInvocation, KeybindingRule } from "./types";
 import { HANDLED } from "./types";
-
-const CHORD_TIMEOUT_MS = 1_500;
 
 interface PendingChord {
   rules: readonly KeybindingRule[];
@@ -40,12 +39,14 @@ function invocationFor<A extends ActionId>(
 /** Installs the only application-owned global keyboard dispatch listeners. */
 export function KeybindingDispatcher({ rules }: { rules?: readonly KeybindingRule[] }) {
   const actions = useInternalActionRuntime();
+  const suspended = useKeybindingDispatchSuspended();
   const storedKeymap = useKeybindingSnapshot();
   const effectiveRules = rules ?? storedKeymap.effectiveRules;
   const pendingCapture = useRef<PendingChord | null>(null);
   const pendingBubble = useRef<PendingChord | null>(null);
 
   useEffect(() => {
+    if (suspended) return;
     const handledInCapture = new WeakSet<KeyboardEvent>();
 
     const clearPending = (pending: { current: PendingChord | null }): void => {
@@ -55,6 +56,7 @@ export function KeybindingDispatcher({ rules }: { rules?: readonly KeybindingRul
     };
 
     const dispatch = (event: KeyboardEvent, phase: "capture" | "bubble"): void => {
+      if (actions.dispatchSuspension.getSnapshot()) return;
       const pending = phase === "capture" ? pendingCapture : pendingBubble;
       if (event.key === "Escape") clearPending(pending);
       if (phase === "bubble" && handledInCapture.has(event)) {
@@ -114,7 +116,7 @@ export function KeybindingDispatcher({ rules }: { rules?: readonly KeybindingRul
           rules: chords,
           timer: window.setTimeout(() => {
             pending.current = null;
-          }, CHORD_TIMEOUT_MS),
+          }, KEYBINDING_CHORD_TIMEOUT_MS),
         };
         consume(event, first);
         if (phase === "capture") handledInCapture.add(event);
@@ -150,7 +152,7 @@ export function KeybindingDispatcher({ rules }: { rules?: readonly KeybindingRul
       document.removeEventListener("visibilitychange", clearChords);
       clearChords();
     };
-  }, [actions, effectiveRules]);
+  }, [actions, effectiveRules, suspended]);
 
   return null;
 }

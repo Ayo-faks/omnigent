@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedProvider } from "@/lib/embedded";
-import { ActionScope, ActionsProvider } from "./ActionProvider";
+import { ActionScope, ActionsProvider, useSuspendKeybindingDispatch } from "./ActionProvider";
 import { KeybindingDispatcher } from "./KeybindingDispatcher";
 import { when } from "./context";
 import { parseKeybinding } from "./keybindingParser";
@@ -32,6 +32,16 @@ function Handler({
 }) {
   useRegisterAction(action, { run, acceptsKeybindings: true });
   return null;
+}
+
+function SuspensionToggle() {
+  const [suspended, setSuspended] = useState(false);
+  useSuspendKeybindingDispatch(suspended);
+  return (
+    <button type="button" onClick={() => setSuspended((value) => !value)}>
+      {suspended ? "Resume keys" : "Suspend keys"}
+    </button>
+  );
 }
 
 function renderActions(children: React.ReactNode, rules?: readonly KeybindingRule[]) {
@@ -105,6 +115,46 @@ describe("KeybindingDispatcher", () => {
     window.dispatchEvent(event);
     expect(run).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("suspends keyboard dispatch without disabling action handlers", () => {
+    const run = vi.fn(() => HANDLED);
+    renderActions(
+      <>
+        <SuspensionToggle />
+        <Handler action="workbench.action.showCommands" run={run} />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Suspend keys" }));
+    expect(fireEvent.keyDown(window, { key: "k", ctrlKey: true })).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume keys" }));
+    expect(fireEvent.keyDown(window, { key: "k", ctrlKey: true })).toBe(false);
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("clears pending chords when recording suspends dispatch", () => {
+    const run = vi.fn(() => HANDLED);
+    const rules = [
+      {
+        id: "test.chord",
+        action: "session.action.new",
+        sequence: parseKeybinding("ctrl+k ctrl+n"),
+        mode: "global",
+      },
+    ] satisfies KeybindingRule[];
+    renderActions(
+      <>
+        <SuspensionToggle />
+        <Handler action="session.action.new" run={run} />
+      </>,
+      rules,
+    );
+    expect(fireEvent.keyDown(window, { key: "k", ctrlKey: true })).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Suspend keys" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume keys" }));
+    expect(fireEvent.keyDown(window, { key: "n", ctrlKey: true })).toBe(true);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("dispatches a capture binding and consumes it only when handled", () => {
