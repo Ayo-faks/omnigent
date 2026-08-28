@@ -770,6 +770,7 @@ def pat_only_cfg(
     monkeypatch.setattr(
         "databricks.sdk.config.get_host_metadata",
         _raise_offline_host_metadata,
+        raising=False,
     )
     contents = textwrap.dedent(
         """
@@ -934,6 +935,7 @@ def test_databricks_gateway_host_missing_profile_falls_back_to_ambient(
     monkeypatch.setattr(
         "databricks.sdk.config.get_host_metadata",
         _raise_offline_host_metadata,
+        raising=False,
     )
     cfg_path = tmp_path / "databrickscfg"
     cfg_path.write_text("# no matching profile\n")
@@ -1780,6 +1782,96 @@ def test_resolve_auth_for_host_prefers_matching_profile(
     # Exactly one construction: the matched profile authenticated, so the
     # CLI host fallback must not run at all.
     assert constructed == [{"profile": "my-ws"}]
+
+
+def test_resolve_auth_for_host_uses_profile_cli_when_sdk_is_ambiguous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SDK profile auth can still hit ambiguous host lookup for CLI profiles."""
+    from omnigent.inner import databricks_executor
+
+    cfg_path = tmp_path / "databrickscfg"
+    cfg_path.write_text(
+        "[expired]\n"
+        "host = https://example.databricks.com\n"
+        "auth_type = databricks-cli\n"
+        "[fresh]\n"
+        "host = https://example.databricks.com\n"
+        "auth_type = databricks-cli\n"
+    )
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg_path))
+
+    attempts: list[tuple[str, object]] = []
+
+    def _ambiguous_sdk_config(**kwargs: str) -> object:
+        attempts.append(("sdk", kwargs))
+        raise ValueError(
+            "databricks-cli: expired and fresh match "
+            "https://example.databricks.com. Use --profile to specify which profile to use"
+        )
+
+    def _run_databricks(args: list[str], **kwargs: object) -> SimpleNamespace:
+        attempts.append(("cli", args))
+        assert "--host" not in args
+        profile = args[args.index("--profile") + 1]
+        if profile == "expired":
+            return SimpleNamespace(returncode=1, stdout="", stderr="expired")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"access_token": "fresh-token"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(databricks_executor, "_sdk_config", _ambiguous_sdk_config)
+    monkeypatch.setattr(databricks_executor.shutil, "which", lambda name: "/usr/bin/databricks")
+    monkeypatch.setattr(databricks_executor.subprocess, "run", _run_databricks)
+
+    auth, host = databricks_executor._resolve_databricks_auth(
+        host="https://example.databricks.com"
+    )
+
+    assert auth.current_token() == "fresh-token"
+    assert host == "https://example.databricks.com"
+    assert attempts == [
+        ("sdk", {"profile": "expired"}),
+        (
+            "cli",
+            [
+                "/usr/bin/databricks",
+                "auth",
+                "token",
+                "--profile",
+                "expired",
+                "--output",
+                "json",
+            ],
+        ),
+        ("sdk", {"profile": "fresh"}),
+        (
+            "cli",
+            [
+                "/usr/bin/databricks",
+                "auth",
+                "token",
+                "--profile",
+                "fresh",
+                "--output",
+                "json",
+            ],
+        ),
+        (
+            "cli",
+            [
+                "/usr/bin/databricks",
+                "auth",
+                "token",
+                "--profile",
+                "fresh",
+                "--output",
+                "json",
+            ],
+        ),
+    ]
 
 
 def test_resolve_auth_for_host_falls_back_to_cli_when_no_profile_matches(

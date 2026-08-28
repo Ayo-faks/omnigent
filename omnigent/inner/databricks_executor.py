@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import shlex
+import shutil
+import subprocess
 from collections.abc import AsyncIterator, Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias
@@ -397,6 +399,48 @@ class _DatabricksAuthConfig(Protocol):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class _DatabricksCliProfileAuthConfig:
+    """Profile-pinned Databricks CLI OAuth token source."""
+
+    profile: str
+    host: str
+
+    def authenticate(self) -> dict[str, str]:
+        token = _databricks_cli_profile_token(self.profile)
+        return {"Authorization": f"Bearer {token}"}
+
+
+def _databricks_cli_profile_token(profile: str) -> str:
+    """Mint a bearer token by profile, avoiding ambiguous host lookup."""
+    databricks_bin = shutil.which("databricks")
+    if databricks_bin is None:
+        raise ValueError("databricks CLI is not installed")
+    try:
+        result = subprocess.run(
+            [databricks_bin, "auth", "token", "--profile", profile, "--output", "json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"databricks auth token --profile {profile} timed out") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise ValueError(detail or f"databricks auth token --profile {profile} failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"databricks auth token --profile {profile} returned invalid JSON"
+        ) from exc
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError(f"databricks auth token --profile {profile} returned no access_token")
+    return token.strip()
+
+
 class _DatabricksBearerAuth(httpx.Auth):
     """httpx Auth that calls ``Config.authenticate()`` on every HTTP request.
 
@@ -645,8 +689,21 @@ def _resolve_databricks_auth_for_host(host: str) -> tuple[_DatabricksBearerAuth,
             cfg = _sdk_config(profile=profile_name)
             cfg.authenticate()
         except Exception:  # noqa: BLE001 — try the next matching profile
-            logger.debug("profile %r matched host %s but did not authenticate", profile_name, host)
-            continue
+            logger.debug(
+                "profile %r matched host %s but did not authenticate via SDK",
+                profile_name,
+                host,
+            )
+            try:
+                cfg = _DatabricksCliProfileAuthConfig(profile=profile_name, host=host)
+                cfg.authenticate()
+            except Exception:  # noqa: BLE001 — try the next matching profile
+                logger.debug(
+                    "profile %r matched host %s but did not authenticate via CLI",
+                    profile_name,
+                    host,
+                )
+                continue
         return _DatabricksBearerAuth(cfg, profile_name=profile_name), cfg.host or host
     try:
         host_cfg = _sdk_config(host=host, auth_type="databricks-cli")
