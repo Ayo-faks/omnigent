@@ -150,7 +150,7 @@ export interface ActionContextValues {
   eventMeta: boolean;
   composerStreaming: boolean;
   composerSuggestionsOpen: boolean;
-  dictationListening: boolean;
+  composerEnterInserts: boolean;
   fileSearchOpen: boolean;
   shikiSourceView: boolean;
 }

@@ -43,7 +43,7 @@ function rule<A extends ActionId>(
 }
 
 const suggestionsClosed = not(when(CONTEXT_KEYS.composerSuggestionsOpen));
-const notCoarsePointer = not(when(CONTEXT_KEYS.isCoarsePointer));
+const composerEnterSends = not(when(CONTEXT_KEYS.composerEnterInserts));
 const notEmbedded = not(when(CONTEXT_KEYS.isEmbedded));
 const notNativeShell = not(when(CONTEXT_KEYS.isNativeShell));
 const notInputFocus = not(when(CONTEXT_KEYS.inputFocus));
@@ -146,16 +146,19 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingRule[] = [
     when: dictationFocusAllowed,
   }),
 
+  // Listening handlers are globally registered like the legacy capture
+  // listener; their live isEnabled gate makes these inert between takes.
   rule("composer.commitDictation", "composer.action.commitDictation", "enter", {
-    mode: "composer",
-    when: when(CONTEXT_KEYS.dictationListening),
     phase: "capture",
     priority: 200,
     stopPropagation: true,
   }),
   rule("composer.cancelDictation", "composer.action.cancelDictation", "escape", {
-    mode: "composer",
-    when: when(CONTEXT_KEYS.dictationListening),
+    phase: "capture",
+    priority: 200,
+    stopPropagation: true,
+  }),
+  rule("composer.cancelDictation.shift", "composer.action.cancelDictation", "shift+escape", {
     phase: "capture",
     priority: 200,
     stopPropagation: true,
@@ -180,7 +183,7 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingRule[] = [
   }),
   rule("composer.acceptSuggestion.enter", "composer.action.acceptSuggestion", "enter", {
     mode: "composer",
-    when: and(when(CONTEXT_KEYS.composerSuggestionsOpen), notCoarsePointer),
+    when: when(CONTEXT_KEYS.composerSuggestionsOpen),
     priority: 100,
     args: { behavior: "openOrAttach" },
   }),
@@ -190,7 +193,24 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingRule[] = [
     "primary+enter",
     {
       mode: "composer",
-      when: and(when(CONTEXT_KEYS.composerSuggestionsOpen), notCoarsePointer),
+      when: when(CONTEXT_KEYS.composerSuggestionsOpen),
+      priority: 100,
+      args: { behavior: "openOrAttach" },
+    },
+  ),
+  rule("composer.acceptSuggestion.altEnter", "composer.action.acceptSuggestion", "alt+enter", {
+    mode: "composer",
+    when: when(CONTEXT_KEYS.composerSuggestionsOpen),
+    priority: 100,
+    args: { behavior: "openOrAttach" },
+  }),
+  rule(
+    "composer.acceptSuggestion.primaryAltEnter",
+    "composer.action.acceptSuggestion",
+    "primary+alt+enter",
+    {
+      mode: "composer",
+      when: when(CONTEXT_KEYS.composerSuggestionsOpen),
       priority: 100,
       args: { behavior: "openOrAttach" },
     },
@@ -202,11 +222,19 @@ export const DEFAULT_KEYBINDINGS: readonly KeybindingRule[] = [
   }),
   rule("composer.send", "composer.action.send", "enter", {
     mode: "composer",
-    when: and(suggestionsClosed, notCoarsePointer),
+    when: and(suggestionsClosed, composerEnterSends),
   }),
   rule("composer.send.primaryEnter", "composer.action.send", "primary+enter", {
     mode: "composer",
-    when: and(suggestionsClosed, notCoarsePointer),
+    when: and(suggestionsClosed, composerEnterSends),
+  }),
+  rule("composer.send.altEnter", "composer.action.send", "alt+enter", {
+    mode: "composer",
+    when: and(suggestionsClosed, composerEnterSends),
+  }),
+  rule("composer.send.primaryAltEnter", "composer.action.send", "primary+alt+enter", {
+    mode: "composer",
+    when: and(suggestionsClosed, composerEnterSends),
   }),
   rule("composer.stop", "composer.action.stop", "escape", {
     mode: "composer",

@@ -27,6 +27,7 @@ import {
   NewChatLandingScreen,
   resetLandingDraft,
 } from "./NewChatDialog";
+import { ActionsProvider, KeybindingDispatcher } from "@/actions";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import type { ServerInfo } from "@/lib/capabilities";
 import { authenticatedFetch } from "@/lib/identity";
@@ -792,7 +793,10 @@ function renderLanding(infoOverrides: Partial<ServerInfo> = {}, route = "/") {
       <CapabilitiesProvider info={info}>
         <TooltipProvider>
           <MemoryRouter initialEntries={[route]}>
-            <NewChatLandingScreen />
+            <ActionsProvider>
+              <KeybindingDispatcher />
+              <NewChatLandingScreen />
+            </ActionsProvider>
           </MemoryRouter>
         </TooltipProvider>
       </CapabilitiesProvider>
@@ -2777,6 +2781,32 @@ describe("NewChatLandingScreen skills menu", () => {
     expect((screen.getByTestId("new-chat-landing-input") as HTMLTextAreaElement).value).toBe(
       "/review-pr ",
     );
+  });
+
+  it("coarse-pointer Enter still accepts a highlighted suggestion", () => {
+    const realMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+    try {
+      mockAgents([skilledAgent()]);
+      renderLanding();
+      typeMessage("/pr");
+      fireEvent.keyDown(screen.getByTestId("new-chat-landing-input"), { key: "Enter" });
+      expect((screen.getByTestId("new-chat-landing-input") as HTMLTextAreaElement).value).toBe(
+        "/review-pr ",
+      );
+    } finally {
+      cleanup();
+      window.matchMedia = realMatchMedia;
+    }
   });
 
   it("Tab completes a match found only mid-name (exercises slashMenuMatches, not just the render filter)", () => {

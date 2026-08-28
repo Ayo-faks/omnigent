@@ -78,8 +78,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  ActionScopeProvider,
+  HANDLED,
+  NOT_HANDLED,
+  useActionScopeRegistration,
+  type ActionSource,
+} from "@/actions";
+import { ComposerActionBindings } from "@/components/ComposerActionBindings";
 import { authenticatedFetch } from "@/lib/identity";
-import { isImeCompositionKeyEvent } from "@/lib/ime";
 import { attachmentKey, validateAttachments } from "@/lib/attachments";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
@@ -102,8 +109,8 @@ import {
   SlashCommandMenu,
 } from "@/components/SlashCommandMenu";
 import { setPendingInitialPrompt } from "@/store/chatStore";
-import { appendPromptHistoryEntry } from "@/hooks/usePromptHistory";
 import { useIsCoarsePointer } from "@/hooks/useIsCoarsePointer";
+import { appendPromptHistoryEntry } from "@/hooks/usePromptHistory";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import { CliCommandBlock, renderTextWithInlineCode } from "./CliCommandBlock";
 import { WorkspacePicker, isNavigablePath } from "./WorkspacePicker";
@@ -3655,7 +3662,9 @@ export function NewChatLandingScreen() {
     attachMention,
     openMentionDir,
     removeMentionedItem,
-    handleKeyDown: handleMentionKeyDown,
+    selectPrevious: selectPreviousMention,
+    selectNext: selectNextMention,
+    accept: acceptMention,
     dismiss: dismissMention,
   } = useMentionBrowser({
     mention,
@@ -4234,6 +4243,49 @@ export function NewChatLandingScreen() {
     }
   }
 
+  const selectPreviousSuggestion = () => {
+    if (selectPreviousMention()) return HANDLED;
+    if (!slashMenuOpen || slashMenuMatches.length === 0) return NOT_HANDLED;
+    setSlashMenuIndex((index) => (index <= 0 ? slashMenuMatches.length - 1 : index - 1));
+    return HANDLED;
+  };
+  const selectNextSuggestion = () => {
+    if (selectNextMention()) return HANDLED;
+    if (!slashMenuOpen || slashMenuMatches.length === 0) return NOT_HANDLED;
+    setSlashMenuIndex((index) => (index + 1) % slashMenuMatches.length);
+    return HANDLED;
+  };
+  const acceptSuggestion = (behavior: "openOrAttach" | "attach") => {
+    if (acceptMention(behavior)) return HANDLED;
+    if (!slashMenuOpen || slashMenuIndex < 0) return NOT_HANDLED;
+    const match = slashMenuMatches[slashMenuIndex];
+    if (!match) return NOT_HANDLED;
+    applySlashSelection(match);
+    return HANDLED;
+  };
+  const dismissSuggestions = () => {
+    if (dismissMention()) return HANDLED;
+    if (!slashMenuOpen || slashMenuMatches.length === 0) return NOT_HANDLED;
+    setMessage("");
+    setSlashMenuIndex(-1);
+    return HANDLED;
+  };
+  const createAction = (source: ActionSource) => {
+    // Touch-primary Enter stays a newline even if a custom keymap invokes send.
+    if (source === "keyboard" && isCoarsePointer) return NOT_HANDLED;
+    if (mentionListingPending) return HANDLED;
+    void handleCreate();
+    return HANDLED;
+  };
+  const composerScope = useActionScopeRegistration({
+    mode: "composer",
+    context: {
+      composerStreaming: false,
+      composerSuggestionsOpen: mentionOpen || (slashMenuOpen && slashMenuMatches.length > 0),
+      composerEnterInserts: isCoarsePointer,
+    },
+  });
+
   const placeholderText = selectedProject
     ? `Start a new session in ${selectedProject}`
     : "Describe a task to start a new session…";
@@ -4299,6 +4351,7 @@ export function NewChatLandingScreen() {
         </div>
         <div className="relative flex w-full flex-col gap-1">
           <form
+            {...composerScope.rootProps}
             onSubmit={(e) => {
               e.preventDefault();
               void handleCreate();
@@ -4317,6 +4370,20 @@ export function NewChatLandingScreen() {
             )}
             data-testid="new-chat-landing-composer"
           >
+            <ActionScopeProvider scope={composerScope}>
+              <ComposerActionBindings
+                textareaRef={textareaRef}
+                isComposing={() => isComposingRef.current}
+                onSend={createAction}
+                onStop={() => NOT_HANDLED}
+                onRecallPrevious={() => NOT_HANDLED}
+                onRecallNext={() => NOT_HANDLED}
+                onSelectPreviousSuggestion={selectPreviousSuggestion}
+                onSelectNextSuggestion={selectNextSuggestion}
+                onAcceptSuggestion={acceptSuggestion}
+                onDismissSuggestions={dismissSuggestions}
+              />
+            </ActionScopeProvider>
             {isDragActive && (
               <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-card/80">
                 <span className="text-ui font-medium text-ring">Drop files here</span>
@@ -4378,60 +4445,6 @@ export function NewChatLandingScreen() {
                 }}
                 onCompositionEnd={() => {
                   isComposingRef.current = false;
-                }}
-                onKeyDown={(e) => {
-                  if (isImeCompositionKeyEvent(e, isComposingRef.current)) {
-                    return;
-                  }
-
-                  // "@"-mention menu navigation (shared useMentionBrowser) —
-                  // mutually exclusive with the slash menu (a token can't be both)
-                  // and takes priority over submission.
-                  if (handleMentionKeyDown(e)) return;
-
-                  // While the skills menu is open, ArrowUp/Down navigate it and
-                  // Enter/Tab complete the highlighted item — these take
-                  // priority over submission (same UX as the in-session
-                  // composer).
-                  if (slashMenuOpen && slashMenuMatches.length > 0) {
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      setSlashMenuIndex((i) => (i + 1) % slashMenuMatches.length);
-                      return;
-                    }
-                    if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setSlashMenuIndex((i) => (i <= 0 ? slashMenuMatches.length - 1 : i - 1));
-                      return;
-                    }
-                    if (
-                      (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) &&
-                      slashMenuIndex >= 0
-                    ) {
-                      e.preventDefault();
-                      applySlashSelection(slashMenuMatches[slashMenuIndex]!);
-                      return;
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      // Dismiss the menu by clearing the draft so the user can
-                      // start fresh.
-                      setMessage("");
-                      setSlashMenuIndex(-1);
-                      return;
-                    }
-                  }
-                  // Enter sends; Shift+Enter inserts a newline. On touch-primary
-                  // devices there is no practical Shift+Enter and an accidental
-                  // submit is unrecoverable, so Enter only inserts a newline and
-                  // sending stays an explicit tap on the send button.
-                  if (e.key === "Enter" && !e.shiftKey && !isCoarsePointer) {
-                    e.preventDefault();
-                    // The mention menu is briefly closed while its listing loads;
-                    // swallow Enter so the in-progress "@dir/" token isn't sent.
-                    if (mentionListingPending) return;
-                    void handleCreate();
-                  }
                 }}
                 onPaste={(e) => {
                   // Pasted images/files attach instead of inserting as text,
