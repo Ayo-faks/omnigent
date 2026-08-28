@@ -10967,7 +10967,6 @@ describe("chatStore — client-side message queue", () => {
     useChatStore.getState().maybeFlushQueuedHead();
     expect(useChatStore.getState().status).toBe("idle");
   });
-
 });
 
 describe("chatStore — background cross-session flush", () => {
