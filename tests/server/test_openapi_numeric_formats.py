@@ -79,6 +79,8 @@ def _collect_numeric_format_violations(
     json_type: str,
     path: str,
     violations: list[str],
+    *,
+    keys_are_names: bool = False,
 ) -> None:
     """
     Recursively collect numeric nodes missing the required ``format``.
@@ -91,9 +93,12 @@ def _collect_numeric_format_violations(
     :param json_type: ``"integer"`` or ``"number"``.
     :param path: Dotted path to ``node`` for the failure message.
     :param violations: Accumulator for violation descriptions.
+    :param keys_are_names: ``node`` is a map of user-chosen names to
+        schemas (``schemas``/``properties``), so a property literally
+        named ``default`` or ``enum`` is still a schema to check.
     """
     if isinstance(node, dict):
-        if node.get("type") == json_type:
+        if not keys_are_names and node.get("type") == json_type:
             required = _REQUIRED_FORMATS[json_type]
             actual = node.get("format")
             if actual != required:
@@ -101,9 +106,15 @@ def _collect_numeric_format_violations(
                     f"{path}: type={json_type} format={actual!r} (expected {required!r})"
                 )
         for key, value in node.items():
-            if key in _NON_SCHEMA_KEYS:
+            if not keys_are_names and key in _NON_SCHEMA_KEYS:
                 continue
-            _collect_numeric_format_violations(value, json_type, f"{path}.{key}", violations)
+            _collect_numeric_format_violations(
+                value,
+                json_type,
+                f"{path}.{key}",
+                violations,
+                keys_are_names=(not keys_are_names and key in ("properties", "patternProperties")),
+            )
     elif isinstance(node, list):
         for index, item in enumerate(node):
             _collect_numeric_format_violations(item, json_type, f"{path}[{index}]", violations)
@@ -123,7 +134,9 @@ def test_integer_schemas_carry_int64_format() -> None:
     """
     schemas = _load_component_schemas()
     violations: list[str] = []
-    _collect_numeric_format_violations(schemas, "integer", "components.schemas", violations)
+    _collect_numeric_format_violations(
+        schemas, "integer", "components.schemas", violations, keys_are_names=True
+    )
     assert not violations, (
         f"{len(violations)} integer schema node(s) in openapi.json lack "
         f"format: int64, so generated clients type them 32-bit and "
@@ -147,7 +160,9 @@ def test_number_schemas_carry_double_format() -> None:
     """
     schemas = _load_component_schemas()
     violations: list[str] = []
-    _collect_numeric_format_violations(schemas, "number", "components.schemas", violations)
+    _collect_numeric_format_violations(
+        schemas, "number", "components.schemas", violations, keys_are_names=True
+    )
     assert not violations, (
         f"{len(violations)} number schema node(s) in openapi.json lack "
         f"format: double, so generated clients decode the USD cost "

@@ -735,20 +735,28 @@ def _annotate_number_formats(components: dict[str, Any]) -> None:
     data payloads are not rewritten.
     """
 
-    def walk(node: Any) -> None:
+    def walk(node: Any, *, keys_are_names: bool = False) -> None:
+        # ``keys_are_names`` marks maps whose keys are user-chosen names
+        # (schema/property names), so a property literally named
+        # ``default`` or ``enum`` is still a schema node to stamp.
         if isinstance(node, dict):
-            if node.get("type") == "number":
-                node.setdefault("format", "double")
-            elif node.get("type") == "integer":
-                node.setdefault("format", "int64")
+            if not keys_are_names:
+                if node.get("type") == "number":
+                    node.setdefault("format", "double")
+                elif node.get("type") == "integer":
+                    node.setdefault("format", "int64")
             for key, value in node.items():
-                if key not in _SCHEMA_PAYLOAD_KEYS:
+                if keys_are_names:
+                    walk(value)
+                elif key in ("properties", "patternProperties"):
+                    walk(value, keys_are_names=True)
+                elif key not in _SCHEMA_PAYLOAD_KEYS:
                     walk(value)
         elif isinstance(node, list):
             for item in node:
                 walk(item)
 
-    walk(components.get("schemas", {}))
+    walk(components.get("schemas", {}), keys_are_names=True)
 
 
 def _normalize_inline_descriptions(node: Any) -> None:

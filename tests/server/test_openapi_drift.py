@@ -232,6 +232,7 @@ def test_annotate_number_formats_stamps_formatless_nodes_only() -> None:
                         "anyOf": [{"type": "integer"}, {"type": "null"}],
                     },
                     "by_model": {"type": "object", "additionalProperties": {"type": "number"}},
+                    "default": {"type": "integer"},
                 },
                 "example": {"total_cost_usd": 1.5, "count": 3},
             },
@@ -245,6 +246,9 @@ def test_annotate_number_formats_stamps_formatless_nodes_only() -> None:
     assert props["already_int32"]["format"] == "int32"
     assert props["when"]["anyOf"][0]["format"] == "int64"
     assert props["by_model"]["additionalProperties"]["format"] == "double"
+    # A property literally NAMED "default" is still a schema node — only
+    # payload VALUES under a schema's own default/example/enum are skipped.
+    assert props["default"]["format"] == "int64"
     assert "format" not in components["schemas"]["Cost"]["example"]
 
 
@@ -274,23 +278,38 @@ def test_openapi_json_numeric_schemas_declare_width_format() -> None:
     formatless_number: list[str] = []
     formatless_integer: list[str] = []
 
-    def walk(node: Any, path: str) -> None:
+    def walk(node: Any, path: str, *, keys_are_names: bool = False) -> None:
+        # ``keys_are_names``: map keys are schema/property names, so a
+        # property literally named "default"/"enum" is still a schema.
         if isinstance(node, dict):
-            t = node.get("type")
-            fmt = node.get("format")
-            if t == "number" and fmt != "double":
-                formatless_number.append(path)
-            elif t == "integer" and fmt != "int64":
-                formatless_integer.append(path)
+            if not keys_are_names:
+                t = node.get("type")
+                fmt = node.get("format")
+                if t == "number" and fmt != "double":
+                    formatless_number.append(path)
+                elif t == "integer" and fmt != "int64":
+                    formatless_integer.append(path)
             for key, value in node.items():
-                if key in {"default", "example", "examples", "const", "enum"}:
+                if not keys_are_names and key in {
+                    "default",
+                    "example",
+                    "examples",
+                    "const",
+                    "enum",
+                }:
                     continue
-                walk(value, f"{path}.{key}")
+                walk(
+                    value,
+                    f"{path}.{key}",
+                    keys_are_names=(
+                        not keys_are_names and key in ("properties", "patternProperties")
+                    ),
+                )
         elif isinstance(node, list):
             for i, item in enumerate(node):
                 walk(item, f"{path}[{i}]")
 
-    walk(schemas, "components.schemas")
+    walk(schemas, "components.schemas", keys_are_names=True)
     assert not formatless_number, "formatless or non-double number schemas: " + ", ".join(
         formatless_number[:12]
     )
