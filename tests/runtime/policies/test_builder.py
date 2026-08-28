@@ -1412,35 +1412,34 @@ def test_initial_label_seed_does_not_clobber_a_concurrent_write(
     conversation_store: SqlAlchemyConversationStore,
 ) -> None:
     """
-    Seeding declared initials must not overwrite a value written between the
-    snapshot read and the seed.
+    Seeding declared initials must not overwrite a value another writer
+    persisted before the seed lands.
 
     The race is constructed, not simulated: a store proxy commits a policy
-    write while the seeding helper is reading its snapshot, so the helper
-    holds a view that is already stale by the time it decides what is
-    missing. Insert-if-absent leaves the persisted value alone because the
-    database makes that decision inside the same statement; the previous
-    diff-then-upsert path recomputed "missing" from the stale snapshot and
-    reset a live value to its initial.
+    write at the instant the seeding helper hands the declared initials to
+    the store — after the helper decided to seed, before the insert runs.
+    Insert-if-absent leaves the persisted value alone because the database
+    decides which keys are missing inside the same statement; the previous
+    diff-then-upsert path recomputed "missing" from a snapshot that is
+    stale by then and reset the live value to its initial.
     """
     from omnigent.runtime.policies.builder import _seed_and_load_labels
     from omnigent.spec.types import LabelDef
 
     conv = conversation_store.create_conversation()
 
-    class _WriteDuringSnapshot:
-        """Commits a competing label write during the snapshot read."""
+    class _WriteBeforeSeed:
+        """Commits a competing label write just before the seed insert."""
 
         def __init__(self, inner: SqlAlchemyConversationStore) -> None:
             self._inner = inner
             self._fired = False
 
-        def get_conversation(self, conversation_id: str):
-            row = self._inner.get_conversation(conversation_id)
+        def seed_labels_if_absent(self, conversation_id: str, defaults, updated_at=None):
             if not self._fired:
                 self._fired = True
                 self._inner.set_labels(conversation_id, {"integrity": "7"})
-            return row
+            return self._inner.seed_labels_if_absent(conversation_id, defaults, updated_at)
 
         def __getattr__(self, name: str):
             return getattr(self._inner, name)
@@ -1448,7 +1447,7 @@ def test_initial_label_seed_does_not_clobber_a_concurrent_write(
     result = _seed_and_load_labels(
         conversation_id=conv.id,
         label_defs={"integrity": LabelDef(initial="0")},
-        conversation_store=_WriteDuringSnapshot(conversation_store),  # type: ignore[arg-type]
+        conversation_store=_WriteBeforeSeed(conversation_store),  # type: ignore[arg-type]
     )
 
     assert result["integrity"] == "7", "seed overwrote a concurrent write"
@@ -2020,4 +2019,3 @@ def test_ancestor_walk_discards_an_untrustworthy_chain(shape: str, links: dict[s
     ]
 
     assert ancestor_ids_from_tree(tree, "a") == [], shape
-
