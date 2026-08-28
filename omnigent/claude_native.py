@@ -775,8 +775,8 @@ def _parse_claude_current_model(stdout: str) -> dict[str, str]:
 
     Two harness-owned facts, taken verbatim: the ``init`` event's exact
     model id, and the printed ``Current model:`` label with only markdown
-    backticks and the trailing ``(effort: …)`` suffix stripped — so labels
-    like ``Opus 4.8 (1M context)`` survive untouched.
+    backticks and the trailing ``(effort: …)`` / ``(default)`` suffixes
+    stripped — so labels like ``Opus 4.8 (1M context)`` survive untouched.
 
     :param stdout: The run's ``--output-format stream-json`` stdout.
     :returns: Whichever of ``{"model": …, "label": …}`` parsed.
@@ -801,6 +801,9 @@ def _parse_claude_current_model(stdout: str) -> dict[str, str]:
                 # Some harness releases print the name as markdown code
                 # (``Current model: `Opus 5```); no model name holds a backtick.
                 plain = tail.replace("`", "")
+                # The enumeration run's label can carry a trailing
+                # ``(default)`` marker — CLI presentation, not the name.
+                plain = re.sub(r"\s*\(default\)\s*$", "", plain.strip())
                 label = re.sub(r"\s*\(effort:[^)]*\)\s*$", "", plain).strip()
                 if label:
                     resolved["label"] = label

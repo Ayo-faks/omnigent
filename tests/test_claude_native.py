@@ -9446,15 +9446,27 @@ def test_parse_claude_model_aliases_reads_the_usage_line() -> None:
             {"label": "Opus 5"},
             id="effort-suffix-inside-the-backticks-still-strips",
         ),
+        pytest.param(
+            json.dumps(
+                {"type": "result", "result": "Current model: `Opus 5 (1M context) (default)`"}
+            ),
+            {"label": "Opus 5 (1M context)"},
+            id="default-marker-on-the-enumeration-run-is-stripped",
+        ),
+        pytest.param(
+            json.dumps({"type": "result", "result": "Current model: Sonnet 5 (default)"}),
+            {"label": "Sonnet 5"},
+            id="default-marker-without-backticks-is-stripped",
+        ),
         pytest.param("Current model: Opus 5\nnot json", {}, id="non-stream-json-yields-nothing"),
     ],
 )
 def test_parse_claude_current_model(stdout: str, expected: dict[str, str]) -> None:
     """The stream-json run's exact id and printed label parse verbatim.
 
-    Only markdown backticks and the trailing ``(effort: …)`` suffix are
-    stripped from the label — context markers and prose like opusplan's
-    description survive, because the parser knows no model names.
+    Only markdown backticks and the trailing ``(effort: …)`` / ``(default)``
+    suffixes are stripped from the label — context markers and prose like
+    opusplan's description survive, because the parser knows no model names.
     """
     assert claude_native._parse_claude_current_model(stdout) == expected
 
