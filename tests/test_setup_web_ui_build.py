@@ -1,10 +1,4 @@
-"""Tests for the Node.js version gate in the web UI build (``setup.py``).
-
-The web UI toolchain and the runtime harness CLIs are pinned to Node 22
-LTS. Building on an off-version Node (e.g. Node 25) otherwise fails deep
-inside corepack/pnpm with ``ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING``, so
-``_require_node_22`` fails fast with an actionable message instead.
-"""
+"""Tests for the web UI build prerequisites in ``setup.py``."""
 
 from __future__ import annotations
 
@@ -45,50 +39,52 @@ def _load_setup_module() -> ModuleType:
     return module
 
 
-def _run_node_version_check(module: ModuleType, version_output: str) -> None:
-    """Invoke ``_require_node_22`` with ``node --version`` stubbed."""
+def _run_node_version_check(module: ModuleType, version_output: str) -> str:
+    """Invoke the Node.js gate with ``node --version`` stubbed."""
     completed = mock.Mock(stdout=version_output)
     with (
         mock.patch("shutil.which", return_value="/usr/bin/node"),
         mock.patch.object(module.subprocess, "run", return_value=completed),
     ):
-        module._require_node_22()
+        return module._require_supported_node()
 
 
-def test_node_22_passes() -> None:
+def test_node_22_12_passes() -> None:
     module = _load_setup_module()
-    # Should not raise for the supported major version.
-    _run_node_version_check(module, "v22.14.0\n")
+    assert _run_node_version_check(module, "v22.12.0\n") == "22.12.0"
 
 
-def test_node_25_fails_with_clear_message() -> None:
+@pytest.mark.parametrize("version", ["v24.14.0\n", "v25.2.1\n"])
+def test_newer_node_versions_pass(version: str) -> None:
+    module = _load_setup_module()
+    assert _run_node_version_check(module, version) == version.strip().lstrip("v")
+
+
+@pytest.mark.parametrize("version", ["v22.11.0\n", "v20.11.0\n"])
+def test_older_node_fails(version: str) -> None:
     module = _load_setup_module()
     with pytest.raises(SystemExit) as excinfo:
-        _run_node_version_check(module, "v25.2.1\n")
+        _run_node_version_check(module, version)
     message = str(excinfo.value)
-    assert "Node 22 LTS is required but found Node 25.2.1" in message
+    assert "Node.js 22.12 or newer is required" in message
+    assert version.strip().lstrip("v") in message
     assert "OMNIGENT_SKIP_WEB_UI=true" in message
-
-
-def test_older_node_fails() -> None:
-    module = _load_setup_module()
-    with pytest.raises(SystemExit) as excinfo:
-        _run_node_version_check(module, "v20.11.0\n")
-    assert "Node 22 LTS is required but found Node 20.11.0" in str(excinfo.value)
 
 
 def test_unparseable_version_fails() -> None:
     module = _load_setup_module()
     with pytest.raises(SystemExit) as excinfo:
         _run_node_version_check(module, "not-a-version\n")
-    assert "Node 22 LTS is required" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "could not parse Node.js version not-a-version" in message
+    assert "OMNIGENT_SKIP_WEB_UI=true" in message
 
 
 def test_node_missing_fails() -> None:
     module = _load_setup_module()
     with mock.patch("shutil.which", return_value=None):
         with pytest.raises(SystemExit) as excinfo:
-            module._require_node_22()
+            module._require_supported_node()
     message = str(excinfo.value)
     assert "Node.js not found on PATH" in message
     assert "OMNIGENT_SKIP_WEB_UI=true" in message
@@ -105,7 +101,34 @@ def test_node_version_probe_failure_fails() -> None:
         ),
     ):
         with pytest.raises(SystemExit) as excinfo:
-            module._require_node_22()
+            module._require_supported_node()
     message = str(excinfo.value)
     assert "could not determine the Node.js version" in message
+    assert "OMNIGENT_SKIP_WEB_UI=true" in message
+
+
+def test_skip_web_ui_bypasses_node_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_setup_module()
+    monkeypatch.setenv("OMNIGENT_SKIP_WEB_UI", "true")
+    require_node = mock.Mock()
+    with mock.patch.object(module, "_require_supported_node", require_node):
+        module._GenerateBuildInfo._build_web_ui(object())
+    require_node.assert_not_called()
+
+
+def test_newer_node_build_failure_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_setup_module()
+    monkeypatch.delenv("OMNIGENT_SKIP_WEB_UI", raising=False)
+    monkeypatch.setenv("OMNIGENT_BUILD_WEB_UI", "1")
+    failure = module.subprocess.CalledProcessError(1, ["pnpm", "install"])
+    with (
+        mock.patch.object(module, "_require_supported_node", return_value="25.2.1"),
+        mock.patch("shutil.which", return_value="/usr/bin/pnpm"),
+        mock.patch.object(module.subprocess, "run", side_effect=failure),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        module._GenerateBuildInfo._build_web_ui(object())
+    message = str(excinfo.value)
+    assert "web UI build failed on Node.js 25.2.1" in message
+    assert "install Node 22 LTS and retry" in message
     assert "OMNIGENT_SKIP_WEB_UI=true" in message
