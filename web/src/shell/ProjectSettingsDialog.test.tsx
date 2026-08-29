@@ -13,22 +13,26 @@ vi.mock("@/lib/projectsApi", () => ({
 vi.mock("@/hooks/useHosts", () => ({
   useHosts: () => ({ data: [{ host_id: "h1", name: "Laptop", owner: "me", status: "online" }] }),
 }));
+// Hoisted so the vi.mock factory below can reference it; per-test overrides
+// let cases control the agent catalog (the default is set in beforeEach).
+const { availableAgentsMock } = vi.hoisted(() => ({ availableAgentsMock: vi.fn() }));
 vi.mock("@/hooks/useAvailableAgents", () => ({
-  useAvailableAgents: () => ({
-    data: [
-      {
-        id: "ag_1",
-        name: "hello",
-        display_name: "Hello",
-        description: null,
-        harness: null,
-        skills: [],
-      },
-    ],
-  }),
+  useAvailableAgents: availableAgentsMock,
   // The reused agent picker prefetches details on open; no-op in the dialog test.
   prefetchAvailableAgentDetails: vi.fn(),
 }));
+
+function pickerAgent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "ag_1",
+    name: "hello",
+    display_name: "Hello",
+    description: null,
+    harness: null,
+    skills: [],
+    ...overrides,
+  };
+}
 vi.mock("@/lib/CapabilitiesContext", () => ({
   useServerInfo: () => ({ managed_sandboxes_enabled: false, sandbox_provider: null }),
 }));
@@ -63,6 +67,8 @@ beforeEach(() => {
   getProjectMock.mockReset();
   updateMock.mockReset();
   createMock.mockReset();
+  availableAgentsMock.mockReset();
+  availableAgentsMock.mockReturnValue({ data: [pickerAgent()] });
   updateMock.mockResolvedValue({ id: "p_1", name: "Work", config: {} });
 });
 
@@ -120,6 +126,48 @@ describe("ProjectSettingsDialog", () => {
       ),
     );
     // Leave the toggle OFF (default) → config clears to {} (use_worktree absent).
+    fireEvent.click(screen.getByTestId("project-settings-save"));
+    await waitFor(() => expect(updateMock).toHaveBeenCalledWith("p_1", {}));
+  });
+
+  it("shows the base-branch field only when the worktree default is on, and saves it", async () => {
+    getProjectMock.mockResolvedValue({ id: "p_1", name: "Work", config: {} });
+    renderDialog();
+    await waitFor(() =>
+      expect((screen.getByTestId("project-settings-save") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    // Base branch is hidden while the worktree default is OFF (nothing to fork).
+    expect(screen.queryByTestId("project-settings-base-branch")).not.toBeInTheDocument();
+
+    // Turning the worktree default ON reveals the base-branch field.
+    fireEvent.click(screen.getByTestId("project-settings-worktree"));
+    const input = screen.getByTestId("project-settings-base-branch");
+    fireEvent.change(input, { target: { value: "  main  " } });
+    fireEvent.click(screen.getByTestId("project-settings-save"));
+
+    // Trimmed and stored alongside the worktree default.
+    await waitFor(() =>
+      expect(updateMock).toHaveBeenCalledWith("p_1", { use_worktree: true, base_branch: "main" }),
+    );
+  });
+
+  it("drops the base branch when the worktree default is off", async () => {
+    // A base branch stored from an earlier ON state must not linger as an
+    // invisible default once the worktree toggle is turned back off.
+    getProjectMock.mockResolvedValue({
+      id: "p_1",
+      name: "Work",
+      config: { use_worktree: true, base_branch: "develop" },
+    });
+    renderDialog();
+    // Seeded ON → the base-branch field shows its stored value.
+    await waitFor(() =>
+      expect(screen.getByTestId("project-settings-base-branch")).toHaveValue("develop"),
+    );
+    // Turn the worktree default OFF → base branch drops, config clears to {}.
+    fireEvent.click(screen.getByTestId("project-settings-worktree"));
     fireEvent.click(screen.getByTestId("project-settings-save"));
     await waitFor(() => expect(updateMock).toHaveBeenCalledWith("p_1", {}));
   });
@@ -212,5 +260,38 @@ describe("ProjectSettingsDialog", () => {
     // Even if a submit is forced, onSubmit bails — no clearing PATCH is sent.
     fireEvent.submit(screen.getByTestId("project-settings-save").closest("form")!);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("offers the same agent set as the composer picker (hidden agents excluded)", async () => {
+    // Filter parity with the new-session composer (selectableSessionAgents):
+    // if this picker offered an agent the composer hides, a project could pin
+    // a default the composer then can't show — the silent-substitution setup.
+    availableAgentsMock.mockReturnValue({
+      data: [
+        pickerAgent(),
+        pickerAgent({ id: "ag_nessie", name: "nessie", display_name: "Nessie" }),
+      ],
+    });
+    getProjectMock.mockResolvedValue({ id: "p_1", name: "Work", config: {} });
+    renderDialog();
+    await waitFor(() =>
+      expect((screen.getByTestId("project-settings-save") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+
+    // Open the agent picker dropdown (Radix opens on pointerdown), then the
+    // "Custom agents" submenu where composed agents are listed.
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+    fireEvent.click(screen.getByTestId("new-chat-landing-custom-agents"));
+    expect(screen.getByTestId("new-chat-landing-agent-ag_1")).toBeInTheDocument();
+    expect(screen.queryByTestId("new-chat-landing-agent-ag_nessie")).not.toBeInTheDocument();
+    // And the stored default agent is pinned into discovery, so a
+    // session-scoped default that the bounded scan misses still resolves here.
+    expect(
+      availableAgentsMock.mock.calls.some(
+        ([opts]) => (opts as { pinnedAgentIds?: string[] } | undefined)?.pinnedAgentIds != null,
+      ),
+    ).toBe(true);
   });
 });

@@ -276,7 +276,7 @@ def cli_display_name(cli: str) -> str:
         or ``"ChatGPT"`` for ``codex`` (the ChatGPT plan drives codex).
         Falls back to a title-cased form for any other value.
     """
-    return {"claude": "Claude (Pro/Max)", "codex": "ChatGPT"}.get(cli, cli.title())
+    return {"claude": "Claude (Pro/Max)", "codex": "ChatGPT", "pi": "Pi"}.get(cli, cli.title())
 
 
 def kind_glyph(kind: str) -> str:
@@ -337,10 +337,9 @@ def credential_label(
     if kind == DATABRICKS_KIND:
         return f"Databricks ({profile})" if profile else "Databricks"
     if kind == CLI_CONFIG_KIND:
-        # The provider's own name field is the friendliest label there is
-        # ("Databricks AI Gateway"); the entry name ("codex-databricks") is
-        # the readable fallback.
-        return display_name or provider_name
+        # Use the entry name (e.g. "isaac-databricks-codex" → "Isaac-Databricks-Codex")
+        # so cli-config providers show consistently alongside other provider kinds.
+        return provider_display_name(provider_name)
     if kind == KEY_KIND:
         return f"{provider_display_name(provider_name)} API Key"
     if kind == BEDROCK_KIND:
@@ -457,6 +456,12 @@ def add_menu_options() -> list[AddOption]:
             SUBSCRIPTION_KIND,
             cli="claude",
         ),
+        _opt(
+            "Pi — original auth",
+            "Use Pi's own auth (~/.pi/agent) as-is, without Omnigent managing the provider.",
+            SUBSCRIPTION_KIND,
+            cli="pi",
+        ),
         # Cross-vendor extras, alphabetical (Gateway before OpenRouter).
         _opt(
             "Gateway — custom base URL + key",
@@ -529,6 +534,8 @@ def _add_option_families(opt: AddOption) -> frozenset[str]:
             return frozenset({ANTHROPIC_FAMILY})
         if opt.cli == "codex":
             return frozenset({OPENAI_FAMILY})
+        if opt.cli == "pi":
+            return frozenset({PI_SURFACE})
         return frozenset()
     if opt.kind == KEY_KIND:
         if opt.other:
