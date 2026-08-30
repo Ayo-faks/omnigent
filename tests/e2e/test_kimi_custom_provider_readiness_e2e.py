@@ -51,7 +51,7 @@ default_model = "openrouter/moonshotai/kimi-k3"
 [providers.openrouter]
 type = "openai"
 base_url = "https://openrouter.ai/api/v1"
-api_key = "sk-or-v1-0123456789abcdef0123456789abcdef"
+api_key = "sk-or-fake-test-key"
 """
 
 # Readiness spellings the report checks on the host record. All three must be
