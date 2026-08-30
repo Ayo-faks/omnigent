@@ -715,6 +715,10 @@ export function Sidebar({
   // visually open so it isn't `inert`/`aria-hidden` mid-gesture.
   const dragging = dragProgress != null;
   const effectiveOpen = open || dragging || peek;
+  const sidebarRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (sidebarRef.current) sidebarRef.current.inert = !effectiveOpen;
+  }, [effectiveOpen]);
 
   // While peeking, leaving the card closes it after a short grace period;
   // re-entering before that fires cancels the close so a wobble doesn't
@@ -764,6 +768,7 @@ export function Sidebar({
         />
       )}
       <aside
+        ref={sidebarRef}
         aria-label="Conversations"
         onPointerEnter={cancelPeekClose}
         onPointerLeave={() => {
@@ -842,9 +847,6 @@ export function Sidebar({
         // don't see the empty-state contents while focus is elsewhere.
         aria-hidden={!effectiveOpen}
         data-collapsed={!effectiveOpen || undefined}
-        // Match the keyboard-focus story: when closed, the sidebar's
-        // children shouldn't receive tabs.
-        inert={!effectiveOpen}
       >
         {/* Right-edge resize handle (desktop only), mirroring the right rail's
           left-edge handle. Hidden on mobile, where the sidebar is a
