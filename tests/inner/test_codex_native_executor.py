@@ -222,6 +222,7 @@ def test_initial_turn_waits_for_late_thread_after_hook_review(
                     socket_path=str(tmp_path / "app-server.sock"),
                     thread_id="thread_after_review",
                     codex_home=str(tmp_path / "codex-home"),
+                    cwd=str(tmp_path),
                 ),
             )
 
@@ -238,6 +239,7 @@ def test_initial_turn_waits_for_late_thread_after_hook_review(
             {
                 "threadId": "thread_after_review",
                 "input": [{"type": "text", "text": "test"}],
+                "environments": [{"environmentId": "local", "cwd": str(tmp_path)}],
             },
         )
     ]
