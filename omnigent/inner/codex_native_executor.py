@@ -361,6 +361,7 @@ class CodexNativeExecutor(Executor):
         settings_overrides = _model_effort_overrides(config)
         latest_user_content = _latest_user_content(messages)
         goal_objective = goal_objective_from_content(latest_user_content)
+        input_items: list[dict[str, object]]
         if goal_objective is not None:
             input_items = [{"type": "text", "text": goal_objective}]
         else:
