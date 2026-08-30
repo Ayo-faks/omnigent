@@ -5783,7 +5783,7 @@ def _spread_created_at(store: SqlAlchemyConversationStore, ids: list[str]) -> No
     from omnigent.db.db_models import SqlConversation as _Conv
 
     base = 2_000_000_000
-    with store._conv_session() as session:
+    with store._conv_session("test_setup") as session:
         for offset, conv_id in enumerate(ids):
             session.execute(
                 sa_update(_Conv)
@@ -5850,7 +5850,7 @@ def _explain_driver(store: SqlAlchemyConversationStore, statement: str, paramete
     import json
 
     dialect = store._conv_engine.dialect.name
-    with store._conv_session() as session:
+    with store._conv_session("test_setup") as session:
         conn = session.connection()
         if dialect == "postgresql":
             conn.exec_driver_sql("ANALYZE conversations")
@@ -5869,7 +5869,7 @@ def _explain_json(store: SqlAlchemyConversationStore, sql: str, analyze: bool = 
 
     from sqlalchemy import text as sql_text
 
-    with store._conv_session() as session:
+    with store._conv_session("test_setup") as session:
         session.execute(sql_text("ANALYZE conversations"))
         session.execute(sql_text("ANALYZE session_permissions"))
         prefix = "EXPLAIN (ANALYZE, FORMAT JSON) " if analyze else "EXPLAIN (FORMAT JSON) "
@@ -5934,9 +5934,9 @@ def _bulk_seed_conversations_and_grants(
                     "level": 4,
                 }
             )
-    with store._conv_session() as session:
+    with store._conv_session("test_setup") as session:
         session.execute(sa_insert(_Conv), conv_rows)
-    with store._session() as session:
+    with store._session("test_setup") as session:
         session.execute(sa_insert(_Perm), perm_rows)
 
 
@@ -6132,7 +6132,13 @@ def test_seeded_listing_plans_and_deep_pagination(
     and re-binding raw values to a ``text()`` EXPLAIN skips the type decorator
     — the exact trap that made the first row-values attempt fail only on
     PostgreSQL.
+
+    Plan assertions are dialect-specific by nature (PostgreSQL EXPLAIN JSON,
+    SQLite EXPLAIN QUERY PLAN); other dialects keep the behavioural coverage
+    from the cursor-walk and row-set tests, which run everywhere.
     """
+    if conversation_store._conv_engine.dialect.name not in ("postgresql", "sqlite"):
+        pytest.skip("plan-shape assertions are written for PostgreSQL and SQLite EXPLAIN output")
     _acl_perms(db_uri)
     # Tied timestamps: with one row per timestamp the cursor's tiebreaker term
     # is decorative and dropping it loses nothing, so the walk below could not
