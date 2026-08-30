@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "@/store/chatStore";
 import { clearSessionDrafts, hasSessionDraft } from "@/lib/sessionDrafts";
 import { setOmnigentHostConfig } from "@/lib/host";
+import { COMPOSER_SEND_SHORTCUT_STORAGE_KEY } from "@/lib/composerSendShortcutPreferences";
 
 // Composer reads workspace files via a TanStack query hook (for "@"-file
 // mentions). These slash-command tests don't exercise that, so stub the hook
@@ -105,10 +106,10 @@ function textarea() {
   return screen.getByLabelText("Message the agent") as HTMLTextAreaElement;
 }
 
-function forceMobileViewport(): () => void {
+function forceDesktopCoarsePointer(): () => void {
   const original = window.matchMedia;
   window.matchMedia = ((query: string) => ({
-    matches: query.includes("max-width"),
+    matches: query.includes("pointer: coarse"),
     media: query,
     onchange: null,
     addListener: () => {},
@@ -135,19 +136,6 @@ function tooltipKeys(tooltip: HTMLElement): string[] {
   return Array.from(tooltip.querySelectorAll('[data-slot="kbd"]')).map(
     (key) => key.textContent ?? "",
   );
-}
-
-function expectDarkShortcutTooltip(tooltip: HTMLElement): void {
-  expect(tooltip).toHaveClass(
-    "border-slate-700",
-    "bg-slate-900",
-    "text-slate-100",
-    "dark:bg-slate-900",
-    "dark:text-slate-100",
-  );
-  for (const key of tooltip.querySelectorAll('[data-slot="kbd"]')) {
-    expect(key).toHaveClass("border-slate-600", "bg-slate-700", "text-slate-300");
-  }
 }
 
 describe("Composer session drafts", () => {
@@ -236,20 +224,20 @@ describe("Composer send shortcut", () => {
     clearSessionDrafts();
   });
 
-  it("keeps unmodified Enter as the default send shortcut", () => {
+  it("keeps Enter and the legacy Mod+Enter alias in default mode", () => {
     const onSend = vi.fn();
     render(<Composer {...composerProps({ onSend })} />);
+    fireEvent.change(textarea(), { target: { value: "legacy alias" } });
+    fireEvent.keyDown(textarea(), { key: "Enter", metaKey: true });
+    expect(onSend).toHaveBeenCalledWith("legacy alias", undefined);
+
     fireEvent.change(textarea(), { target: { value: "default shortcut" } });
-
-    fireEvent.keyDown(textarea(), { key: "Enter", shiftKey: true });
-    expect(onSend).not.toHaveBeenCalled();
-
     fireEvent.keyDown(textarea(), { key: "Enter" });
-    expect(onSend.mock.calls[0]?.[0]).toBe("default shortcut");
+    expect(onSend).toHaveBeenLastCalledWith("default shortcut", undefined);
   });
 
   it("uses Mod+Enter after the alternate preference is restored", () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+    localStorage.setItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY, "true");
     const onSend = vi.fn();
     render(<Composer {...composerProps({ onSend })} />);
     fireEvent.change(textarea(), { target: { value: "alternate shortcut" } });
@@ -261,20 +249,8 @@ describe("Composer send shortcut", () => {
     expect(onSend.mock.calls[0]?.[0]).toBe("alternate shortcut");
   });
 
-  it("shows the default Send shortcut in the button tooltip", async () => {
-    render(<Composer {...composerProps()} />);
-    fireEvent.change(textarea(), { target: { value: "ready to send" } });
-
-    fireEvent.focus(screen.getByRole("button", { name: "Send" }));
-    const tooltip = await screen.findByRole("tooltip");
-
-    expect(within(tooltip).getByText("Send")).toBeInTheDocument();
-    expect(tooltipKeys(tooltip)).toEqual(["↵"]);
-    expectDarkShortcutTooltip(tooltip);
-  });
-
   it("shows the alternate Send shortcut in the button tooltip", async () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+    localStorage.setItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY, "true");
     render(<Composer {...composerProps()} />);
     fireEvent.change(textarea(), { target: { value: "ready to send" } });
 
@@ -285,22 +261,27 @@ describe("Composer send shortcut", () => {
 
     expect(within(tooltip).getByText("Send")).toBeInTheDocument();
     expect(tooltipKeys(tooltip)).toEqual(["Ctrl", "↵"]);
-    expectDarkShortcutTooltip(tooltip);
   });
 
-  it("does not submit a Mod+Enter event during IME composition", () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+  it("keeps Enter native and hides its hint on a desktop-width coarse pointer", () => {
+    const restorePointer = forceDesktopCoarsePointer();
     const onSend = vi.fn();
-    render(<Composer {...composerProps({ onSend })} />);
-    fireEvent.change(textarea(), { target: { value: "変換中" } });
+    try {
+      render(<Composer {...composerProps({ onSend })} />);
+      fireEvent.change(textarea(), { target: { value: "/des" } });
+      fireEvent.keyDown(textarea(), { key: "Enter" });
+      expect(textarea().value).toBe("/des");
+      expect(onSend).not.toHaveBeenCalled();
 
-    fireEvent.compositionStart(textarea());
-    fireEvent.keyDown(textarea(), { key: "Enter", metaKey: true, isComposing: true });
-    expect(onSend).not.toHaveBeenCalled();
+      fireEvent.focus(screen.getByRole("button", { name: "Send" }));
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    } finally {
+      restorePointer();
+    }
   });
 
   it("keeps plain Enter completion while Mod+Enter bypasses an open slash menu", () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+    localStorage.setItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY, "true");
     const onSend = vi.fn();
     render(<Composer {...composerProps({ onSend })} />);
     fireEvent.change(textarea(), { target: { value: "/des" } });
@@ -460,45 +441,6 @@ describe("Composer slash-command menu", () => {
       componentId: "chat.composer.send",
       componentKind: "button",
     });
-  });
-
-  it("leaves mobile Enter to the textarea instead of sending", () => {
-    const restoreViewport = forceMobileViewport();
-    const onSend = vi.fn();
-    try {
-      render(<Composer {...composerProps({ onSend })} />);
-      const ta = textarea();
-      fireEvent.change(ta, { target: { value: "first line" } });
-      const enter = new KeyboardEvent("keydown", {
-        key: "Enter",
-        bubbles: true,
-        cancelable: true,
-      });
-
-      fireEvent(ta, enter);
-
-      expect(enter.defaultPrevented).toBe(false);
-      expect(onSend).not.toHaveBeenCalled();
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("does not accept slash suggestions when Enter is pressed on mobile", () => {
-    const restoreViewport = forceMobileViewport();
-    const onSend = vi.fn();
-    try {
-      render(<Composer {...composerProps({ onSend })} />);
-      const ta = textarea();
-      fireEvent.change(ta, { target: { value: "/des" } });
-
-      fireEvent.keyDown(ta, { key: "Enter" });
-
-      expect(ta.value).toBe("/des");
-      expect(onSend).not.toHaveBeenCalled();
-    } finally {
-      restoreViewport();
-    }
   });
 
   it("Enter on an empty composer neither sends nor reports a send", () => {

@@ -291,6 +291,7 @@ describe("SettingsPage", () => {
       within(description).getByText(/On: Enter inserts a newline and (?:⌘|Ctrl)\+Enter submits\./),
     ).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-labelledby");
+    expect(toggle).toHaveAccessibleName(/Submit with (?:⌘|Ctrl) \+ Enter on desktop/);
   });
 
   it("renders the Appearance section and applies a theme on card click", () => {

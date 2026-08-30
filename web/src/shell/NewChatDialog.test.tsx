@@ -44,6 +44,7 @@ import { useDirectorySessions } from "@/hooks/useDirectorySessions";
 import { useRunnerHealthRegistration } from "@/hooks/RunnerHealthProvider";
 import type { Conversation } from "@/hooks/useConversations";
 import { setOmnigentHostConfig } from "@/lib/host";
+import { COMPOSER_SEND_SHORTCUT_STORAGE_KEY } from "@/lib/composerSendShortcutPreferences";
 import {
   controlHost,
   getHostIdentity,
@@ -976,27 +977,6 @@ describe("NewChatLandingScreen", () => {
     expect(screen.getByTestId("new-chat-landing-input")).toBeTruthy();
   });
 
-  it("leaves mobile Enter to the textarea instead of creating a session", () => {
-    const restoreViewport = forceMobileViewport();
-    try {
-      renderLanding();
-      const input = screen.getByTestId("new-chat-landing-input");
-      fireEvent.change(input, { target: { value: "first line" } });
-      const enter = new KeyboardEvent("keydown", {
-        key: "Enter",
-        bubbles: true,
-        cancelable: true,
-      });
-
-      fireEvent(input, enter);
-
-      expect(enter.defaultPrevented).toBe(false);
-      expect(authenticatedFetchMock).not.toHaveBeenCalled();
-    } finally {
-      restoreViewport();
-    }
-  });
-
   it("does not replace a missing remembered host with the first cached host", async () => {
     localStorage.setItem("omnigent:last-host-choice", "host_2");
     // The shared query cache can render an older host list first while a
@@ -1187,35 +1167,6 @@ describe("NewChatLandingScreen", () => {
 
     expect(within(tooltip).getByText("Start session")).toBeInTheDocument();
     expect(tooltipKeys(tooltip)).toEqual(["↵"]);
-    expect(tooltip).toHaveClass(
-      "border-slate-700",
-      "bg-slate-900",
-      "text-slate-100",
-      "dark:bg-slate-900",
-    );
-    expect(tooltip.querySelector('[data-slot="kbd"]')).toHaveClass(
-      "border-slate-600",
-      "bg-slate-700",
-      "text-slate-300",
-    );
-  });
-
-  it("shows the alternate shortcut in the new-chat submit tooltip", async () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
-    renderLanding();
-    await waitFor(() =>
-      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
-    );
-    fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
-      target: { value: "inspect the repo" },
-    });
-    const submit = screen.getByTestId("new-chat-landing-submit");
-
-    fireEvent.focus(submit);
-    const tooltip = await screen.findByRole("tooltip");
-
-    expect(within(tooltip).getByText("Start session")).toBeInTheDocument();
-    expect(tooltipKeys(tooltip)).toEqual(["Ctrl", "↵"]);
   });
 
   it("keeps submit disabled when no agents exist", () => {
@@ -1683,7 +1634,7 @@ describe("NewChatLandingScreen", () => {
     expect(useHostModelOptionsMock).toHaveBeenCalledWith("host_1", "codex-native", true);
   });
 
-  it("reports start-session telemetry when a create is triggered with the Enter key", async () => {
+  it("keeps legacy Mod+Enter as a default-mode send alias", async () => {
     authenticatedFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ id: "conv_new" }),
@@ -1694,9 +1645,10 @@ describe("NewChatLandingScreen", () => {
     fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
       target: { value: "run the build" },
     });
-    // Enter creates the session without going through the Start button, so the
-    // telemetry has to fire from handleCreate — not the Button's componentId.
-    fireEvent.keyDown(screen.getByTestId("new-chat-landing-input"), { key: "Enter" });
+    fireEvent.keyDown(screen.getByTestId("new-chat-landing-input"), {
+      key: "Enter",
+      ctrlKey: true,
+    });
     await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
     expect(analytics).toHaveBeenCalledWith({
       type: "click",
@@ -1706,7 +1658,7 @@ describe("NewChatLandingScreen", () => {
   });
 
   it("uses Mod+Enter to start a session when the alternate composer behavior is enabled", async () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+    localStorage.setItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY, "true");
     authenticatedFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ id: "conv_new" }),

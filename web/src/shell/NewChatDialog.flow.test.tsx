@@ -1827,12 +1827,14 @@ describe("sanitizeInitialPrompt", () => {
   });
 });
 
-describe("create-session input on mobile viewports", () => {
-  it("Enter inserts a newline instead of submitting", async () => {
-    // Mobile layout owns this behavior regardless of which keyboard produced
-    // the event. Enter stays native to the textarea; Send remains explicit.
+describe("create-session input on touch-primary devices", () => {
+  it("Enter inserts a newline instead of submitting when the pointer is coarse", async () => {
+    // Phones have no practical Shift+Enter, so an Enter-submit in the
+    // create-session composer was an unrecoverable accidental send. On
+    // coarse-pointer devices the composer must let Enter fall through to the
+    // textarea's native newline; sending stays an explicit tap.
     const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation((query: string) =>
-      query.includes("max-width")
+      query.includes("pointer: coarse")
         ? ({
             matches: true,
             media: query,
@@ -1867,6 +1869,9 @@ describe("create-session input on mobile viewports", () => {
       // intercepted, so the composer still holds the user's draft.
       expect(authenticatedFetch).not.toHaveBeenCalled();
       expect(navigateMock).not.toHaveBeenCalled();
+
+      fireEvent.focus(screen.getByTestId("new-chat-landing-submit"));
+      expect(screen.queryByRole("tooltip")).toBeNull();
     } finally {
       matchMediaSpy.mockRestore();
     }

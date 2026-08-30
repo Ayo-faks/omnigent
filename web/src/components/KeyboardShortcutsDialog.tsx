@@ -26,6 +26,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useIsCoarsePointer } from "@/hooks/useIsCoarsePointer";
+import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import { readSubmitWithModEnter } from "@/lib/composerSendShortcutPreferences";
 import { isNativeShell } from "@/lib/nativeBridge";
 
@@ -115,9 +117,13 @@ function pinnedSessionShortcut(native: boolean): Shortcut {
 }
 
 /** Shortcut groups for the current runtime and composer preference. */
-function shortcutGroupsFor(native: boolean, submitWithModEnter: boolean): ShortcutGroup[] {
+function shortcutGroupsFor(
+  native: boolean,
+  submitWithModEnter: boolean,
+  preventsKeyboardSubmit: boolean,
+): ShortcutGroup[] {
   return SHORTCUT_GROUPS.map((group) => {
-    if (group.title === "In chats") {
+    if (group.title === "In chats" && !preventsKeyboardSubmit) {
       return {
         ...group,
         items: [
@@ -144,7 +150,14 @@ function shortcutGroupsFor(native: boolean, submitWithModEnter: boolean): Shortc
  */
 export function KeyboardShortcutsList() {
   // Feature-based, stable per session; computed at render so tests can vary it.
-  const groups = shortcutGroupsFor(isNativeShell(), readSubmitWithModEnter());
+  const isMobileViewport = useIsMobileViewport();
+  const isCoarsePointer = useIsCoarsePointer();
+  const preventsKeyboardSubmit = isMobileViewport || isCoarsePointer;
+  const groups = shortcutGroupsFor(
+    isNativeShell(),
+    readSubmitWithModEnter(),
+    preventsKeyboardSubmit,
+  );
   return (
     <>
       {groups.map((group) => (

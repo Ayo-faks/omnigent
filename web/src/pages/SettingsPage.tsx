@@ -1104,7 +1104,7 @@ function ComposerSendShortcutControl() {
     <div className="flex items-start justify-between gap-6">
       <div className="flex min-w-0 flex-1 flex-col">
         <span id={labelId} className="text-ui font-medium">
-          Submit with {MOD_KEY} + Enter
+          Submit with {MOD_KEY} + Enter on desktop
         </span>
         <div id={descriptionId} className="text-ui text-muted-foreground">
           <p>Off: Enter submits and Shift+Enter inserts a newline.</p>

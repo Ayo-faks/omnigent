@@ -6,6 +6,7 @@ import {
   KeyboardShortcutsList,
   openKeyboardShortcuts,
 } from "./KeyboardShortcutsDialog";
+import { COMPOSER_SEND_SHORTCUT_STORAGE_KEY } from "@/lib/composerSendShortcutPreferences";
 
 // The pinned-session row shows in both shells; only its chord differs (Alt in
 // the browser). Default the mock to browser (false); flip per-test for native.
@@ -24,6 +25,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.restoreAllMocks();
 });
 
 // jsdom's navigator is non-mac, so the modifier glyph renders as "Ctrl".
@@ -46,11 +48,23 @@ describe("KeyboardShortcutsList composer rows", () => {
   });
 
   it("shows Ctrl+Enter to send and Enter for a new line in alternate mode", () => {
-    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+    localStorage.setItem(COMPOSER_SEND_SHORTCUT_STORAGE_KEY, "true");
     render(<KeyboardShortcutsList />);
 
     expect(keysFor("Send message")).toEqual(["Ctrl", "↵"]);
     expect(keysFor("New line in message")).toEqual(["↵"]);
+  });
+
+  it("does not advertise inactive composer chords on touch-primary devices", () => {
+    const matchMedia = window.matchMedia;
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+      ...matchMedia(query),
+      matches: query.includes("pointer: coarse"),
+    }));
+    render(<KeyboardShortcutsList />);
+
+    expect(screen.queryByText("Send message")).toBeNull();
+    expect(screen.queryByText("New line in message")).toBeNull();
   });
 });
 

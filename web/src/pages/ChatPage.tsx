@@ -226,6 +226,7 @@ import { SessionImage } from "@/components/SessionImage";
 import { GoalControl, GoalStatusPill, useGoalState, type Goal } from "@/components/goal";
 import { copyText } from "@/lib/clipboard";
 import { showToast } from "@/components/ui/toast";
+import { useIsCoarsePointer } from "@/hooks/useIsCoarsePointer";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
 import {
   ConnectionIndicator,
@@ -4460,6 +4461,8 @@ export function Composer({
   // Keep desktop's fast-type affordance, but let mobile users explicitly tap
   // the composer when switching back from Terminal or changing sessions.
   const isMobile = useIsMobileViewport();
+  const isCoarsePointer = useIsCoarsePointer();
+  const preventsKeyboardSubmit = isMobile || isCoarsePointer;
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
 
@@ -5032,9 +5035,9 @@ export function Composer({
       return;
     }
 
-    // Mobile newline behavior outranks autocomplete and desktop submit
+    // Touch-primary newline behavior outranks autocomplete and desktop submit
     // preferences. Leave the event untouched so the textarea inserts it.
-    if (isMobile && e.key === "Enter") {
+    if (preventsKeyboardSubmit && e.key === "Enter") {
       return;
     }
 
@@ -5048,7 +5051,7 @@ export function Composer({
         isComposing: e.nativeEvent.isComposing,
       },
       submitWithModEnter,
-      isMobile,
+      preventsKeyboardSubmit,
     );
     // Plain Enter still completes an open suggestion. In Mod+Enter mode, the
     // explicit send chord bypasses suggestions so the modifier has one meaning.
@@ -5619,7 +5622,7 @@ export function Composer({
                     <span className="sr-only">{showInterruptButton ? "Interrupt" : "Send"}</span>
                   </Button>
                 </TooltipTrigger>
-                {!showInterruptButton && (
+                {!showInterruptButton && !preventsKeyboardSubmit && (
                   <KeyboardShortcutTooltipContent
                     label="Send"
                     keys={composerSendShortcutKeys(submitWithModEnter)}

@@ -61,7 +61,9 @@ def test_submit_with_mod_enter_persists_and_is_the_only_send_gesture(
         "() => /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '')"
     )
     mod_key = "⌘" if is_mac else "Ctrl"
-    expect(page.get_by_text(f"Submit with {mod_key} + Enter", exact=True)).to_be_visible()
+    expect(
+        page.get_by_text(f"Submit with {mod_key} + Enter on desktop", exact=True)
+    ).to_be_visible()
     expect(page.get_by_role("radio")).to_have_count(0)
     assert page.evaluate(f"localStorage.getItem('{_STORAGE_KEY}')") is None
 
@@ -85,7 +87,7 @@ def test_submit_with_mod_enter_persists_and_is_the_only_send_gesture(
     page.wait_for_timeout(300)
     assert posts == []
 
-    composer.press("Meta+Enter")
+    composer.press("Meta+Enter" if is_mac else "Control+Enter")
     _wait_for_posts(page, posts, 1)
     assert posts == ["first line\nsecond line"]
 

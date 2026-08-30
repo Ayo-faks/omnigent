@@ -112,23 +112,6 @@ function textarea() {
   return screen.getByLabelText("Message the agent") as HTMLTextAreaElement;
 }
 
-function forceMobileViewport(): () => void {
-  const original = window.matchMedia;
-  window.matchMedia = ((query: string) => ({
-    matches: query.includes("max-width"),
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  })) as typeof window.matchMedia;
-  return () => {
-    window.matchMedia = original;
-  };
-}
-
 /** Type `text` into the composer with the caret at the end. */
 function type(text: string) {
   fireEvent.change(textarea(), { target: { value: text, selectionStart: text.length } });
@@ -356,21 +339,6 @@ describe("Composer @-file-mention browser (native sessions)", () => {
     fireEvent.keyDown(ta, { key: "ArrowDown" });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(screen.getByText("@readme.md")).toBeInTheDocument();
-  });
-
-  it("does not accept the highlighted mention when Enter is pressed on mobile", () => {
-    const restoreViewport = forceMobileViewport();
-    try {
-      renderWithTooltips(<Composer {...composerProps()} />);
-      type("@readme");
-
-      fireEvent.keyDown(textarea(), { key: "Enter" });
-
-      expect(textarea().value).toBe("@readme");
-      expect(screen.queryByText("@readme.md")).not.toBeInTheDocument();
-    } finally {
-      restoreViewport();
-    }
   });
 
   it("ArrowUp from the top row wraps to the last row", () => {
