@@ -8,7 +8,7 @@ from alembic import command
 from omnigent.db.utils import _build_alembic_config
 
 _REVISION = "cb1a2b3c4d5e"
-_PREVIOUS = "za2b3c4d5e6f"
+_PREVIOUS = "e5d9bc8ac650"
 _TABLES = {
     "brain_installations",
     "integration_connections",

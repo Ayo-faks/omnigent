@@ -15,7 +15,7 @@ from alembic import op
 from omnigent.db.db_models import Uuid16
 
 revision: str = "cb1a2b3c4d5e"
-down_revision: str | None = "za2b3c4d5e6f"
+down_revision: str | None = "e5d9bc8ac650"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
