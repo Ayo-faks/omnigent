@@ -58,9 +58,9 @@ def binary_identity(command: str | None) -> tuple[str, int, int] | None:
     :param command: Executable name or path, e.g. ``"claude"``, or
         ``None`` when the caller resolved none.
     :returns: ``(real path, size, mtime_ns)``, or ``None`` when the
-        executable is missing or unreadable. ``None`` fingerprints the
-        same as before this facet existed, so an unresolvable binary
-        never invalidates a stored catalog.
+        executable is missing or unreadable. ``None`` is a stable facet
+        value, so a probe that cannot resolve its binary keys
+        consistently rather than churning the stored catalog.
     """
     if not command:
         return None
