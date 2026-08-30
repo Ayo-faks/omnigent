@@ -1667,6 +1667,52 @@ def test_wait_for_thread_started_times_out_when_no_thread_event() -> None:
         )
 
 
+def test_wait_for_thread_started_unbounded_fails_when_reader_loop_ends() -> None:
+    """
+    ``timeout=None`` must not hang when the app-server connection dies.
+
+    The unbounded wait exists so interactive hook review can take as long
+    as the user needs, but it relies on ``iter_events`` terminating when
+    the websocket closes. A real client whose reader loop has exited (TUI
+    or app-server death, socket drop) must end the event stream so the
+    wait raises instead of blocking forever on an empty queue.
+    """
+    client = codex_native_app_server.CodexAppServerClient(ws_url="ws://unused.invalid")
+
+    async def _run() -> None:
+        # Simulate the reader loop exiting after the socket closed: its
+        # ``finally`` enqueues the stream-end sentinel.
+        client._events.put_nowait(codex_native_app_server._STREAM_END_EVENT)
+        # Guard with a timeout so a regression fails the test instead of
+        # hanging the suite.
+        async with asyncio.timeout(5.0):
+            with pytest.raises(RuntimeError, match="event stream ended"):
+                await codex_native_forwarder.wait_for_thread_started(client, timeout=None)
+
+    asyncio.run(_run())
+
+
+def test_iter_events_yields_events_then_ends_on_stream_end() -> None:
+    """Events before the stream-end sentinel are delivered; the iterator then ends."""
+    client = codex_native_app_server.CodexAppServerClient(ws_url="ws://unused.invalid")
+
+    async def _run() -> list[dict[str, Any]]:
+        client._events.put_nowait({"method": "thread/started", "params": {}})
+        client._events.put_nowait(codex_native_app_server._STREAM_END_EVENT)
+        seen: list[dict[str, Any]] = []
+        async with asyncio.timeout(5.0):
+            async for event in client.iter_events():
+                seen.append(dict(event))
+            # A second consumer must also observe the end (the sentinel is
+            # re-enqueued), not park forever on the drained queue.
+            async for _ in client.iter_events():  # pragma: no cover - must not yield
+                raise AssertionError("stream yielded after end")
+        return seen
+
+    events = asyncio.run(_run())
+    assert events == [{"method": "thread/started", "params": {}}]
+
+
 def test_supervise_forwarder_subscribes_existing_client_after_thread_discovery(
     tmp_path: Path,
 ) -> None:

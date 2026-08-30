@@ -489,6 +489,12 @@ class CodexAppServerResponseError(RuntimeError):
         super().__init__(str(error))
 
 
+# Queue sentinel marking the end of the app-server event stream. The reader
+# loop enqueues it when the websocket closes so ``iter_events`` terminates
+# instead of blocking forever on an empty queue.
+_STREAM_END_EVENT: CodexMessage = {"method": "__omnigent_stream_end__"}
+
+
 class CodexAppServerClient:
     """JSON-RPC client for a Codex app-server.
 
@@ -649,10 +655,21 @@ class CodexAppServerClient:
         """
         Yield app-server notifications until the connection closes.
 
+        Ends (rather than blocking forever) once the reader loop finishes —
+        i.e. the websocket closed — so callers waiting on events, such as
+        ``wait_for_thread_started(timeout=None)``, observe stream end
+        promptly instead of hanging on an empty queue.
+
         :returns: Async iterator of notification envelopes.
         """
         while True:
-            yield await self._events.get()
+            event = await self._events.get()
+            if event is _STREAM_END_EVENT:
+                # Re-enqueue so any concurrent or later consumer also
+                # observes the end instead of parking on the empty queue.
+                self._events.put_nowait(_STREAM_END_EVENT)
+                return
+            yield event
 
     async def _reader_loop(self) -> None:
         """
@@ -661,7 +678,22 @@ class CodexAppServerClient:
         :returns: None.
         """
         assert self._ws is not None
-        async for raw in self._ws:
+        try:
+            await self._route_messages(self._ws)
+        finally:
+            # Wake iter_events() consumers on ANY reader exit (socket close,
+            # protocol error, cancellation): without the sentinel the queue
+            # stays empty forever and an unbounded wait never fails.
+            self._events.put_nowait(_STREAM_END_EVENT)
+
+    async def _route_messages(self, ws: ClientConnection) -> None:
+        """
+        Route incoming websocket messages to responses/events until close.
+
+        :param ws: Connected websocket to drain.
+        :returns: None.
+        """
+        async for raw in ws:
             if not isinstance(raw, str):
                 continue
             decoded: object = json.loads(raw)
