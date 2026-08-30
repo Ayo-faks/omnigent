@@ -3582,7 +3582,7 @@ def test_codex_skill_sources_appends_shared_agents_tree(tmp_path: Path) -> None:
     The vendor-neutral shared tree (the one the Antigravity provider and the
     agents skill spec already read) was invisible to Codex sessions — a
     skill installed only there could not be invoked from a Codex session
-    while other harnesses saw it fine (#4935). It must come AFTER the
+    while other harnesses saw it fine. It must come AFTER the
     Codex-specific trees so a same-named skill in ``.codex/skills`` wins.
     """
     from omnigent.inner.codex_executor import codex_skill_sources, select_codex_skill_dirs

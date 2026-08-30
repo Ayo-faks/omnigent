@@ -252,7 +252,7 @@ def test_slash_skill_command_sends_structured_skill_input(
 
     The TUI sends ``{"type": "skill", name, path}`` for slash invocations;
     the chat path used to send the literal ``/name`` as text, so an explicit
-    skill command silently did nothing (#4935). Resolution is against the
+    skill command silently did nothing. Resolution is against the
     per-session ``$CODEX_HOME/skills`` — what the launch path symlinked and
     Codex registered — and the remainder rides along as a text item.
     """
@@ -271,6 +271,7 @@ def test_slash_skill_command_sends_structured_skill_input(
             thread_id="thread_123",
             codex_home=str(tmp_path / "codex-home"),
             active_turn_id=None,
+            cwd=str(tmp_path),
         ),
     )
     skill_md = tmp_path / "codex-home" / "skills" / "ask-matt" / "SKILL.md"
@@ -290,10 +291,11 @@ def test_slash_skill_command_sends_structured_skill_input(
                     {
                         "type": "skill",
                         "name": "ask-matt",
-                        "path": str(skill_md),
+                        "path": str(skill_md.resolve()),
                     },
                     {"type": "text", "text": "verify this service"},
                 ],
+                "environments": [{"environmentId": "local", "cwd": str(tmp_path)}],
             },
         ),
     ]
@@ -319,6 +321,7 @@ def test_slash_skill_command_without_args_sends_skill_item_only(
             thread_id="thread_123",
             codex_home=str(tmp_path / "codex-home"),
             active_turn_id=None,
+            cwd=str(tmp_path),
         ),
     )
     skill_md = tmp_path / "codex-home" / "skills" / "ask-matt" / "SKILL.md"
@@ -334,7 +337,63 @@ def test_slash_skill_command_without_args_sends_skill_item_only(
             "turn/start",
             {
                 "threadId": "thread_123",
-                "input": [{"type": "skill", "name": "ask-matt", "path": str(skill_md)}],
+                "input": [{"type": "skill", "name": "ask-matt", "path": str(skill_md.resolve())}],
+                "environments": [{"environmentId": "local", "cwd": str(tmp_path)}],
+            },
+        ),
+    ]
+
+
+async def test_slash_skill_command_steers_as_structured_skill_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A ``/<skill>`` steered into an active turn sends a skill input item.
+
+    The steering path shares the fresh-turn interception: a skill command
+    queued while a turn is running must invoke the skill, not arrive at the
+    model as the literal ``/name`` text.
+    """
+    _FakeCodexNativeClient.requests = []
+    _FakeCodexNativeClient.created = []
+    _FakeCodexNativeClient.next_turn = 1
+    monkeypatch.setattr(
+        "omnigent.codex_native_app_server.CodexAppServerClient",
+        _FakeCodexNativeClient,
+    )
+    write_bridge_state(
+        tmp_path,
+        CodexNativeBridgeState(
+            session_id="conv_123",
+            socket_path=str(tmp_path / "app-server.sock"),
+            thread_id="thread_123",
+            codex_home=str(tmp_path / "codex-home"),
+            active_turn_id="turn_active",
+            cwd=str(tmp_path),
+        ),
+    )
+    skill_md = tmp_path / "codex-home" / "skills" / "ask-matt" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text("---\nname: ask-matt\n---\nDo the thing.", encoding="utf-8")
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    steered = await executor.enqueue_session_message("k", "/ask-matt verify this service")
+
+    assert steered is True
+    assert _FakeCodexNativeClient.requests == [
+        (
+            "turn/steer",
+            {
+                "threadId": "thread_123",
+                "expectedTurnId": "turn_active",
+                "input": [
+                    {
+                        "type": "skill",
+                        "name": "ask-matt",
+                        "path": str(skill_md.resolve()),
+                    },
+                    {"type": "text", "text": "verify this service"},
+                ],
             },
         ),
     ]
@@ -365,6 +424,7 @@ def test_unknown_slash_command_falls_through_to_text(
             thread_id="thread_123",
             codex_home=str(tmp_path / "codex-home"),
             active_turn_id=None,
+            cwd=str(tmp_path),
         ),
     )
     # A different skill IS registered — proves the miss is by name, not
@@ -383,6 +443,7 @@ def test_unknown_slash_command_falls_through_to_text(
             {
                 "threadId": "thread_123",
                 "input": [{"type": "text", "text": "/not-a-skill do something"}],
+                "environments": [{"environmentId": "local", "cwd": str(tmp_path)}],
             },
         ),
     ]
@@ -413,6 +474,7 @@ def test_path_like_slash_text_is_not_intercepted(
             thread_id="thread_123",
             codex_home=str(tmp_path / "codex-home"),
             active_turn_id=None,
+            cwd=str(tmp_path),
         ),
     )
     executor = CodexNativeExecutor(bridge_dir=tmp_path)
@@ -426,6 +488,7 @@ def test_path_like_slash_text_is_not_intercepted(
             {
                 "threadId": "thread_123",
                 "input": [{"type": "text", "text": "/etc/hosts is where it points"}],
+                "environments": [{"environmentId": "local", "cwd": str(tmp_path)}],
             },
         ),
     ]
