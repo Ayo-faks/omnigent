@@ -224,7 +224,7 @@ describe("terminalKeyEventPayload", () => {
     expect(terminalKeyEventPayload(keyEvent({ key: "Enter" }))).toBeNull();
   });
 
-  it("releases Shift+Enter to xterm during an IME composition (#4964)", () => {
+  it("releases Shift+Enter to xterm during an IME composition", () => {
     // xterm consults the custom handler BEFORE its CompositionHelper; claiming
     // the key mid-conversion skips the helper's finalize path and the composed
     // text is dropped. The payload must be null so xterm runs composition
@@ -235,9 +235,11 @@ describe("terminalKeyEventPayload", () => {
     // The 229 keyCode path (Safari/legacy) cannot be set through the
     // constructor init dict, so exercise it with a stub.
     expect(
-      terminalKeyEventPayload(
-        { key: "Enter", shiftKey: true, keyCode: 229 } as unknown as KeyboardEvent,
-      ),
+      terminalKeyEventPayload({
+        key: "Enter",
+        shiftKey: true,
+        keyCode: 229,
+      } as unknown as KeyboardEvent),
     ).toBeNull();
     // Without either composition signal the CSI-u payload still applies.
     expect(terminalKeyEventPayload(keyEvent({ key: "Enter", shiftKey: true }))).toBe(

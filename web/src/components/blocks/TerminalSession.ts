@@ -202,11 +202,10 @@ export const SHIFT_ENTER_CSI_U = "\x1b[13;2u";
  *     the event normally.
  */
 export function terminalKeyEventPayload(event: KeyboardEvent): string | null {
-  // An in-flight IME composition owns the keyboard: xterm consults this custom
-  // handler BEFORE its CompositionHelper, so claiming Shift+Enter mid-conversion
-  // skips the helper's finalize-on-keydown path and the composed text is never
-  // committed -- it is dropped and a CSI-u sequence reaches the PTY instead
-  // (#4964). Returning null lets xterm run its normal composition handling.
+  // An in-flight IME composition owns the keyboard: xterm consults this
+  // handler BEFORE its CompositionHelper, so claiming a key mid-conversion
+  // would drop the composed text. Return null so xterm runs composition
+  // handling (keyCode 229 is the legacy composition signal).
   if (event.isComposing || event.keyCode === 229) {
     return null;
   }
