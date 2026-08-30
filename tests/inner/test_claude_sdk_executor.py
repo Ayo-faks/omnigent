@@ -3359,6 +3359,54 @@ def test_prepare_claude_cli_path_degrades_when_wrap_probe_fails(monkeypatch, cap
     ]
 
 
+def test_prepare_claude_cli_path_skips_script_launcher_for_windows_jobobject(
+    monkeypatch, caplog
+) -> None:
+    """
+    The Claude Agent SDK spawns ``cli_path`` directly via CreateProcess on
+    Windows, which cannot execute the ``.py`` script ``create_exec_launcher``
+    emits (WinError 193) — every session died before connect. The Job Object
+    backend applies containment via ``post_spawn`` in the parent, never inside
+    the launcher, so skipping the wrap loses nothing: the prepare must return
+    the raw CLI with native tools disabled and warn.
+    """
+    from unittest.mock import patch
+
+    from omnigent.inner import windows_jobobject_sandbox as windows_jobobject
+    from omnigent.inner.claude_sdk_executor import prepare_claude_cli_path
+    from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
+
+    def _fail_if_called(*args, **kwargs) -> str:
+        raise AssertionError("create_exec_launcher must not run for the windows_jobobject backend")
+
+    monkeypatch.setattr("omnigent.inner.claude_sdk_executor.create_exec_launcher", _fail_if_called)
+    # An ambient bypass would short-circuit before the backend branch under test.
+    monkeypatch.delenv("OMNIGENT_CLAUDE_SDK_NO_SANDBOX", raising=False)
+
+    spec = OSEnvSpec(
+        type="caller_process",
+        cwd="/tmp/work",
+        sandbox=OSEnvSandboxSpec(
+            type="windows_jobobject",
+            write_paths=["."],
+            allow_network=True,
+        ),
+    )
+    # The module's own os_name seam lets the backend resolve on POSIX CI,
+    # driving the same resolve path that runs on native Windows.
+    with (
+        patch.object(windows_jobobject, "os_name", lambda: "nt"),
+        caplog.at_level(logging.WARNING, logger="omnigent.inner.claude_sdk_executor"),
+    ):
+        prepared = prepare_claude_cli_path("/usr/bin/claude", spec)
+
+    assert prepared.cli_path == "/usr/bin/claude"
+    assert prepared.enable_native_tools is False
+    assert any("Windows Job Objects" in record.getMessage() for record in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+
+
 def test_prepare_claude_cli_path_probe_passes_target_and_still_wraps(
     monkeypatch,
 ) -> None:

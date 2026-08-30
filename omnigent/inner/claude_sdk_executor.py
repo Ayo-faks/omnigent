@@ -1229,6 +1229,22 @@ def prepare_claude_cli_path(
         # The Claude CLI itself must reach the provider, so we cannot run the
         # whole native-tool process tree inside a network-denying sandbox.
         return PreparedClaudeCli(cli_path=real_cli_path, enable_native_tools=False)
+    if sandbox.backend_type == "windows_jobobject":
+        # ``create_exec_launcher`` emits a ``.py`` script. The Claude Agent SDK
+        # spawns ``cli_path`` directly via CreateProcess, which cannot execute
+        # a Python source file (WinError 193), so every session would die
+        # before connect. The launcher would add no containment anyway: Job
+        # Objects are applied by the parent via ``post_spawn``, not inside the
+        # launcher, and cannot enforce the filesystem/network rules that make
+        # Claude's native tools safe — so run the raw CLI with native tools
+        # disabled (file/shell access stays confined to the sys_os_* tools).
+        logger.warning(
+            "Windows Job Objects cannot provide an executable Claude SDK "
+            "sandbox launcher; running the Claude CLI unwrapped with native "
+            "tools disabled (file/shell access stays confined to the "
+            "sandboxed sys_os_* tools)."
+        )
+        return PreparedClaudeCli(cli_path=real_cli_path, enable_native_tools=False)
 
     sandbox = with_additional_read_roots(sandbox, _claude_internal_write_roots())
     sandbox = with_additional_write_roots(sandbox, _claude_internal_write_roots())
