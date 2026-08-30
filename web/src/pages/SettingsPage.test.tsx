@@ -765,18 +765,15 @@ describe("SettingsPage", () => {
     expect(screen.getByTestId("heavier-code-text-toggle")).toHaveAttribute("aria-checked", "false");
   });
 
-  it("defaults bare /settings to Account when a login session exists, else Appearance", async () => {
-    // Login session (accounts OR OIDC) → Account leads, so /settings lands on it.
+  it("defaults bare /settings to General regardless of login mode", () => {
     renderPage("/settings");
-    await waitFor(() => expect(screen.getByText("alice")).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
 
-    // Header single-user (no login_url) → no Account section; falls back to
-    // Appearance.
     cleanup();
     mocks.accountsEnabled = false;
     mocks.loginUrl = null;
     renderPage("/settings");
-    expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
   });
 
   it("renders the Account section at /settings/account for any login session", async () => {
