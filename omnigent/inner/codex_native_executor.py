@@ -239,7 +239,11 @@ class CodexNativeExecutor(Executor):
         :returns: ``True`` when Codex accepted the steering message.
         """
         del session_key
-        input_items = _content_to_input_items(content, self._bridge_dir)
+        # A skill command steered into an active turn must invoke the skill
+        # the same way a fresh turn does, not arrive as literal text.
+        input_items = _slash_skill_input_items(
+            content, self._bridge_dir
+        ) or _content_to_input_items(content, self._bridge_dir)
         if not input_items:
             return False
         # Serialized against run_turn so the read-decide-RPC-write below
@@ -360,10 +364,9 @@ class CodexNativeExecutor(Executor):
         if goal_objective is not None:
             input_items = [{"type": "text", "text": goal_objective}]
         else:
-            input_items = (
-                _slash_skill_input_items(latest_user_content, self._bridge_dir)
-                or _content_to_input_items(latest_user_content, self._bridge_dir)
-            )
+            input_items = _slash_skill_input_items(
+                latest_user_content, self._bridge_dir
+            ) or _content_to_input_items(latest_user_content, self._bridge_dir)
         if not input_items:
             yield ExecutorError(message="Codex native turn had no user input to send")
             return
@@ -542,13 +545,11 @@ def _latest_user_content(messages: list[Message]) -> object:
 # Leading "/<skill-name>" interception for the chat path. Codex's TUI sends a
 # structured skill input item for slash invocations; the app-server's text
 # path leaves the literal "/name" in the prompt, so a skill command typed in
-# the web chat silently does nothing (#4935).
+# the web chat silently does nothing.
 _SLASH_SKILL_RE = re.compile(r"^/([^\s/]+)(?:\s+(.*))?$", re.DOTALL)
 
 
-def _slash_skill_input_items(
-    content: object, bridge_dir: Path
-) -> list[dict[str, object]] | None:
+def _slash_skill_input_items(content: object, bridge_dir: Path) -> list[dict[str, object]] | None:
     """Translate a standalone ``/<skill> [args]`` text into skill input items.
 
     Resolution is against the per-session ``$CODEX_HOME/skills`` — exactly
@@ -590,8 +591,11 @@ def _slash_skill_input_items(
     skill_md = codex_home_for_bridge_dir(bridge_dir) / "skills" / name / "SKILL.md"
     if not skill_md.is_file():
         return None
+    # Codex matches the skill item against its catalog by exact path equality,
+    # and the catalog stores canonical paths — a $CODEX_HOME/skills symlink
+    # never matches, so resolve to the real SKILL.md.
     items: list[dict[str, object]] = [
-        {"type": "skill", "name": name, "path": str(skill_md)}
+        {"type": "skill", "name": name, "path": str(skill_md.resolve())}
     ]
     if rest and rest.strip():
         items.append({"type": "text", "text": rest})
