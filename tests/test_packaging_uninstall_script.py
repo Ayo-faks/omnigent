@@ -96,7 +96,10 @@ def test_bundle_scripts_aborts_when_script_missing(build_python: str, tmp_path: 
     result = _run_bundle_scripts(build_python, setup_dir, build_lib)
 
     assert result.returncode != 0
-    assert "uninstall" in result.stderr
+    # Match the failure's meaning, not its exact wording: the abort must
+    # name the script and say it can't be bundled.
+    assert "uninstall_oss.sh" in result.stderr
+    assert "cannot be bundled" in result.stderr
     assert not (build_lib / "omnigent" / "resources" / "scripts").exists()
 
 
