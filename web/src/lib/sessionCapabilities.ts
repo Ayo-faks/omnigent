@@ -29,6 +29,6 @@ export function supportsEffortControl(
     wrapper === CLAUDE_NATIVE_WRAPPER ||
     wrapper === CODEX_NATIVE_WRAPPER ||
     wrapper === PI_NATIVE_WRAPPER ||
-    session?.harness === "codex-native"
+    (wrapper == null && session?.harness === "codex-native")
   );
 }

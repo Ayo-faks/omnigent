@@ -5865,6 +5865,22 @@ export function readOnlyReasonForSessionLabels(
   return null;
 }
 
+/**
+ * A custom (label-less) session resolved to the native Codex harness.
+ *
+ * Custom YAML agents get no `omnigent.wrapper` presentation label, so the
+ * resolved harness is the capability evidence. Any wrapper label — including
+ * sub-agent variants like `codex-native-ui-subagent`, which cannot honor
+ * mid-session overrides — keeps the label authoritative and skips the
+ * fallback.
+ */
+function isLabelLessCodexNative(
+  conv:
+    { labels?: Record<string, string | null> | null; harness?: string | null } | null | undefined,
+): boolean {
+  return conv?.labels?.["omnigent.wrapper"] == null && conv?.harness === "codex-native";
+}
+
 export function effortLevelsForConv(
   conv:
     { labels?: Record<string, string | null> | null; harness?: string | null } | null | undefined,
@@ -5879,7 +5895,7 @@ export function effortLevelsForConv(
     case "pi-native-ui":
       return PI_NATIVE_EFFORT_LEVELS;
     default:
-      return conv?.harness === "codex-native"
+      return isLabelLessCodexNative(conv)
         ? codexEffortLevelsForModel(codexModelOptions, currentModel)
         : EFFORT_LEVELS;
   }
@@ -5920,7 +5936,7 @@ export function modelPickerKindForConv(
       // model_select handler, so the picker surfaces that as the live model.
       return "pi";
     default:
-      return conv?.harness === "codex-native" ? "codex" : null;
+      return isLabelLessCodexNative(conv) ? "codex" : null;
   }
 }
 
