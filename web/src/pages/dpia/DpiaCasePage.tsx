@@ -155,15 +155,24 @@ function StudentSuccessAlertCase() {
     setSelectedFinding(caseData.determinations.find(({ id }) => id === findingId) ?? null);
   }
 
-  function updateIntake(values: Record<string, string>) {
-    const beforeVersion = caseData.processingModel.version;
-    const updated = controller.updateIntake(values);
-    if (updated.processingModel.version > beforeVersion) {
-      showToast(
-        `Processing model v${updated.processingModel.version} saved. Dependent findings are stale until replayed.`,
-      );
-    } else {
-      showToast("No material intake values changed.");
+  function showMutationError(error: unknown, fallback: string) {
+    showToast(error instanceof Error ? error.message : fallback, { duration: 0 });
+  }
+
+  async function updateIntake(values: Record<string, string>) {
+    try {
+      const beforeVersion = caseData.processingModel.version;
+      const updated = await controller.updateIntake(values);
+      if (updated.processingModel.version > beforeVersion) {
+        showToast(
+          `Processing model v${updated.processingModel.version} saved. Dependent findings are stale until replayed.`,
+        );
+      } else {
+        showToast("No material intake values changed.");
+      }
+    } catch (error) {
+      showMutationError(error, "Could not save the intake changes.");
+      throw error;
     }
   }
 
@@ -181,7 +190,7 @@ function StudentSuccessAlertCase() {
     setBindingError(null);
     try {
       const binding = await findOrCreateDpiaCaseSession(caseData.id, agent.id);
-      controller.bindSession(binding.sessionId);
+      await controller.bindSession(binding.sessionId);
       showToast(binding.created ? "Case agent session created." : "Existing case agent connected.");
     } catch (error) {
       setBindingError(error instanceof Error ? error.message : "Could not connect the case agent.");
@@ -190,10 +199,10 @@ function StudentSuccessAlertCase() {
     }
   }
 
-  function answerQuestion(response: string, answeredBy: string) {
+  async function answerQuestion(response: string, answeredBy: string) {
     if (!selectedQuestion) return;
     try {
-      const updated = controller.answerQuestion({
+      const updated = await controller.answerQuestion({
         questionId: selectedQuestion.id,
         response,
         answeredBy,
@@ -202,31 +211,30 @@ function StudentSuccessAlertCase() {
         `Attributed answer recorded in processing model v${updated.processingModel.version}.`,
       );
     } catch (error) {
-      showToast(
-        error instanceof Error ? error.message : "Could not record the stakeholder answer.",
-        {
-          duration: 0,
-        },
-      );
+      showMutationError(error, "Could not record the stakeholder answer.");
+      throw error;
     }
   }
 
-  function replaySnapshot() {
-    const updated = controller.replaySnapshot();
-    setLiveRun({
-      status: "idle",
-      message: `Validated snapshot replayed against processing model v${updated.processingModel.version}. No live agent output was used.`,
-    });
-    showToast(
-      `Validated investigation replayed against model v${updated.processingModel.version}.`,
-    );
+  async function replaySnapshot() {
+    try {
+      const updated = await controller.replaySnapshot();
+      setLiveRun({
+        status: "idle",
+        message: `Validated snapshot replayed against processing model v${updated.processingModel.version}. No live agent output was used.`,
+      });
+      showToast(
+        `Validated investigation replayed against model v${updated.processingModel.version}.`,
+      );
+    } catch (error) {
+      showMutationError(error, "Could not replay the validated investigation.");
+    }
   }
 
   async function runLive() {
     liveAbortRef.current?.abort();
     const abortController = new AbortController();
     liveAbortRef.current = abortController;
-    controller.recordLiveRun(undefined);
     setLiveRun({ status: "running", message: "Starting the live investigation…" });
     try {
       const result = await runLiveInvestigation(
@@ -241,7 +249,7 @@ function StudentSuccessAlertCase() {
         message,
         sessionId: result.sessionId,
       });
-      controller.recordLiveRun({
+      await controller.recordLiveRun({
         status: "completed",
         message,
         sessionId: result.sessionId,
@@ -257,18 +265,30 @@ function StudentSuccessAlertCase() {
         status: "failed",
         message,
       });
-      controller.recordLiveRun({ status: "failed", message, updatedAt: new Date().toISOString() });
+      try {
+        await controller.recordLiveRun({
+          status: "failed",
+          message,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (persistenceFailure) {
+        showMutationError(persistenceFailure, "Could not save the live investigation status.");
+      }
     }
   }
 
-  function resetCase() {
-    controller.reset();
-    liveAbortRef.current?.abort();
-    setLiveRun({
-      status: "idle",
-      message: "Returned to the reviewed Student Success Alert seed. No live output is applied.",
-    });
-    showToast("Case reset to the validated demo snapshot.");
+  async function resetCase() {
+    try {
+      await controller.reset();
+      liveAbortRef.current?.abort();
+      setLiveRun({
+        status: "idle",
+        message: "Returned to the reviewed Student Success Alert seed. No live output is applied.",
+      });
+      showToast("Case reset to the validated demo snapshot.");
+    } catch (error) {
+      showMutationError(error, "Could not reset the case.");
+    }
   }
 
   function makeDecisionPack(): DecisionPack | null {
@@ -557,11 +577,15 @@ function StudentSuccessAlertCase() {
 
         <StakeholderOutreachPanel
           caseData={caseData}
-          onAcceptAnswer={(input) => {
-            const updated = controller.answerQuestion(input);
-            showToast(
-              `Attributed answer recorded in processing model v${updated.processingModel.version}.`,
-            );
+          onAcceptAnswer={async (input) => {
+            try {
+              const updated = await controller.answerQuestion(input);
+              showToast(
+                `Attributed answer recorded in processing model v${updated.processingModel.version}.`,
+              );
+            } catch (error) {
+              showMutationError(error, "Could not record the stakeholder answer.");
+            }
           }}
         />
 
@@ -571,27 +595,43 @@ function StudentSuccessAlertCase() {
           connecting={bindingSession}
           bindingError={bindingError}
           onConnect={() => void connectCaseAgent()}
-          onStageProposal={(proposal, source) => {
-            controller.stageCorrection(proposal, source);
-            showToast(
-              source === "agent"
-                ? "Agent correction proposal is ready for officer review."
-                : "Manual correction proposal drafted.",
-            );
+          onStageProposal={async (proposal, source) => {
+            try {
+              await controller.stageCorrection(proposal, source);
+              showToast(
+                source === "agent"
+                  ? "Agent correction proposal is ready for officer review."
+                  : "Manual correction proposal drafted.",
+              );
+            } catch (error) {
+              showMutationError(error, "Could not save the correction proposal.");
+            }
           }}
-          onEditProposal={(proposalId, proposal) => {
-            controller.editCorrection(proposalId, proposal);
-            showToast("Correction proposal updated.");
+          onEditProposal={async (proposalId, proposal) => {
+            try {
+              await controller.editCorrection(proposalId, proposal);
+              showToast("Correction proposal updated.");
+            } catch (error) {
+              showMutationError(error, "Could not update the correction proposal.");
+            }
           }}
-          onApplyProposal={(proposal) => {
-            const updated = controller.applyCorrection(proposal);
-            showToast(
-              `Correction applied in processing model v${updated.processingModel.version}. Dependent findings are stale.`,
-            );
+          onApplyProposal={async (proposal) => {
+            try {
+              const updated = await controller.applyCorrection(proposal);
+              showToast(
+                `Correction applied in processing model v${updated.processingModel.version}. Dependent findings are stale.`,
+              );
+            } catch (error) {
+              showMutationError(error, "Could not apply the correction proposal.");
+            }
           }}
-          onRejectProposal={(proposalId) => {
-            controller.rejectCorrection(proposalId);
-            showToast("Correction proposal rejected. The case was not changed.");
+          onRejectProposal={async (proposalId) => {
+            try {
+              await controller.rejectCorrection(proposalId);
+              showToast("Correction proposal rejected. The case was not changed.");
+            } catch (error) {
+              showMutationError(error, "Could not reject the correction proposal.");
+            }
           }}
         />
       </PageScroll>
@@ -604,6 +644,7 @@ function StudentSuccessAlertCase() {
         }}
         caseData={caseData}
         onSave={updateIntake}
+        busy={controller.isSaving}
       />
       <EvidenceDialog
         evidence={selectedEvidence}
@@ -629,6 +670,7 @@ function StudentSuccessAlertCase() {
           if (!open) closeDialog(() => setSelectedQuestion(null));
         }}
         onSubmit={answerQuestion}
+        busy={controller.isSaving}
       />
       <OfficerDecisionDialog
         action={officerAction}
@@ -636,12 +678,18 @@ function StudentSuccessAlertCase() {
         onOpenChange={(open) => {
           if (!open) closeDialog(() => setOfficerAction(null));
         }}
-        onSubmit={(decision) => {
-          const updated = controller.decide(decision);
-          showToast(
-            `Privacy Officer decision recorded: ${updated.officerDecision?.outcome.replaceAll("-", " ")}.`,
-          );
+        onSubmit={async (decision) => {
+          try {
+            const updated = await controller.decide(decision);
+            showToast(
+              `Privacy Officer decision recorded: ${updated.officerDecision?.outcome.replaceAll("-", " ")}.`,
+            );
+          } catch (error) {
+            showMutationError(error, "Could not record the Privacy Officer decision.");
+            throw error;
+          }
         }}
+        busy={controller.isSaving}
       />
       <AgentActivityDialog
         open={activityOpen}
@@ -651,8 +699,8 @@ function StudentSuccessAlertCase() {
         activity={caseData.agentActivity}
         liveRun={liveRun}
         onRunLive={() => void runLive()}
-        onReplaySnapshot={replaySnapshot}
-        onReset={resetCase}
+        onReplaySnapshot={() => void replaySnapshot()}
+        onReset={() => void resetCase()}
       />
       <DecisionPackUnavailableDialog
         message={decisionPackError}

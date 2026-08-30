@@ -1,3 +1,4 @@
+import { authenticatedFetch } from "@/lib/identity";
 import { createStudentSuccessAlertSeed } from "./seed";
 import { validateCorrectionProposal } from "./correctionProposal";
 import { dpiaCaseSnapshotSchema, officerDecisionSchema } from "./schemas";
@@ -10,6 +11,131 @@ export interface DpiaLoadResult {
   caseData: DpiaCaseSnapshot;
   source: "persisted" | "seed";
   recoveredInvalidState: boolean;
+}
+
+export interface DurableDpiaLoadResult extends DpiaLoadResult {
+  revision: number;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface DurableDpiaCaseEnvelope {
+  case_id: string;
+  revision: number;
+  snapshot: unknown;
+  created_by: string;
+  updated_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export class DpiaCaseConflictError extends Error {
+  readonly currentRevision: number;
+
+  constructor(currentRevision: number) {
+    super(`The DPIA case changed at revision ${currentRevision}.`);
+    this.name = "DpiaCaseConflictError";
+    this.currentRevision = currentRevision;
+  }
+}
+
+class DpiaCaseNotFoundError extends Error {}
+
+const durableLoadRequests = new Map<string, Promise<DurableDpiaLoadResult>>();
+
+function parseDurableDpiaCase(value: unknown): DurableDpiaLoadResult {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("The DPIA case response is invalid.");
+  }
+  const envelope = value as Partial<DurableDpiaCaseEnvelope>;
+  if (
+    typeof envelope.case_id !== "string" ||
+    !Number.isInteger(envelope.revision) ||
+    typeof envelope.created_by !== "string" ||
+    typeof envelope.updated_by !== "string" ||
+    typeof envelope.created_at !== "number" ||
+    typeof envelope.updated_at !== "number"
+  ) {
+    throw new Error("The DPIA case response is invalid.");
+  }
+  const caseData = dpiaCaseSnapshotSchema.parse(envelope.snapshot);
+  if (caseData.id !== envelope.case_id) {
+    throw new Error("The DPIA case response does not match the requested case.");
+  }
+  return {
+    caseData,
+    revision: envelope.revision as number,
+    createdBy: envelope.created_by,
+    updatedBy: envelope.updated_by,
+    createdAt: envelope.created_at,
+    updatedAt: envelope.updated_at,
+    source: "persisted",
+    recoveredInvalidState: false,
+  };
+}
+
+async function durableResponse(response: Response): Promise<DurableDpiaLoadResult> {
+  if (response.status === 404) throw new DpiaCaseNotFoundError();
+  if (response.status === 409) {
+    const body = (await response.json()) as {
+      error?: { current_revision?: unknown };
+    };
+    const currentRevision = body.error?.current_revision;
+    throw new DpiaCaseConflictError(typeof currentRevision === "number" ? currentRevision : 0);
+  }
+  if (!response.ok) {
+    throw new Error(`DPIA case persistence failed with status ${response.status}.`);
+  }
+  return parseDurableDpiaCase(await response.json());
+}
+
+export async function fetchDurableDpiaCase(caseId: string): Promise<DurableDpiaLoadResult> {
+  const response = await authenticatedFetch(`/v1/dpia/cases/${encodeURIComponent(caseId)}`);
+  return durableResponse(response);
+}
+
+export async function saveDurableDpiaCase(
+  caseData: DpiaCaseSnapshot,
+  expectedRevision: number,
+): Promise<DurableDpiaLoadResult> {
+  const snapshot = dpiaCaseSnapshotSchema.parse(caseData);
+  const response = await authenticatedFetch(`/v1/dpia/cases/${encodeURIComponent(snapshot.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ snapshot, expected_revision: expectedRevision }),
+  });
+  return durableResponse(response);
+}
+
+export function loadDurableDpiaCase(caseId: string): Promise<DurableDpiaLoadResult> {
+  const pending = durableLoadRequests.get(caseId);
+  if (pending) return pending;
+
+  const request = (async () => {
+    try {
+      return await fetchDurableDpiaCase(caseId);
+    } catch (error) {
+      if (!(error instanceof DpiaCaseNotFoundError)) throw error;
+      const key = dpiaStorageKey(caseId);
+      const hadLegacySnapshot = localStorage.getItem(key) !== null;
+      const legacy = loadDpiaCase(caseId);
+      const saved = await saveDurableDpiaCase(legacy.caseData, 0);
+      if (hadLegacySnapshot) localStorage.removeItem(key);
+      return {
+        ...saved,
+        source: legacy.source,
+        recoveredInvalidState: legacy.recoveredInvalidState,
+      };
+    }
+  })();
+  durableLoadRequests.set(caseId, request);
+  void request.then(
+    () => durableLoadRequests.delete(caseId),
+    () => durableLoadRequests.delete(caseId),
+  );
+  return request;
 }
 
 const questionFactDependencies: Record<string, string[]> = {

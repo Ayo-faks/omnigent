@@ -27,7 +27,7 @@ export async function findDpiaCaseSession(
 ): Promise<DpiaCaseSessionBinding | null> {
   const response = await authenticatedFetch("/v1/sessions?limit=100", { signal });
   if (!response.ok) {
-    throw new Error(`Could not inspect sessions (${response.status}).`);
+    throw new Error(`Could not inspect Omnigent sessions (${response.status}).`);
   }
   const list = (await response.json()) as SessionListResponse;
   const session = list.data.find(

@@ -28,6 +28,7 @@ dependencies = [
     # release tag). Local/editable installs still resolve via tool.uv.sources.
     "omnigent-client==0.12.0.dev0",
     "omnigent-ui-sdk==0.12.0.dev0",
+    "omnigent-company-brain==0.12.0.dev0",
     # Merged from omnigent + omnigent.
     "pyyaml>=6.0,<7",
     # OpenClaw stores its wrapped acpx registry as JSON5.
@@ -245,11 +246,16 @@ cursor = ["cursor-sdk>=0.1.7"]
 # Hindsight long-term memory built-in tools (hindsight_retain / _recall /
 # _reflect). The tools import the client lazily, so only users who enable a
 # Hindsight memory tool need this extra.
-hindsight = ["hindsight-client>=0.4.0"]
-# The Nimble builtins (`nimble_research`, `nimble_extract`). nimble_research
-# imports the nimble-python client lazily; nimble_extract talks raw httpx and
-# needs no client at runtime. Installing this extra is the opt-in signal that
-# surfaces both tools in the onboarding assistant's builtin list.
+hindsight = ["hindsight-client==0.8.3"]
+# Backwards-compatibility alias: this extra was renamed to `hindsight` (see
+# above) in #2605. Keep `memory` pulling the same client so existing
+# `omnigent[memory]` / `--extra memory` invocations keep working.
+# TODO(0.70): remove this `memory` alias extra — it exists only to keep the
+# pre-rename install command working during the deprecation window.
+memory = ["hindsight-client==0.8.3"]
+# Nimble research runs (the `nimble_research` builtin). The tool imports the
+# nimble-python client lazily, so only users who enable nimble_research need
+# this extra. nimble_extract talks raw httpx and needs no extra.
 nimble = ["nimble-python>=1.2.0,<2"]
 # Slack integration (`omni integration slack`). The @omnigent socket-mode bot
 # lives in the separate `omnigent-slack` package (heavy deps — slack_bolt /
@@ -314,7 +320,7 @@ test = [
     "pytest>=7.0",
     # These clients are optional product capabilities, but their tests import
     # and execute the real packages against mocks.
-    "hindsight-client>=0.4.0",
+    "hindsight-client==0.8.3",
     "nimble-python>=1.2.0,<2",
     "pytest-asyncio>=0.21",
     "pytest-xdist>=3.6",
@@ -412,6 +418,7 @@ members = [".github/triage_v2"]
 [tool.uv.sources]
 omnigent-client = { path = "sdks/python-client", editable = true }
 omnigent-ui-sdk = { path = "sdks/ui", editable = true }
+omnigent-company-brain = { path = "integrations/company_brain", editable = true }
 # Local resolution for the `slack` extra. Only pulled in when `omnigent[slack]`
 # is requested (the extra is opt-in), so a default install never builds it.
 omnigent-slack = { path = "integrations/slack", editable = true }

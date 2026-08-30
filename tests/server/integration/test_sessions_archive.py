@@ -428,6 +428,8 @@ async def test_agent_contents_returns_valid_gzip_tarball(
 
     resp = await client.get(f"/v1/sessions/{session_id}/agent/contents")
     assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "private, no-store"
+    assert resp.headers["pragma"] == "no-cache"
     assert resp.headers["content-type"] == "application/gzip"
 
     # Verify the bytes are valid gzip.

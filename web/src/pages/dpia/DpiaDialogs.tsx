@@ -41,25 +41,37 @@ import type {
 import { Link } from "@/lib/routing";
 import { DpiaStatus } from "./DpiaStatus";
 
+function submissionError(error: unknown): string {
+  return error instanceof Error ? error.message : "The DPIA case update could not be saved.";
+}
+
 export function DpiaIntakeDialog({
   open,
   onOpenChange,
   caseData,
   onSave,
+  busy = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   caseData: DpiaCaseSnapshot;
-  onSave: (values: Record<string, string>) => void;
+  onSave: (values: Record<string, string>) => Promise<unknown>;
+  busy?: boolean;
 }) {
   const initialValues = useMemo(
     () => Object.fromEntries(caseData.processingModel.facts.map((fact) => [fact.id, fact.value])),
     [caseData.processingModel.facts],
   );
   const [values, setValues] = useState<Record<string, string>>(initialValues);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = busy || submitting;
   useEffect(() => {
     if (open) setValues(initialValues);
   }, [initialValues, open]);
+  useEffect(() => {
+    if (!open) setError(null);
+  }, [open]);
   const sections = useMemo(() => {
     const grouped = new Map<string, typeof caseData.processingModel.facts>();
     for (const fact of caseData.processingModel.facts) {
@@ -68,14 +80,23 @@ export function DpiaIntakeDialog({
     return Array.from(grouped.entries());
   }, [caseData.processingModel.facts]);
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    onSave(values);
-    onOpenChange(false);
+    if (pending) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSave(values);
+      onOpenChange(false);
+    } catch (cause) {
+      setError(submissionError(cause));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
       <DialogContent className="max-h-[88vh] max-w-[min(960px,calc(100%-2rem))] grid-rows-[auto_minmax(0,1fr)_auto] p-0">
         <DialogHeader className="border-b border-border px-6 pt-6 pb-4">
           <DialogTitle>Edit processing intake</DialogTitle>
@@ -114,14 +135,25 @@ export function DpiaIntakeDialog({
                 ))}
               </fieldset>
             ))}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
           </div>
         </form>
         <DialogFooter className="m-0 rounded-none border-t px-6 py-4">
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={pending}
+            onClick={() => onOpenChange(false)}
+          >
             Cancel
           </Button>
-          <Button type="submit" form="dpia-intake-form">
-            Save new version
+          <Button type="submit" form="dpia-intake-form" disabled={pending}>
+            {pending && <Loader2Icon className="animate-spin" />}
+            {pending ? "Saving" : "Save new version"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -302,28 +334,45 @@ export function QuestionAnswerDialog({
   question,
   onOpenChange,
   onSubmit,
+  busy = false,
 }: {
   question: StakeholderQuestion | null;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (response: string, answeredBy: string) => void;
+  onSubmit: (response: string, answeredBy: string) => Promise<unknown>;
+  busy?: boolean;
 }) {
   const [response, setResponse] = useState("");
   const [answeredBy, setAnsweredBy] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = busy || submitting;
   useEffect(() => {
     if (question) {
       setResponse(question.response ?? "");
       setAnsweredBy(question.answeredBy ?? "");
     }
   }, [question]);
+  useEffect(() => {
+    if (!question) setError(null);
+  }, [question]);
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    onSubmit(response, answeredBy);
-    onOpenChange(false);
+    if (pending) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit(response, answeredBy);
+      onOpenChange(false);
+    } catch (cause) {
+      setError(submissionError(cause));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
-    <Dialog open={question !== null} onOpenChange={onOpenChange}>
+    <Dialog open={question !== null} onOpenChange={(next) => !pending && onOpenChange(next)}>
       <DialogContent className="max-w-xl">
         {question && (
           <form onSubmit={submit}>
@@ -361,16 +410,27 @@ export function QuestionAnswerDialog({
                 The response is stored as attributed synthetic evidence and may make dependent
                 findings stale until reassessed.
               </p>
+              {error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              )}
             </div>
             <DialogFooter className="mt-6">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={pending}
+                onClick={() => onOpenChange(false)}
+              >
                 Cancel
               </Button>
               <Button
                 type="submit"
-                disabled={response.trim().length < 10 || answeredBy.trim().length < 2}
+                disabled={pending || response.trim().length < 10 || answeredBy.trim().length < 2}
               >
-                Record answer
+                {pending && <Loader2Icon className="animate-spin" />}
+                {pending ? "Recording" : "Record answer"}
               </Button>
             </DialogFooter>
           </form>
@@ -387,16 +447,21 @@ export function OfficerDecisionDialog({
   caseData,
   onOpenChange,
   onSubmit,
+  busy = false,
 }: {
   action: OfficerAction | null;
   caseData: DpiaCaseSnapshot;
   onOpenChange: (open: boolean) => void;
   onSubmit: (
     decision: Omit<OfficerDecision, "processingModelVersion" | "policyPackVersion">,
-  ) => void;
+  ) => Promise<unknown>;
+  busy?: boolean;
 }) {
   const [outcome, setOutcome] = useState<OfficerDecision["outcome"]>(caseData.recommendation);
   const [rationale, setRationale] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = busy || submitting;
   useEffect(() => {
     if (!action) return;
     setOutcome(
@@ -412,18 +477,29 @@ export function OfficerDecisionDialog({
         : "",
     );
   }, [action, caseData.recommendation]);
+  useEffect(() => {
+    if (!action) setError(null);
+  }, [action]);
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!action) return;
-    onSubmit({
-      action,
-      outcome,
-      rationale,
-      officer: "Alex Morgan",
-      decidedAt: new Date().toISOString(),
-    });
-    onOpenChange(false);
+    if (!action || pending) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit({
+        action,
+        outcome,
+        rationale,
+        officer: "Alex Morgan",
+        decidedAt: new Date().toISOString(),
+      });
+      onOpenChange(false);
+    } catch (cause) {
+      setError(submissionError(cause));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const title =
@@ -436,7 +512,7 @@ export function OfficerDecisionDialog({
           : "Ask for more information";
 
   return (
-    <Dialog open={action !== null} onOpenChange={onOpenChange}>
+    <Dialog open={action !== null} onOpenChange={(next) => !pending && onOpenChange(next)}>
       <DialogContent className="max-w-xl">
         {action && (
           <form onSubmit={submit}>
@@ -495,17 +571,28 @@ export function OfficerDecisionDialog({
                   <span className="font-medium">{caseData.policyPack.version}</span>
                 </div>
               </div>
+              {error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              )}
             </div>
             <DialogFooter className="mt-6">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={pending}
+                onClick={() => onOpenChange(false)}
+              >
                 Cancel
               </Button>
               <Button
                 type="submit"
                 variant={action === "rejected" ? "destructive" : "default"}
-                disabled={rationale.trim().length < 10}
+                disabled={pending || rationale.trim().length < 10}
               >
-                Record decision
+                {pending && <Loader2Icon className="animate-spin" />}
+                {pending ? "Recording" : "Record decision"}
               </Button>
             </DialogFooter>
           </form>

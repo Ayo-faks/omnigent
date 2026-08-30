@@ -4,10 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as availableAgents from "@/hooks/useAvailableAgents";
 import * as caseSession from "@/lib/dpia/caseSession";
 import * as liveInvestigation from "@/lib/dpia/liveInvestigation";
-import { loadDpiaCase } from "@/lib/dpia/dpiaApi";
+import type * as DpiaApiModule from "@/lib/dpia/dpiaApi";
+import { loadDpiaCase, saveDpiaCase } from "@/lib/dpia/dpiaApi";
 import { DpiaCasePage } from "./DpiaCasePage";
 import { DpiaNewAssessmentPage } from "./DpiaNewAssessmentPage";
 import { DpiaPortfolioPage } from "./DpiaPortfolioPage";
+
+const { loadDurableMock, saveDurableMock } = vi.hoisted(() => ({
+  loadDurableMock: vi.fn(),
+  saveDurableMock: vi.fn(),
+}));
 
 vi.mock("@/lib/dpia/liveInvestigation", () => ({
   runLiveInvestigation: vi.fn(),
@@ -17,6 +23,11 @@ vi.mock("@/lib/dpia/caseSession", () => ({
 }));
 vi.mock("@/hooks/useAvailableAgents", () => ({
   useAvailableAgents: vi.fn(),
+}));
+vi.mock("@/lib/dpia/dpiaApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof DpiaApiModule>()),
+  loadDurableDpiaCase: loadDurableMock,
+  saveDurableDpiaCase: saveDurableMock,
 }));
 vi.mock("@/hooks/useDpiaRequests", () => ({
   useDpiaRequests: () => ({ data: [], isLoading: false, isError: false }),
@@ -38,6 +49,35 @@ function renderCase() {
 
 beforeEach(() => {
   localStorage.clear();
+  let revision = 1;
+  loadDurableMock.mockReset();
+  saveDurableMock.mockReset();
+  loadDurableMock.mockImplementation(async (caseId: string) => {
+    const loaded = loadDpiaCase(caseId);
+    return {
+      ...loaded,
+      revision,
+      createdBy: "officer@example.com",
+      updatedBy: "officer@example.com",
+      createdAt: 1,
+      updatedAt: revision,
+    };
+  });
+  saveDurableMock.mockImplementation(async (snapshot, expectedRevision) => {
+    if (expectedRevision !== revision) throw new Error("Unexpected test revision.");
+    const caseData = saveDpiaCase(snapshot);
+    revision += 1;
+    return {
+      caseData,
+      source: "persisted",
+      recoveredInvalidState: false,
+      revision,
+      createdBy: "officer@example.com",
+      updatedBy: "officer@example.com",
+      createdAt: 1,
+      updatedAt: revision,
+    };
+  });
   vi.mocked(liveInvestigation.runLiveInvestigation).mockReset();
   vi.mocked(caseSession.findOrCreateDpiaCaseSession).mockReset();
   vi.mocked(availableAgents.useAvailableAgents).mockReturnValue({
@@ -196,11 +236,13 @@ describe("DPIA case workflow", () => {
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Record decision" }));
 
-    expect(loadDpiaCase("student-success-alert").caseData.officerDecision).toMatchObject({
-      action: "more-information",
-      outcome: "more-information-required",
-      officer: "Alex Morgan",
-    });
+    await waitFor(() =>
+      expect(loadDpiaCase("student-success-alert").caseData.officerDecision).toMatchObject({
+        action: "more-information",
+        outcome: "more-information-required",
+        officer: "Alex Morgan",
+      }),
+    );
   });
 
   it("requires and persists a substantive rejection rationale", async () => {
@@ -219,11 +261,13 @@ describe("DPIA case workflow", () => {
     expect(recordButton).toBeEnabled();
     fireEvent.click(recordButton);
 
-    expect(loadDpiaCase("student-success-alert").caseData.officerDecision).toMatchObject({
-      action: "rejected",
-      outcome: "no-full-dpia-indicated",
-      officer: "Alex Morgan",
-    });
+    await waitFor(() =>
+      expect(loadDpiaCase("student-success-alert").caseData.officerDecision).toMatchObject({
+        action: "rejected",
+        outcome: "no-full-dpia-indicated",
+        officer: "Alex Morgan",
+      }),
+    );
   });
 
   it("invalidates an accepted decision and refuses export after a material edit", async () => {
@@ -241,6 +285,7 @@ describe("DPIA case workflow", () => {
       target: { value: "Predict disengagement and support attendance escalation decisions." },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
+    await screen.findByText("Processing model v4");
     fireEvent.click(screen.getByRole("button", { name: "Print decision pack" }));
 
     expect(

@@ -201,16 +201,6 @@ export function LoginPage() {
             {submitting ? "Signing in…" : "Sign in"}
           </Button>
         </form>
-
-        <p className="text-center text-sm text-muted-foreground">
-          On a fresh install you set the first admin's password yourself — no credential is
-          auto-generated. A brand-new instance shows a Create-admin form instead of this one; the
-          password can also be pre-seeded with{" "}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono">
-            OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD
-          </code>
-          .
-        </p>
       </div>
     </div>
   );
