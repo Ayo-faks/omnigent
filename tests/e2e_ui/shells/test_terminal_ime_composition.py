@@ -18,8 +18,9 @@ Two defects can bite the embedded terminal's input path:
    every inbound frame now goes through xterm's ordered public write queue,
    the path its composition handling was built against.
 
-Both journeys are driven here without a real IME: dispatching ``compositionstart`` / ``compositionupdate`` at
-``term.textarea`` puts xterm's ``CompositionHelper`` into a genuine composing
+Both journeys are driven here without a real IME: dispatching
+``compositionstart`` / ``compositionupdate`` at ``term.textarea`` puts
+xterm's ``CompositionHelper`` into a genuine composing
 state (its listeners do not check ``isTrusted``), and the observable contract
 is read off the attach WebSocket's sent/received frames plus xterm's
 ``.composition-view`` preedit overlay.
@@ -153,8 +154,7 @@ def test_shift_enter_mid_composition_commits_composed_text(
     # reasons rather than the bug.
     page.keyboard.type("q")
     assert _wait_for_sent_bytes(page, sent, b"q", timeout_s=10), (
-        "attach WebSocket frame capture saw no keystroke frame; "
-        f"sent so far: {b''.join(sent)!r}"
+        f"attach WebSocket frame capture saw no keystroke frame; sent so far: {b''.join(sent)!r}"
     )
 
     _begin_composition(textarea, COMPOSED_TEXT)
@@ -184,9 +184,7 @@ def test_shift_enter_mid_composition_commits_composed_text(
         }""",
     )
 
-    committed = _wait_for_sent_bytes(
-        page, sent, COMPOSED_TEXT.encode("utf-8"), timeout_s=5
-    )
+    committed = _wait_for_sent_bytes(page, sent, COMPOSED_TEXT.encode("utf-8"), timeout_s=5)
     all_sent = b"".join(sent)
     assert committed, (
         "IME-composed text was dropped: it never reached the PTY after "
