@@ -485,6 +485,31 @@ describe("quick pin/unpin hover button", () => {
     );
   });
 
+  it("keeps the session-row pin and kebab visible without hover on a touch tablet", () => {
+    // The row's quick-pin and actions kebab must match the header actions'
+    // capability gating: fade-until-hover only where hover exists. On a
+    // hover-incapable md+ device (touch tablet) a bare `md:opacity-0` leaves
+    // the controls permanently invisible — there is no hover to reveal them —
+    // so the fade and its hover/focus reveals must all be gated on
+    // `[@media(hover:hover)]`, never on viewport width alone.
+    renderSidebar();
+
+    const pin = screen.getByTestId("quick-pin-conversation");
+    expect(pin).toHaveClass(
+      "[@media(hover:hover)]:md:opacity-0",
+      "[@media(hover:hover)]:md:group-hover:opacity-100",
+    );
+    expect(pin).not.toHaveClass("md:opacity-0");
+
+    const kebab = screen.getByTestId("conversation-actions");
+    expect(kebab).toHaveClass(
+      "[@media(hover:hover)]:md:opacity-0",
+      "[@media(hover:hover)]:md:group-hover:opacity-100",
+      "[@media(hover:hover)]:md:aria-expanded:opacity-100",
+    );
+    expect(kebab).not.toHaveClass("md:opacity-0");
+  });
+
   it("keeps Pinned and Sessions carets visible on a wide coarse-pointer device", () => {
     vi.stubGlobal("innerWidth", 810);
     mocks.anyCoarse = true;

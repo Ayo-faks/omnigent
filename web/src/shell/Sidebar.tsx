@@ -199,11 +199,13 @@ import { SidebarServerPicker } from "./SidebarServerPicker";
 import { SIDEBAR_ROW } from "./sidebarStyles";
 
 // Positioning for a row's trailing session-state badge. Anchored at the row's
-// right-1 edge in every viewport: on desktop it fades on hover so the pin +
-// kebab take its place; on mobile those controls are gone, so the badge simply
-// holds the right edge.
+// right-1 edge: on hover-capable desktop it fades on hover so the pin + kebab
+// take its place; on mobile those controls are gone, so the badge simply holds
+// the right edge. Hover-incapable md+ devices (touch tablets) keep the
+// controls persistently visible instead, so the badge shifts left of them
+// (right-14 clears the pin + kebab column) rather than losing the state.
 const SESSION_STATE_SLOT_CLASS =
-  "-translate-y-1/2 pointer-events-none absolute top-1/2 right-1 flex h-5 items-center transition-opacity md:group-hover:opacity-0 md:group-has-[:focus-visible]:opacity-0 md:group-has-[[aria-expanded=true]]:opacity-0";
+  "-translate-y-1/2 pointer-events-none absolute top-1/2 right-1 flex h-5 items-center transition-opacity md:group-hover:opacity-0 md:group-has-[:focus-visible]:opacity-0 md:group-has-[[aria-expanded=true]]:opacity-0 [@media(hover:none)]:md:right-14";
 
 // Small markers (running/starting/unseen dot, or the draft pencil when there's
 // no session state) get a fixed size-6 centered box so their glyph lands 16px
@@ -3606,6 +3608,16 @@ function ConversationRow({
         // rest, before hover reveals the controls.
         !selectionMode &&
           (sessionState?.kind === "awaiting" ? "pr-29" : hasTrailingIndicator ? "pr-8" : "pr-2"),
+        // Hover-incapable md+ devices (touch tablets) keep the controls
+        // persistently visible with the badge shifted left of them, so the
+        // reserve is persistent too: controls (pr-14) plus the badge's own
+        // width when one is present.
+        !selectionMode &&
+          (sessionState?.kind === "awaiting"
+            ? "[@media(hover:none)]:md:pr-42"
+            : hasTrailingIndicator
+              ? "[@media(hover:none)]:md:pr-21"
+              : "[@media(hover:none)]:md:pr-14"),
         // The narrowed reserve must track exactly when the trailing controls
         // appear and the state marker fades — both keyed on `:focus-visible`.
         // `focus-within` also fires for a plain click, which shrank the reserve
@@ -3887,7 +3899,10 @@ function ConversationRow({
                 className={cn(
                   // Desktop-only quick affordance: hidden on mobile (the kebab's
                   // Pin item below covers that), hover/focus-revealed from `md`
-                  // up. Pinned rows no longer keep a persistent pin marker, since
+                  // up on hover-capable displays and persistently visible where
+                  // hover doesn't exist (touch tablets), matching the section
+                  // headers' capability gating. Pinned rows no longer keep a
+                  // persistent pin marker, since
                   // the "Pinned" section header (and pinned-first ordering inside
                   // a project) already conveys the pinned state. Revealed glyph:
                   // unpin if pinned, pin otherwise.
@@ -3900,8 +3915,8 @@ function ConversationRow({
                   // display when revealing it.
                   "text-muted-foreground transition-opacity",
                   "hidden md:inline-flex",
-                  "md:opacity-0 md:group-hover:opacity-100",
-                  "md:group-has-[:focus-visible]:opacity-100 md:group-has-[[aria-expanded=true]]:opacity-100",
+                  "[@media(hover:hover)]:md:opacity-0 [@media(hover:hover)]:md:group-hover:opacity-100",
+                  "[@media(hover:hover)]:md:group-has-[:focus-visible]:opacity-100 [@media(hover:hover)]:md:group-has-[[aria-expanded=true]]:opacity-100",
                 )}
                 onClick={(e) => {
                   // Keep the toggle click off the surrounding Link (no navigation).
@@ -3925,13 +3940,15 @@ function ConversationRow({
                   size="icon-xs"
                   aria-label="Conversation actions"
                   data-testid="conversation-actions"
-                  // The chat header owns these actions on mobile. On desktop the
-                  // row trigger appears on hover, focus, or while its menu is open.
+                  // The chat header owns these actions on mobile. On
+                  // hover-capable desktop the row trigger appears on hover,
+                  // focus, or while its menu is open; without hover (touch
+                  // tablets) it stays visible — there is no hover to reveal it.
                   className={cn(
                     "text-muted-foreground transition-opacity",
                     "hidden md:inline-flex",
-                    "md:opacity-0 md:group-hover:opacity-100 md:group-has-[:focus-visible]:opacity-100",
-                    "md:aria-expanded:opacity-100",
+                    "[@media(hover:hover)]:md:opacity-0 [@media(hover:hover)]:md:group-hover:opacity-100 [@media(hover:hover)]:md:group-has-[:focus-visible]:opacity-100",
+                    "[@media(hover:hover)]:md:aria-expanded:opacity-100",
                   )}
                   onClick={(e) => {
                     // Keep the trigger click from bubbling into the Link.

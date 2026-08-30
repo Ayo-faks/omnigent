@@ -521,6 +521,22 @@ describe("Sidebar session list", () => {
     expect(slot).toHaveClass("right-1", "w-6", "justify-center");
   });
 
+  it("shifts a row's dot marker clear of the persistent touch-tablet controls", () => {
+    // On a hover-incapable md+ device the pin + kebab stay visible (there is
+    // no hover to reveal them), so the badge can't share their right-1 anchor:
+    // it moves left of the control column (right-14) instead of being
+    // hover-faded away, and the row reserves width for both persistently.
+    mockConversations([
+      conv("conv_running", "Claude Code", { title: "Running row", status: "running" }),
+    ]);
+    renderSidebar();
+
+    const slot = screen.getByTestId("session-state-badge").parentElement!;
+    expect(slot).toHaveClass("[@media(hover:none)]:md:right-14");
+    const row = screen.getByRole("link", { name: /Running row/ });
+    expect(row.className).toContain("[@media(hover:none)]:md:pr-21");
+  });
+
   it("does not constrain a row's awaiting pill to the dot slot", () => {
     // The "Needs response" pill is wider than the dot markers; the size-6 box
     // would clip its label, so the pill keeps its natural width.
@@ -2115,9 +2131,9 @@ describe("Sidebar pin marker visibility", () => {
 
     const pinned = screen.getByText("Pinned").closest("section")!;
     const pinButton = within(pinned).getByTestId("quick-pin-conversation");
-    // Hover-gated like every other row (no persistent opacity-100 marker), and
-    // the control unpins.
-    expect(pinButton.className).toContain("md:opacity-0");
+    // Hover-gated like every other row (no persistent opacity-100 marker) —
+    // only where hover exists — and the control unpins.
+    expect(pinButton.className).toContain("[@media(hover:hover)]:md:opacity-0");
     expect(pinButton).toHaveAttribute("aria-label", "Unpin conversation");
   });
 
@@ -2126,8 +2142,9 @@ describe("Sidebar pin marker visibility", () => {
     renderSidebar();
 
     const pinButton = screen.getByTestId("quick-pin-conversation");
-    // Unpinned: hover-gated reveal (opacity-0 until group-hover).
-    expect(pinButton.className).toContain("md:opacity-0");
+    // Unpinned: hover-gated reveal (opacity-0 until group-hover), gated on
+    // hover capability so touch tablets keep the control visible.
+    expect(pinButton.className).toContain("[@media(hover:hover)]:md:opacity-0");
   });
 });
 
