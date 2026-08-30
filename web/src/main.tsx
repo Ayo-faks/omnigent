@@ -115,7 +115,7 @@ function RootApp({ initialInfo }: { initialInfo: ServerInfo }) {
     if (info.branding?.app_name) document.title = info.branding.app_name;
     const faviconUrl = info.branding?.logos.favicon;
     if (!faviconUrl) return;
-    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    let link = document.querySelector<HTMLLinkElement>("#app-favicon");
     if (!link) {
       link = document.createElement("link");
       link.rel = "icon";

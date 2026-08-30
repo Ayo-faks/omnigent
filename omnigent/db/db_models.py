@@ -1595,3 +1595,595 @@ class SqlScheduledTaskRun(OmnigentBase):
             "conversation_id",
         ),
     )
+
+
+class SqlBrainInstallation(OmnigentBase):
+    __tablename__ = "brain_installations"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    repo_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    repo_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    gbrain_state_path: Mapped[str] = mapped_column(String(2048), nullable=False)
+    mcp_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    mcp_auth_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ready")
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('provisioning', 'ready', 'degraded', 'disabled')",
+            name="ck_brain_installations_status",
+        ),
+        UniqueConstraint("workspace_id", name="uq_brain_installations_workspace"),
+    )
+
+
+class SqlIntegrationConnection(OmnigentBase):
+    __tablename__ = "integration_connections"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    credential_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_label: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    granted_scopes_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="connected")
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('google', 'slack', 'notion')",
+            name="ck_integration_connections_provider",
+        ),
+        CheckConstraint(
+            "status IN ('connected', 'needs_reconnect', 'disconnected', 'error')",
+            name="ck_integration_connections_status",
+        ),
+        Index(
+            "ix_integration_connections_provider",
+            "workspace_id",
+            "provider",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+class SqlIntegrationSelection(OmnigentBase):
+    __tablename__ = "integration_selections"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    connection_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    external_resource_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    resource_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    transform_profile: Mapped[str] = mapped_column(String(128), nullable=False)
+    visibility_class: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="org-shared"
+    )
+    rrule: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, server_default="UTC")
+    state: Mapped[str] = mapped_column(String(32), nullable=False, server_default="active")
+    last_synced_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "visibility_class = 'org-shared'",
+            name="ck_integration_selections_visibility",
+        ),
+        CheckConstraint(
+            "state IN ('active', 'paused', 'disconnected')",
+            name="ck_integration_selections_state",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "connection_id",
+            "external_resource_id",
+            name="uq_integration_selections_resource",
+        ),
+        Index(
+            "ix_integration_selections_connection",
+            "workspace_id",
+            "connection_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+class SqlIntegrationSyncRun(OmnigentBase):
+    __tablename__ = "integration_sync_runs"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    connection_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    selection_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    changed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    deleted_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gbrain_result_json: Mapped[str | None] = mapped_column(CompressedText, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    scheduled_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'skipped')",
+            name="ck_integration_sync_runs_status",
+        ),
+        CheckConstraint(
+            "trigger IN ('manual', 'schedule', 'retry')",
+            name="ck_integration_sync_runs_trigger",
+        ),
+        Index(
+            "ix_integration_sync_runs_selection",
+            "workspace_id",
+            "selection_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+class SqlOAuthStateNonce(OmnigentBase):
+    __tablename__ = "oauth_state_nonces"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    nonce_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (Index("ix_oauth_state_nonces_expiry", "workspace_id", "expires_at"),)
+
+
+class SqlDpiaCase(OmnigentBase):
+    __tablename__ = "dpia_cases"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    case_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(CompressedText, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="ck_dpia_cases_revision"),
+        Index("ix_dpia_cases_updated", "workspace_id", "updated_at", "case_id"),
+    )
+
+
+class SqlDpiaCaseRevision(OmnigentBase):
+    __tablename__ = "dpia_case_revisions"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    case_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_json: Mapped[str] = mapped_column(CompressedText, nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="ck_dpia_case_revisions_revision"),
+        Index(
+            "ix_dpia_case_revisions_case",
+            "workspace_id",
+            "case_id",
+            "revision",
+        ),
+    )
+
+
+class SqlMemoryCaptureIntent(OmnigentBase):
+    __tablename__ = "memory_capture_intents"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    source_item_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    account_subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    targets_json: Mapped[str] = mapped_column(CompressedText, nullable=False)
+    targets_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    response_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    completed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'cancelled')",
+            name="ck_memory_capture_intents_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "source_item_id",
+            name="uq_memory_capture_intents_source_item",
+        ),
+        Index(
+            "ix_memory_capture_intents_expiry",
+            "workspace_id",
+            "status",
+            "expires_at",
+        ),
+    )
+
+
+class SqlMemoryCaptureJob(OmnigentBase):
+    __tablename__ = "memory_capture_jobs"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    intent_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    response_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_item_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    account_subject: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    capture_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    phase: Mapped[str] = mapped_column(String(16), nullable=False, server_default="extraction")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
+    operation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
+    next_attempt_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(CompressedText, nullable=True)
+    receipt_json: Mapped[str | None] = mapped_column(CompressedText, nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope_kind IN ('personal', 'conversation', 'org')",
+            name="ck_memory_capture_jobs_scope_kind",
+        ),
+        CheckConstraint(
+            "capture_mode IN ('review', 'automatic')",
+            name="ck_memory_capture_jobs_capture_mode",
+        ),
+        CheckConstraint(
+            "phase IN ('extraction', 'write')",
+            name="ck_memory_capture_jobs_phase",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'pending_review', "
+            "'retryable', 'succeeded', 'dead_letter', 'cancelled')",
+            name="ck_memory_capture_jobs_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "intent_id",
+            "provider",
+            "target_hash",
+            name="uq_memory_capture_jobs_target",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "operation_id",
+            name="uq_memory_capture_jobs_operation",
+        ),
+        Index(
+            "ix_memory_capture_jobs_claim",
+            "status",
+            "next_attempt_at",
+            "created_at",
+            "workspace_id",
+            "id",
+        ),
+        Index(
+            "ix_memory_capture_jobs_conversation",
+            "workspace_id",
+            "conversation_id",
+            "response_id",
+        ),
+    )
+
+
+class SqlMemoryCaptureAttempt(OmnigentBase):
+    __tablename__ = "memory_capture_attempts"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    job_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error: Mapped[str | None] = mapped_column(CompressedText, nullable=True)
+    receipt_json: Mapped[str | None] = mapped_column(CompressedText, nullable=True)
+    started_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN ('extraction', 'write')",
+            name="ck_memory_capture_attempts_phase",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_memory_capture_attempts_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "job_id",
+            "attempt_number",
+            name="uq_memory_capture_attempts_number",
+        ),
+        Index(
+            "ix_memory_capture_attempts_job",
+            "workspace_id",
+            "job_id",
+            "attempt_number",
+        ),
+    )
+
+
+class SqlMemoryCaptureReview(OmnigentBase):
+    __tablename__ = "memory_capture_reviews"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    job_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    candidates_json: Mapped[str] = mapped_column(CompressedText, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    decided_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'cancelled')",
+            name="ck_memory_capture_reviews_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "job_id",
+            name="uq_memory_capture_reviews_job",
+        ),
+        Index(
+            "ix_memory_capture_reviews_status",
+            "workspace_id",
+            "status",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+class SqlMemoryErasureRequest(OmnigentBase):
+    __tablename__ = "memory_erasure_requests"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_subject: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    requested_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    completed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope_kind IN ('personal', 'conversation', 'org')",
+            name="ck_memory_erasure_requests_scope_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'in_progress', 'completed', 'blocked', 'failed')",
+            name="ck_memory_erasure_requests_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "operation_id",
+            name="uq_memory_erasure_requests_operation",
+        ),
+        Index(
+            "ix_memory_erasure_requests_subject",
+            "workspace_id",
+            "requested_by",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+class SqlMemoryErasureTask(OmnigentBase):
+    __tablename__ = "memory_erasure_tasks"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    erasure_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    operation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
+    next_attempt_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    receipt_json: Mapped[str | None] = mapped_column(CompressedText, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'retryable', 'completed', "
+            "'unsupported', 'dead_letter', 'cancelled')",
+            name="ck_memory_erasure_tasks_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "erasure_id",
+            "provider",
+            name="uq_memory_erasure_tasks_provider",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "operation_id",
+            name="uq_memory_erasure_tasks_operation",
+        ),
+        Index(
+            "ix_memory_erasure_tasks_claim",
+            "status",
+            "next_attempt_at",
+            "created_at",
+            "workspace_id",
+            "id",
+        ),
+        Index(
+            "ix_memory_erasure_tasks_request",
+            "workspace_id",
+            "erasure_id",
+            "provider",
+        ),
+    )
+
+
+class SqlMemoryErasureAttempt(OmnigentBase):
+    __tablename__ = "memory_erasure_attempts"
+
+    workspace_id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        nullable=False,
+        server_default="0",
+        default=current_workspace_id,
+    )
+    id: Mapped[str] = mapped_column(Uuid16, primary_key=True)
+    task_id: Mapped[str] = mapped_column(Uuid16, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed')",
+            name="ck_memory_erasure_attempts_status",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "task_id",
+            "attempt_number",
+            name="uq_memory_erasure_attempts_number",
+        ),
+        Index(
+            "ix_memory_erasure_attempts_task",
+            "workspace_id",
+            "task_id",
+            "attempt_number",
+        ),
+    )

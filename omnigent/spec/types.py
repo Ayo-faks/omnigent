@@ -1414,6 +1414,42 @@ class GuardrailsSpec:
     ask_timeout: int = DEFAULT_ASK_TIMEOUT
 
 
+MemoryRolloutMode = Literal[
+    "off",
+    "shadow",
+    "read_only",
+    "explicit_capture",
+    "automatic_capture",
+]
+MemoryProviderName = Literal["qm-notebook", "hindsight", "company-brain"]
+MemoryScopeKind = Literal["personal", "conversation", "org"]
+MemoryRecallMode = Literal["off", "ambient", "conditional", "explicit"]
+MemoryCaptureMode = Literal["off", "explicit", "review", "automatic"]
+
+
+@dataclass
+class MemoryProviderSpec:
+    """Policy for one memory provider in an agent's memory plane."""
+
+    provider: MemoryProviderName
+    scopes: list[MemoryScopeKind]
+    recall: MemoryRecallMode = "off"
+    capture: MemoryCaptureMode = "off"
+    fail_open: bool = True
+    timeout_ms: int = 1_000
+    max_results: int = 8
+    max_chars: int = 4_000
+
+
+@dataclass
+class MemorySpec:
+    """Agent-level rollout and routing policy for framework memory."""
+
+    mode: MemoryRolloutMode = "off"
+    max_context_chars: int = 6_000
+    providers: list[MemoryProviderSpec] = field(default_factory=list)
+
+
 @dataclass
 class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (see below)
     """
@@ -1588,4 +1624,6 @@ class AgentSpec:  # type: ignore[explicit-any]  # params: dict[str, Any] field (
     timers: bool = False
     spawn: bool = False
     agent_session_sharing: SharePolicy = SharePolicy.NONE
+    memory: MemorySpec | None = None
+    company_brain: bool = False
     source_rel_dir: str | None = field(default=None, compare=False)

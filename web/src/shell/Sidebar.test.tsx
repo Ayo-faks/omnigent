@@ -15,6 +15,7 @@ import type { Conversation } from "@/hooks/useConversations";
 import { FALLBACK_SERVER_INFO, type ServerInfo } from "@/lib/capabilities";
 import { clearSessionDrafts, setSessionDraft } from "@/lib/sessionDrafts";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
+import { createStudentSuccessAlertSeed } from "@/lib/dpia/seed";
 
 // Project mocks are declared via vi.hoisted so they exist before the hoisted
 // vi.mock factory runs. projectsMock is mutated per-test to drive project
@@ -30,6 +31,7 @@ const {
   pinnedIdsRef,
   projectSessionsMock,
   useHostsMock,
+  useDpiaCasesMock,
 } = vi.hoisted(() => ({
   projectsMock: [] as string[],
   moveToProjectSpy: vi.fn(),
@@ -56,10 +58,14 @@ const {
   // prove a folder fetches its members independently of the global window.
   projectSessionsMock: { current: {} as Record<string, unknown[]> },
   useHostsMock: vi.fn(),
+  useDpiaCasesMock: vi.fn(),
 }));
 
 vi.mock("@/hooks/useHosts", () => ({
   useHosts: useHostsMock,
+}));
+vi.mock("@/hooks/useDpiaCases", () => ({
+  useDpiaCases: useDpiaCasesMock,
 }));
 
 // Mutation hooks are only invoked on row actions; stub them. useConversations
@@ -267,6 +273,8 @@ beforeEach(() => {
   useConvMock.mockReset();
   useHostsMock.mockReset();
   useHostsMock.mockReturnValue({ data: [] });
+  useDpiaCasesMock.mockReset();
+  useDpiaCasesMock.mockReturnValue([]);
   localStorage.clear();
   clearSessionDrafts();
   projectsMock.length = 0;
@@ -676,6 +684,16 @@ describe("Sidebar session list", () => {
     expect(badge.className).not.toContain("brand-accent");
   });
 
+  it("adds DPIA attention items to the Inbox badge", () => {
+    useDpiaCasesMock.mockReturnValue([createStudentSuccessAlertSeed()]);
+    mockConversations([conv("conv_awaiting", "Claude Code", { pending_elicitations_count: 2 })]);
+    renderSidebar();
+
+    expect(
+      within(screen.getByTestId("inbox-button")).getByLabelText("3 inbox items waiting"),
+    ).toBeInTheDocument();
+  });
+
   it("lets the active Inbox row show through the count badge", () => {
     // On /inbox the row itself paints the translucent --sidebar-active wash.
     // The badge keeps the shared active foreground but stays transparent so
@@ -782,6 +800,21 @@ describe("Sidebar session list", () => {
       "dark:hover:bg-[var(--sidebar-active)]",
       "dark:hover:text-[var(--sidebar-active-foreground)]",
     );
+  });
+
+  it("renders and highlights the DPIA desk across nested case routes", () => {
+    mockConversations(THREE_TYPE_CONVERSATIONS);
+    renderSidebar(true, "/dpia/cases/student-success-alert");
+
+    const dpia = screen.getByTestId("dpia-nav");
+    expect(dpia).toHaveAttribute("href", "/dpia");
+    expect(dpia).toHaveTextContent("DPIA desk");
+    expect(dpia).toHaveClass(
+      "bg-[var(--sidebar-active)]",
+      "dark:hover:bg-[var(--sidebar-active)]",
+      "dark:hover:text-[var(--sidebar-active-foreground)]",
+    );
+    expect(screen.getByTestId("new-chat-button")).not.toHaveClass("bg-[var(--sidebar-active)]");
   });
 
   it("does NOT close the sidebar when the footer Settings is tapped", () => {

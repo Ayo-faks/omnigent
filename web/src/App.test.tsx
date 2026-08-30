@@ -22,6 +22,27 @@ vi.mock("@/pages/SettingsPage", async () => {
     SettingsPage: () => <div data-testid="settings-location">{useLocation().pathname}</div>,
   };
 });
+vi.mock("@/pages/ApprovePage", () => ({ ApprovePage: () => <div>approve page</div> }));
+vi.mock("@/pages/InboxPage", () => ({ InboxPage: () => <div>inbox page</div> }));
+vi.mock("@/pages/TasksPage", () => ({ TasksPage: () => <div>tasks page</div> }));
+vi.mock("@/pages/dpia/DpiaPortfolioPage", () => ({
+  DpiaPortfolioPage: () => <div>dpia portfolio page</div>,
+}));
+vi.mock("@/pages/dpia/DpiaNewAssessmentPage", () => ({
+  DpiaNewAssessmentPage: () => <div>dpia new page</div>,
+}));
+vi.mock("@/pages/dpia/DpiaCasePage", () => ({
+  DpiaCasePage: () => <div>dpia case page</div>,
+}));
+vi.mock("@/pages/dpia/DpiaRequestPage", () => ({
+  DpiaRequestPage: () => <div>dpia request page</div>,
+}));
+vi.mock("@/pages/dpia/DpiaRequestReviewPage", () => ({
+  DpiaRequestReviewPage: () => <div>dpia request review page</div>,
+}));
+vi.mock("@/pages/dpia/DpiaRespondPage", () => ({
+  DpiaRespondPage: () => <div>dpia respond page</div>,
+}));
 
 import App from "./App";
 
@@ -76,5 +97,33 @@ describe("Settings routes", () => {
     expect(await screen.findByTestId("settings-location")).toHaveTextContent(
       "/settings/appearance",
     );
+  });
+});
+
+describe("application route table regression", () => {
+  it.each([
+    ["/", "chat page"],
+    ["/c/conv_original", "chat page"],
+    ["/inbox", "inbox page"],
+    ["/tasks", "tasks page"],
+    ["/usage", "usage page"],
+    ["/approve/conv_original/elicit_original", "approve page"],
+    ["/dpia", "dpia portfolio page"],
+    ["/dpia/new", "dpia new page"],
+    ["/dpia/request", "dpia request page"],
+    ["/dpia/requests/req-vendor-abc", "dpia request review page"],
+    ["/dpia/respond/session-1", "dpia respond page"],
+    ["/dpia/cases/student-success-alert", "dpia case page"],
+  ])("keeps %s registered", async (path, expectedPage) => {
+    render(
+      <CapabilitiesProvider info={{ ...FALLBACK_SERVER_INFO, features: { usage_page: true } }}>
+        <MemoryRouter initialEntries={[path]}>
+          <App />
+        </MemoryRouter>
+      </CapabilitiesProvider>,
+    );
+
+    expect(await screen.findByText(expectedPage)).toBeInTheDocument();
+    expect(screen.queryByText("not found")).toBeNull();
   });
 });
