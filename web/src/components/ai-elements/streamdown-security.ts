@@ -65,6 +65,65 @@ interface HastElement {
 export const CHAT_LINK_SAFETY: LinkSafetyConfig = { enabled: false };
 
 /**
+ * Rewrites every `file://` link naming a local absolute path to that plain
+ * path, so it survives sanitize and reaches {@link markWorkspaceFileLinks}.
+ *
+ * Agents routinely link a file they just wrote as a `file://` URI
+ * (`[report.md](file:///abs/ws/report.md)`). Such a URI names the *runner
+ * host's* disk, which the browser can never reach — and sanitize strips the
+ * `file:` href (not in its protocol allowlist) before the marking pass runs,
+ * so the link rendered as an inert " [blocked]" span: the user could not open
+ * the created file at all. Rewritten to the plain filesystem path, the link
+ * flows through the same workspace-file handover as an absolute-path link and
+ * opens in the FileViewer, which fetches over the session connection.
+ *
+ * Must run *before* Streamdown's sanitize step. Only URIs that can name a
+ * local file are rewritten: a host (UNC share), a query/fragment, or a
+ * multi-slash path (which would read as a protocol-relative URL) all stay
+ * `file:` hrefs for sanitize/harden to strip and block exactly as before.
+ */
+export function rewriteFileUriLinks() {
+  return (tree: HastElement) => {
+    visitElements(tree, (node) => {
+      if (node.tagName !== "a") return;
+      const href = node.properties?.href;
+      if (typeof href !== "string" || !/^file:/i.test(href)) return;
+      const path = fileUriToLocalPath(href);
+      if (!path) return;
+      node.properties = { ...node.properties, href: path };
+    });
+  };
+}
+
+/**
+ * The local absolute filesystem path a `file://` URI names, or null when the
+ * URI cannot safely be treated as one (a UNC host, a query/fragment, an
+ * undecodable escape, a decoded form that would change meaning as an href,
+ * or a parse failure).
+ */
+function fileUriToLocalPath(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  // A host names another machine's share, and a query/fragment is not part
+  // of a filename — neither can be a workspace file.
+  if (url.protocol !== "file:" || url.hostname || url.search || url.hash) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(url.pathname);
+  } catch {
+    return null;
+  }
+  // The decoded path becomes an href: `//…` would read as a protocol-relative
+  // URL, and a literal `?`/`#` would split it. Leave those blocked.
+  if (!path.startsWith("/") || path.startsWith("//") || /[?#]/.test(path)) return null;
+  return path;
+}
+
+/**
  * Moves the href of every file-path link onto {@link WORKSPACE_FILE_LINK_ATTR}
  * and parks the href on an inert fragment.
  *
@@ -124,6 +183,12 @@ function createStreamdownRehypePlugins(markFileLinks: boolean): StreamdownRehype
   const plugins: StreamdownRehypePlugins = [];
 
   for (const [key, plugin] of Object.entries(defaultRehypePlugins)) {
+    // Before sanitize, which would strip a `file:` href (not in its protocol
+    // allowlist) with nothing left to hand to the marking pass below.
+    if (key === "sanitize" && markFileLinks) {
+      plugins.push(rewriteFileUriLinks);
+    }
+
     if (key !== "harden") {
       plugins.push(plugin);
       continue;
