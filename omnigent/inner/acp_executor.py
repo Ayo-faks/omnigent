@@ -1534,7 +1534,11 @@ class AcpExecutor(Executor):
                 stale = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if not isinstance(stale, dict):
+                continue
             if stale.get("method") == _CLIENT_NOTIFICATION_SESSION_UPDATE:
+                # A pre-prompt model report (e.g. sent right after session/new)
+                # must not be lost to the drain: note it before discarding.
                 update = (stale.get("params") or {}).get("update")
                 if (
                     isinstance(update, dict)
