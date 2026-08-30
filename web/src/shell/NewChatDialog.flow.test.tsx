@@ -1827,14 +1827,12 @@ describe("sanitizeInitialPrompt", () => {
   });
 });
 
-describe("create-session input on touch-primary devices", () => {
-  it("Enter inserts a newline instead of submitting when the pointer is coarse", async () => {
-    // Phones have no practical Shift+Enter, so an Enter-submit in the
-    // create-session composer was an unrecoverable accidental send. On
-    // coarse-pointer devices the composer must let Enter fall through to the
-    // textarea's native newline; sending stays an explicit tap.
+describe("create-session input on mobile viewports", () => {
+  it("Enter inserts a newline instead of submitting", async () => {
+    // Mobile layout owns this behavior regardless of which keyboard produced
+    // the event. Enter stays native to the textarea; Send remains explicit.
     const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation((query: string) =>
-      query.includes("pointer: coarse")
+      query.includes("max-width")
         ? ({
             matches: true,
             media: query,

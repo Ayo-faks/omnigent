@@ -1,7 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { KeyboardShortcutsDialog, openKeyboardShortcuts } from "./KeyboardShortcutsDialog";
+import {
+  KeyboardShortcutsDialog,
+  KeyboardShortcutsList,
+  openKeyboardShortcuts,
+} from "./KeyboardShortcutsDialog";
 
 // The pinned-session row shows in both shells; only its chord differs (Alt in
 // the browser). Default the mock to browser (false); flip per-test for native.
@@ -15,13 +19,40 @@ vi.mock("@/lib/nativeBridge", () => ({
 
 beforeEach(() => {
   isNativeShell.mockReturnValue(false);
+  localStorage.clear();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 // jsdom's navigator is non-mac, so the modifier glyph renders as "Ctrl".
 function toggleViaHotkey() {
   fireEvent.keyDown(window, { key: "/", ctrlKey: true });
 }
+
+function keysFor(label: string): string[] {
+  const row = screen.getByText(label).closest("li");
+  expect(row).toBeTruthy();
+  return Array.from(row!.querySelectorAll('[data-slot="kbd"]')).map((key) => key.textContent ?? "");
+}
+
+describe("KeyboardShortcutsList composer rows", () => {
+  it("shows Enter to send and Shift+Enter for a new line by default", () => {
+    render(<KeyboardShortcutsList />);
+
+    expect(keysFor("Send message")).toEqual(["↵"]);
+    expect(keysFor("New line in message")).toEqual(["⇧", "↵"]);
+  });
+
+  it("shows Ctrl+Enter to send and Enter for a new line in alternate mode", () => {
+    localStorage.setItem("omnigent:composer-submit-with-mod-enter", "true");
+    render(<KeyboardShortcutsList />);
+
+    expect(keysFor("Send message")).toEqual(["Ctrl", "↵"]);
+    expect(keysFor("New line in message")).toEqual(["↵"]);
+  });
+});
 
 describe("KeyboardShortcutsDialog", () => {
   it("renders nothing until opened", () => {

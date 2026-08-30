@@ -275,6 +275,24 @@ function installUpdateBridge(config: UpdateConfig = DEFAULT_UPDATE_CONFIG) {
 }
 
 describe("SettingsPage", () => {
+  it("renders composer shortcut guidance as two accessible lines", () => {
+    renderPage("/settings/general");
+    const toggle = screen.getByTestId("composer-submit-with-mod-enter-toggle");
+    const descriptionId = toggle.getAttribute("aria-describedby");
+    const description = descriptionId ? document.getElementById(descriptionId) : null;
+
+    expect(description).toBeTruthy();
+    if (description === null) throw new Error("Missing composer shortcut description");
+    expect(Array.from(description.children).map((line) => line.tagName)).toEqual(["P", "P"]);
+    expect(
+      within(description).getByText("Off: Enter submits and Shift+Enter inserts a newline."),
+    ).toBeInTheDocument();
+    expect(
+      within(description).getByText(/On: Enter inserts a newline and (?:⌘|Ctrl)\+Enter submits\./),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-labelledby");
+  });
+
   it("renders the Appearance section and applies a theme on card click", () => {
     renderPage("/settings/appearance");
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
