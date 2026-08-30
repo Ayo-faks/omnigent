@@ -148,9 +148,7 @@ async def test_worker_extracts_exact_episode_then_writes_only_after_approval(
         requested_by="alice",
     )
     assert pending_job.id == job.id
-    assert [candidate.text for candidate in review.candidates] == [
-        "Prefers concise answers"
-    ]
+    assert [candidate.text for candidate in review.candidates] == ["Prefers concise answers"]
     assert review.candidates[0].source_item_ids == (items[0].id, items[1].id)
     assert provider.requests == []
 

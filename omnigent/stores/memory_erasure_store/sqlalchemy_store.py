@@ -396,9 +396,7 @@ class SqlAlchemyMemoryErasureStore:
                 worker_id,
                 attempt_number,
             )
-            row.status = (
-                "dead_letter" if row.attempt_count >= row.max_attempts else "retryable"
-            )
+            row.status = "dead_letter" if row.attempt_count >= row.max_attempts else "retryable"
             row.next_attempt_at = now + min(3600, 5 * (2 ** (row.attempt_count - 1)))
             row.last_error = error_code[:128]
             row.lease_owner = None

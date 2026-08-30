@@ -216,9 +216,7 @@ async def test_authenticated_recall_respects_rollout_and_harness_support(
                     "type": "message",
                     "data": {
                         "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": "How should you answer?"}
-                        ],
+                        "content": [{"type": "input_text", "text": "How should you answer?"}],
                     },
                 },
                 headers=headers,
@@ -237,9 +235,7 @@ async def test_authenticated_recall_respects_rollout_and_harness_support(
         assert len(provider.requests) == 1
     if not provider.requests:
         event_payloads = [
-            payload
-            for path, payload in captured
-            if path == f"/v1/sessions/{session_id}/events"
+            payload for path, payload in captured if path == f"/v1/sessions/{session_id}/events"
         ]
         assert len(event_payloads) == 1
         assert "framework_instructions" not in event_payloads[0]
@@ -256,9 +252,7 @@ async def test_authenticated_recall_respects_rollout_and_harness_support(
     assert recall_request.scopes[0].subject_id == "alice@example.com"
 
     event_payloads = [
-        payload
-        for path, payload in captured
-        if path == f"/v1/sessions/{session_id}/events"
+        payload for path, payload in captured if path == f"/v1/sessions/{session_id}/events"
     ]
     assert len(event_payloads) == 1
     if expect_instruction:

@@ -115,9 +115,7 @@ def test_erasure_retries_then_dead_letters(db_uri: str) -> None:
             error_code="provider_error",
             now=now,
         )
-        assert failed.status == (
-            "dead_letter" if expected_attempt == 5 else "retryable"
-        )
+        assert failed.status == ("dead_letter" if expected_attempt == 5 else "retryable")
         now = failed.next_attempt_at
 
     current = store.get_request(7, request.id)
@@ -147,10 +145,7 @@ def test_stale_erasure_worker_cannot_complete_reclaimed_task(db_uri: str) -> Non
         )
 
     attempts = store.list_attempts(7, task.id)
-    actual = [
-        (attempt.attempt_number, attempt.status, attempt.error_code)
-        for attempt in attempts
-    ]
+    actual = [(attempt.attempt_number, attempt.status, attempt.error_code) for attempt in attempts]
     assert actual == [
         (1, "failed", "lease_expired"),
         (2, "running", None),

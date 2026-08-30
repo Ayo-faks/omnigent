@@ -29,10 +29,7 @@ def _document(
     raw_json: str = '{"id":"page-1"}\n',
 ) -> AdaptedDocument:
     if deletion_state == "active":
-        markdown = (
-            '---\nsource_url: "https://www.notion.so/page-1"\n---\n\n'
-            f"{markdown}"
-        )
+        markdown = f'---\nsource_url: "https://www.notion.so/page-1"\n---\n\n{markdown}'
     path = stable_document_path("notion", "connection-1", "page-1")
     return AdaptedDocument(
         document=BrainDocumentV1(

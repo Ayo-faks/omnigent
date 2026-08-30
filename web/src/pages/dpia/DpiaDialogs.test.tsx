@@ -1,11 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createStudentSuccessAlertSeed } from "@/lib/dpia/seed";
-import {
-  DpiaIntakeDialog,
-  OfficerDecisionDialog,
-  QuestionAnswerDialog,
-} from "./DpiaDialogs";
+import { DpiaIntakeDialog, OfficerDecisionDialog, QuestionAnswerDialog } from "./DpiaDialogs";
 
 function deferredRejection() {
   let reject: (reason: Error) => void = () => undefined;
@@ -35,9 +31,7 @@ describe("DPIA dialog persistence", () => {
     pending.reject(new Error("DPIA persistence unavailable"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("DPIA persistence unavailable");
-    expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue(
-      "A durable test purpose",
-    );
+    expect(screen.getByRole("textbox", { name: "Purpose" })).toHaveValue("A durable test purpose");
     expect(screen.getByRole("button", { name: "Save new version" })).toBeEnabled();
   });
 

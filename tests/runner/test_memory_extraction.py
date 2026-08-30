@@ -27,7 +27,7 @@ class Stream:
     async def aiter_lines(self) -> AsyncIterator[str]:
         midpoint = len(self._output) // 2
         for delta in (self._output[:midpoint], self._output[midpoint:]):
-            yield f'data: {json.dumps({"type": "response.output_text.delta", "delta": delta})}'
+            yield f"data: {json.dumps({'type': 'response.output_text.delta', 'delta': delta})}"
         yield 'data: {"type":"response.completed"}'
 
 

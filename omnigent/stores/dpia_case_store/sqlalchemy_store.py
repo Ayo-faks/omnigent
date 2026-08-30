@@ -94,11 +94,11 @@ class SqlAlchemyDpiaCaseStore(DpiaCaseStore):
         with self._session("list_revisions") as session:
             rows = list(
                 session.execute(
-                select(SqlDpiaCaseRevision)
-                .where(
-                    SqlDpiaCaseRevision.workspace_id == current_workspace_id(),
-                    SqlDpiaCaseRevision.case_id == case_id,
-                )
+                    select(SqlDpiaCaseRevision)
+                    .where(
+                        SqlDpiaCaseRevision.workspace_id == current_workspace_id(),
+                        SqlDpiaCaseRevision.case_id == case_id,
+                    )
                     .order_by(desc(SqlDpiaCaseRevision.revision))
                     .limit(limit)
                 ).scalars()

@@ -212,9 +212,7 @@ async def test_qm_provider_erases_then_verifies_absence() -> None:
         "operationId": "memory-erasure:job-1",
         "scopeId": "personal:7:user:user%2F123",
     }
-    assert json.loads(captured[1].content)["operationId"] == (
-        "memory-erasure:job-1:verify"
-    )
+    assert json.loads(captured[1].content)["operationId"] == ("memory-erasure:job-1:verify")
 
 
 @pytest.mark.asyncio

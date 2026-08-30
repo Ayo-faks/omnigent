@@ -156,10 +156,9 @@ describe("useDpiaCase durable writes", () => {
           resolveSave = resolve;
         }),
     );
-    const { result, rerender } = renderHook(
-      ({ caseId }) => useDpiaCase(caseId),
-      { initialProps: { caseId: "student-success-alert" } },
-    );
+    const { result, rerender } = renderHook(({ caseId }) => useDpiaCase(caseId), {
+      initialProps: { caseId: "student-success-alert" },
+    });
     await waitFor(() => expect(result.current.caseData.owner).toBe("First case"));
 
     let oldMutation: Promise<unknown> = Promise.resolve();

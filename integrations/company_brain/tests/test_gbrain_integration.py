@@ -23,10 +23,7 @@ _GBRAIN_POSTGRES_TEST_URL = os.environ.get("GBRAIN_POSTGRES_TEST_URL")
 
 def _document(markdown: str, *, deletion_state: DeletionState = "active") -> AdaptedDocument:
     if deletion_state == "active":
-        markdown = (
-            '---\nsource_url: "https://www.notion.so/policy-1"\n---\n\n'
-            f"{markdown}"
-        )
+        markdown = f'---\nsource_url: "https://www.notion.so/policy-1"\n---\n\n{markdown}'
     raw_json = '{"id":"policy-1","title":"Retention policy"}\n'
     return AdaptedDocument(
         document=BrainDocumentV1(

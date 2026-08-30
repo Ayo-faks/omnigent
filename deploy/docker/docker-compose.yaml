@@ -120,6 +120,8 @@ services:
       # Comma-separated deployment-wide release features. Empty means all
       # release features are off; see .env.example for the known keys.
       OMNIGENT_FEATURES: "${OMNIGENT_FEATURES:-}"
+      OMNIGENT_QM_MEMORY_URL: "${OMNIGENT_QM_MEMORY_URL:-}"
+      OMNIGENT_QM_MEMORY_SIGNING_SECRET: "${OMNIGENT_QM_MEMORY_SIGNING_SECRET:-}"
       # Anchor the server's data dir on the persistent volume so
       # file-backed operator config survives container restarts:
       # the admin roster (/data/admins) and allowed-domains file

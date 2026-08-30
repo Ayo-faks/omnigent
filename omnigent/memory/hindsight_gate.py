@@ -34,9 +34,7 @@ def hindsight_endpoint_sha256(api_url: str) -> str:
         "::1",
     }
     if (parsed.scheme != "https" and not loopback) or not parsed.netloc:
-        raise HindsightCapabilityGateError(
-            "Hindsight API URL must use HTTPS or loopback HTTP"
-        )
+        raise HindsightCapabilityGateError("Hindsight API URL must use HTTPS or loopback HTTP")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise HindsightCapabilityGateError(
             "Hindsight API URL must not contain credentials, a query, or a fragment"
@@ -60,14 +58,10 @@ def require_hindsight_write_capabilities(
         "1",
         "true",
     }:
-        raise HindsightCapabilityGateError(
-            "OMNIGENT_HINDSIGHT_WRITES_ENABLED is not enabled"
-        )
+        raise HindsightCapabilityGateError("OMNIGENT_HINDSIGHT_WRITES_ENABLED is not enabled")
     report_path = source.get("OMNIGENT_HINDSIGHT_CAPABILITY_REPORT", "").strip()
     if not report_path:
-        raise HindsightCapabilityGateError(
-            "OMNIGENT_HINDSIGHT_CAPABILITY_REPORT is required"
-        )
+        raise HindsightCapabilityGateError("OMNIGENT_HINDSIGHT_CAPABILITY_REPORT is required")
     try:
         report: object = json.loads(Path(report_path).read_text())
     except (OSError, json.JSONDecodeError) as exc:

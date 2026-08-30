@@ -168,9 +168,7 @@ async def test_personal_erasure_scrubs_local_candidates_and_verifies_provider(
         completed_body = completed.json()
         assert completed_body["status"] == "completed"
         assert completed_body["providers"][0]["status"] == "completed"
-        assert completed_body["providers"][0]["verified_at"] == (
-            pending_task.next_attempt_at
-        )
+        assert completed_body["providers"][0]["verified_at"] == (pending_task.next_attempt_at)
         assert "alice@example.com" not in json.dumps(completed_body)
 
         replay = await client.post(

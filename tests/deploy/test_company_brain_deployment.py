@@ -78,9 +78,15 @@ def test_compose_isolates_and_shares_only_company_brain_state() -> None:
         "OMNIGENT_COMPANY_BRAIN_OAUTH_STATE_SECRET",
         "OMNIGENT_COMPANY_BRAIN_REPO_PATH",
         "OMNIGENT_COMPANY_BRAIN_REPO_URL",
+        "OMNIGENT_QM_MEMORY_SIGNING_SECRET",
+        "OMNIGENT_QM_MEMORY_URL",
         "SLACK_OAUTH_CLIENT_ID",
         "SLACK_OAUTH_CLIENT_SECRET",
     }
+    env_example = (_ROOT / "deploy/docker/.env.example").read_text(encoding="utf-8")
+    assert "OMNIGENT_FEATURES=memory_runtime" in env_example
+    assert "OMNIGENT_QM_MEMORY_URL=https://memory.example.com" in env_example
+    assert "OMNIGENT_QM_MEMORY_SIGNING_SECRET=" in env_example
     assert set(compose["volumes"]) >= {
         "artifact-data",
         "company-brain-data",

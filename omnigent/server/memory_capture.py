@@ -17,9 +17,7 @@ class RunnerMemoryExtractor:
         self._timeout_seconds = timeout_seconds
 
     async def extract(self, episode: MemoryExtractionEpisode) -> tuple[MemoryCandidate, ...]:
-        routed = self._runner_router.client_for_existing_conversation(
-            episode.conversation.id
-        )
+        routed = self._runner_router.client_for_existing_conversation(episode.conversation.id)
         if routed is None:
             raise MemoryExtractionError("session runner is unavailable for memory extraction")
         try:
