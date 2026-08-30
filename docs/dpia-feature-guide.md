@@ -1,11 +1,14 @@
-# DPIA Desk — feature guide
+# Wulo-work DPIA Desk — POC feature guide
 
-A junior-developer tour of every DPIA feature added to Omnigent. The DPIA Desk is an
-**additive** feature set: every original Omnigent surface (chat, sessions, automations,
-settings) is untouched. It adds a case cockpit for running a UK GDPR **DPIA screening**
-on a synthetic case ("Student Success Alert"), with a three-agent investigation behind
-it. Everything runs on synthetic data; agents only ever **propose** — a human Privacy
-Officer applies.
+This is the black-and-white **Wulo-work** POC built on Omnigent. The DPIA Desk is an
+**additive** feature set: the underlying chat, sessions, automations, and settings
+surfaces remain available alongside a case cockpit for running a UK GDPR **DPIA
+screening** on a synthetic case ("Student Success Alert"). Everything runs on synthetic
+data; agents only ever **propose** — a human Privacy Officer applies.
+
+![Wulo-work DPIA desk on desktop](images/wulo-work-dpia-overview-desktop.png)
+
+![Wulo-work DPIA desk with the tablet navigation open](images/wulo-work-dpia-overview-tablet.png)
 
 **Run it locally**
 
@@ -22,7 +25,7 @@ Open http://127.0.0.1:5178/dpia/cases/student-success-alert.
 
 | Piece | Where | What it does |
 |---|---|---|
-| Case snapshot | browser `localStorage` key `omnigent:dpia-case:<caseId>:v1` | One JSON document holding the whole case: processing model, evidence, findings, questions, proposals, officer decision, audit log |
+| Case snapshot | durable `/v1/dpia/cases/<caseId>` store with revision history | One version-checked JSON document holding the whole case: processing model, evidence, findings, questions, proposals, officer decision, audit log. A valid legacy `localStorage` snapshot is migrated once and removed only after the server acknowledges it. |
 | Case cockpit UI | `web/src/pages/dpia/` | The pages and cards below |
 | Case logic | `web/src/lib/dpia/` | Pure functions: every mutation takes a snapshot, returns a new validated snapshot (zod-strict), and appends an audit event |
 | Agent bundle | `examples/dpia_investigation/` | Coordinator + 3 sub-agents that run a live investigation and draft corrections |
