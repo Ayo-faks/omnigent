@@ -1,0 +1,117 @@
+diff --git a/.github/workflows/demo-check.js b/.github/workflows/demo-check.js
+index acc15785e..468b58502 100644
+--- a/.github/workflows/demo-check.js
++++ b/.github/workflows/demo-check.js
+@@ -1,12 +1,15 @@
+-// Scan contributor PRs and comment when a Bug fix, Feature, or UI / frontend
+-// change is checked but no real demo (screenshot / video) is provided. Runs
+-// hourly over two searches, unioned and deduped: PRs opened in the last 24
+-// hours (so every new PR is seen even if opened just before a cron tick), plus
+-// every open PR already labeled `needs-demo` regardless of age. Drafts and
+-// maintainer PRs are skipped. While a PR carries `needs-demo` it is never
+-// commented again; an already-labeled PR is re-evaluated each run and the
+-// label cleared once its Demo section is satisfied (or the change type no
+-// longer needs one). A PR that later regresses can be flagged afresh.
++// Scan contributor PRs and comment when a UI / frontend change is checked but
++// no real demo (screenshot / video) is provided. This mirrors the published
++// policy (CONTRIBUTING.md, the PR template, and pr-template/validate.py):
++// media is required only for UI / frontend changes; N/A or a written
++// reproduction is fine for non-visual changes. Runs hourly over two searches,
++// unioned and deduped: PRs opened in the last 24 hours (so every new PR is
++// seen even if opened just before a cron tick), plus every open PR already
++// labeled `needs-demo` regardless of age. Drafts and maintainer PRs are
++// skipped. While a PR carries `needs-demo` it is never commented again; an
++// already-labeled PR is re-evaluated each run and the label cleared once its
++// Demo section is satisfied (or the change type no longer needs one). A PR
++// that later regresses can be flagged afresh.
+ 
+ const MS_PER_HOUR = 60 * 60 * 1000;
+ const HOURS_TO_SCAN = 24;
+@@ -45,15 +48,12 @@ const QUERY = `
+   }
+ `;
+ 
+-// Returns true when any change type that requires a demo is checked:
+-// Bug fix, Feature, or UI / frontend change.
++// Returns true when the change type that requires demo media is checked.
++// Per the published policy only "UI / frontend change" requires a screenshot
++// or recording; non-visual changes may use N/A or a written reproduction.
+ function requiresDemo(body) {
+   const text = body ?? "";
+-  return (
+-    /- \[[xX]\] Bug fix/.test(text) ||
+-    /- \[[xX]\] Feature/.test(text) ||
+-    /- \[[xX]\] UI \/ frontend change/.test(text)
+-  );
++  return /- \[[xX]\] UI \/ frontend change/.test(text);
+ }
+ 
+ // Extracts the text content of the Demo section (between ## Demo and the next
+@@ -83,14 +83,14 @@ function hasDemoContent(body) {
+ }
+ 
+ const demoRequiredMessage = (author) =>
+-  `@${author} This PR is a **Bug fix**, **Feature**, or **UI / frontend change** but the **Demo** section is missing or only contains a placeholder.
++  `@${author} This PR checks **UI / frontend change** but the **Demo** section is missing or only contains a placeholder.
+ 
+-These change types require a screenshot or screen recording so reviewers can see the new behaviour without checking out the branch. Please update the **Demo** section with:
++UI / frontend changes require a screenshot or screen recording so reviewers can see the new behaviour without checking out the branch. Please update the **Demo** section with:
+ 
+ - A screenshot or screen recording of the change, or
+ - A link to a hosted video or GIF showing the new behaviour.
+ 
+-_Use \`N/A\` only when the change has no user-visible effect whatsoever (e.g. a pure refactor or test-only change). If that's the case, uncheck the relevant type box and check **Refactor / chore** or **Test / CI** instead._`;
++_If this PR has no visual surface after all, uncheck **UI / frontend change**; \`N/A\` or a written reproduction is fine for non-visual changes._`;
+ 
+ module.exports = async ({ context, github, core }) => {
+   const { owner, repo } = context.repo;
+@@ -201,7 +201,7 @@ module.exports = async ({ context, github, core }) => {
+       // a PR it returned is labeled even if needs-demo fell outside first: 20.
+       const labels = pr.labels?.nodes?.map((l) => l.name) ?? [];
+       const isLabeled = labeledPRs.has(pr.number) || labels.includes(NEEDS_DEMO_LABEL);
+-      // Requires a demo (Bug fix / Feature / UI) and none is present yet.
++      // Requires a demo (UI / frontend change) and none is present yet.
+       const needsDemo = requiresDemo(pr.body) && !hasDemoContent(pr.body);
+ 
+       // Already flagged: never comment again. Clear the label once the PR
+diff --git a/.github/workflows/demo-check.test.js b/.github/workflows/demo-check.test.js
+index 8302f8dde..bfd56a6b4 100644
+--- a/.github/workflows/demo-check.test.js
++++ b/.github/workflows/demo-check.test.js
+@@ -8,8 +8,9 @@ const path = require("path");
+ const script = require(path.resolve(".github/workflows/demo-check.js"));
+ 
+ // A PR body that checks the given type box, optionally with a Demo section.
+-function body({ type = "Bug fix", demo = "" } = {}) {
+-  const checked = type ? `- [x] ${type}\n` : "- [ ] Bug fix\n";
++// The default is the one type the published policy requires media for.
++function body({ type = "UI / frontend change", demo = "" } = {}) {
++  const checked = type ? `- [x] ${type}\n` : "- [ ] UI / frontend change\n";
+   return `## Type of change\n${checked}\n## Demo\n${demo}\n`;
+ }
+ 
+@@ -133,4 +134,24 @@ function assert(name, cond, detail) {
+   });
+   assert("labeled-search PR with truncated labels is treated as labeled",
+     eq(r.commented, []) && eq(r.added, []) && eq(r.removed, []), JSON.stringify(r));
++
++  // 11. Published policy: a backend Bug fix with a N/A Demo is compliant --
++  //     media is only required for UI / frontend changes.
++  r = await run({ recent: [pr({ number: 11, body: body({ type: "Bug fix", demo: "N/A" }) })] });
++  assert("backend bug fix with N/A demo is not flagged",
++    eq(r.commented, []) && eq(r.added, []), JSON.stringify(r));
++
++  // 12. Published policy: a Feature with a written reproduction is compliant.
++  r = await run({
++    recent: [pr({ number: 12, body: body({ type: "Feature", demo: "Run `pytest tests/x.py` to reproduce." }) })],
++  });
++  assert("feature with a written reproduction is not flagged",
++    eq(r.commented, []) && eq(r.added, []), JSON.stringify(r));
++
++  // 13. A stale label on a non-UI PR is cleared once re-evaluated.
++  r = await run({
++    labeled: [pr({ number: 13, body: body({ type: "Bug fix", demo: "N/A" }), labels: ["needs-demo"] })],
++  });
++  assert("labeled non-UI PR has its stale label cleared",
++    eq(r.removed, [13]) && eq(r.commented, []) && eq(r.added, []), JSON.stringify(r));
+ })();
