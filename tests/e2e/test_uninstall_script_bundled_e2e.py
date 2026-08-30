@@ -12,7 +12,6 @@ instead of erroring.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -20,32 +19,16 @@ from pathlib import Path
 
 import pytest
 
+from tests._helpers.build_python import python_with_setuptools
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MISSING_SCRIPT_ERROR = "uninstall script is missing from this installation"
-
-
-def _python_with_setuptools() -> str | None:
-    """Return a python interpreter able to run setup.py, or None."""
-    candidates = [sys.executable, shutil.which("python3"), "/usr/bin/python3"]
-    seen: set[str] = set()
-    for candidate in candidates:
-        if not candidate or candidate in seen or not Path(candidate).exists():
-            continue
-        seen.add(candidate)
-        probe = subprocess.run(
-            [candidate, "-c", "import setuptools"],
-            capture_output=True,
-            timeout=60,
-        )
-        if probe.returncode == 0:
-            return candidate
-    return None
 
 
 @pytest.mark.timeout(900)
 def test_uninstall_finds_bundled_script_in_package_build(tmp_path: Path) -> None:
     """A package-built install must run `omnigent uninstall` without erroring."""
-    build_python = _python_with_setuptools()
+    build_python = python_with_setuptools()
     if build_python is None:
         pytest.skip("no python with setuptools available to build the package")
 
