@@ -27,6 +27,7 @@ from omnigent.entities.conversation import (
     synthesize_conversation_title,
 )
 from omnigent.entities.device_grant import DeviceGrant
+from omnigent.entities.dpia_case import DpiaCaseRecord, DpiaCaseRevision
 from omnigent.entities.file import StoredFile
 from omnigent.entities.pagination import PagedList
 from omnigent.entities.permission import ResolvedAccess, SessionPermission
@@ -55,6 +56,8 @@ __all__ = [
     "Conversation",
     "ConversationItem",
     "DeviceGrant",
+    "DpiaCaseRecord",
+    "DpiaCaseRevision",
     "ErrorData",
     "FunctionCallData",
     "FunctionCallOutputData",
